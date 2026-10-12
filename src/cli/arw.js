@@ -26,6 +26,12 @@ PR review (plan -> freeze -> waves -> validate -> report):
   arw publish  --repo owner/name --pr <n> [--min-severity P3] [--dry-run]
                                                creates a PENDING GitHub review you submit yourself
 
+What people did with the findings:
+  arw reject   --repo owner/name --pr <n> --finding <id> --reason "..."   remember a rejected finding
+  arw feedback --repo owner/name --pr <n>      read the submitted review back: kept / edited / dropped
+  arw acceptance                               acceptance rate by severity, label and role
+  arw memory [--repo owner/name] [--forget RJ-...]
+
 Human gates (the runtime never approves):
   arw gate approve|reject|status (--ticket KEY | --repo owner/name --pr <n>) --gate ${Object.keys(GATES).join('|')} [--note "..."]
 
@@ -128,7 +134,52 @@ function cmdPublish(argv) {
     console.log(review.body);
     for (const c of review.comments) console.log(`\n--- ${c.path}:${c.line}\n${c.body}`);
   }
+  if (record.omitted.length) console.log(`\n${record.omitted.length} finding(s) left out: rejected before (${record.omitted.map((o) => `${o.finding_id} ~ ${o.entry_id}`).join(', ')}); see arw memory`);
   console.log(`\n${record.inline.length} inline + ${record.summary_only.length} summary finding(s)${record.html_url ? ` · pending review: ${record.html_url} — open it, edit, then submit with your verdict` : ''}`);
+  return 0;
+}
+
+function cmdReject(argv) {
+  const args = parseArgs(argv);
+  if (!args.finding || !args.reason) throw new Error('usage: arw reject --repo owner/name --pr <n> --finding <id> --reason "why"');
+  const entry = require('../lib/feedback').rejectFinding(runDirFrom(args), String(args.finding), { reason: args.reason, source: 'cli' });
+  console.log(`remembered ${entry.id} (${entry.scope}${entry.path ? `, ${entry.path}` : ''}): similar findings will be marked, and minor ones left out of published drafts`);
+  return 0;
+}
+
+function cmdFeedback(argv) {
+  const args = parseArgs(argv);
+  const { record, remembered } = require('../lib/feedback').readBack(runDirFrom(args), { api: github.apiGet });
+  console.log(`review ${record.review_id}: ${record.state}${record.submitted_at ? ` at ${record.submitted_at}` : ''}`);
+  for (const f of record.findings) console.log(`  ${f.verdict.padEnd(9)} ${f.id}  [${f.severity}] ${f.title}`);
+  const c = record.counts;
+  console.log(`kept ${c.kept} · edited ${c.edited} · dropped ${c.dropped}${c.pending ? ` · pending ${c.pending} (submit the review on GitHub first)` : ''}${remembered.length ? ` · ${remembered.length} dropped finding(s) remembered` : ''}`);
+  return 0;
+}
+
+function cmdMemory(argv) {
+  const args = parseArgs(argv);
+  const memory = require('../lib/memory');
+  if (args.forget) {
+    if (!memory.forget(String(args.forget))) throw new Error(`no memory entry ${args.forget}`);
+    console.log(`forgot ${args.forget}`);
+    return 0;
+  }
+  const entries = memory.loadMemory().entries.filter((e) => !args.repo || e.scope === args.repo);
+  for (const e of entries) console.log(`${e.id}  ${e.scope.padEnd(28)} [${e.severity}] ${e.title}${e.path ? `  (${e.path})` : ''}\n${' '.repeat(15)}${e.source} ${e.at.slice(0, 10)}: ${e.reason}`);
+  console.log(`${entries.length} rejected finding(s) remembered${args.repo ? ` for ${args.repo}` : ''}`);
+  return 0;
+}
+
+function cmdAcceptance() {
+  const s = require('../lib/feedback').acceptanceStats();
+  const line = (name, c) => `${name.padEnd(12)} kept ${c.kept} · edited ${c.edited} · dropped ${c.dropped} · acceptance ${c.rate == null ? '-' : `${c.rate}%`}`;
+  console.log(line('all', s.total));
+  for (const [group, buckets] of Object.entries(s.groups)) {
+    console.log(`\nby ${group}`);
+    for (const [k, c] of Object.entries(buckets).sort()) console.log(`  ${line(k, c)}`);
+  }
+  console.log(`\n${s.runs.length} run(s) with feedback (arw feedback --repo ... --pr ... after submitting a review)`);
   return 0;
 }
 
@@ -237,6 +288,14 @@ async function main(argv) {
       return cmdPublish(rest);
     case 'gate':
       return cmdGate(rest);
+    case 'reject':
+      return cmdReject(rest);
+    case 'feedback':
+      return cmdFeedback(rest);
+    case 'memory':
+      return cmdMemory(rest);
+    case 'acceptance':
+      return cmdAcceptance();
     case 'status':
       return cmdStatus();
     case 'doctor':

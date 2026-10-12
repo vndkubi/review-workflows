@@ -446,6 +446,58 @@ test('ticket pipeline -> PR review, end to end', async (t) => {
     assert.match(review.comments[0].body, /<!-- arw:finding=B1-business-F1 context=[a-f0-9]{16} -->/);
   });
 
+  await t.test('feedback: the submitted review is read back; dropped findings are remembered and left out next time', () => {
+    const memory = require('../src/lib/memory');
+    const feedback = require('../src/lib/feedback');
+    const { publish } = require('../src/lib/publish');
+    let sent = null;
+    const { record, review } = publish(runDir, { minSeverity: 'P3', createPendingReview: (req) => { sent = req; return { id: 99, html_url: 'https://github.example/r/99' }; } });
+    assert.equal(sent.comments.length, 2);
+    assert.deepEqual(Object.keys(record.bodies).sort(), ['B1-business-F1', 'B2-technical-F1']);
+
+    // On GitHub the reviewer reworded B1 and deleted B2 before submitting.
+    const b1 = review.comments.find((c) => c.finding_id === 'B1-business-F1');
+    const api = (state) => (p) => {
+      if (p.endsWith('/reviews/99')) return { id: 99, state, body: review.body, submitted_at: state === 'PENDING' ? null : '2026-10-13T10:00:00Z' };
+      if (p.includes('/reviews/99/comments')) return [{ id: 1, path: b1.path, line: b1.line, body: b1.body.replace('**Impact:**', 'Please fix before merge.\n\n**Impact:**') }];
+      throw new Error(`unexpected ${p}`);
+    };
+    assert.deepEqual(feedback.readBack(runDir, { api: api('PENDING') }).record.counts, { kept: 0, edited: 0, dropped: 0, pending: 2, dismissed: 0 });
+    assert.equal(memory.loadMemory().entries.length, 0, 'nothing is remembered while the review is pending');
+    const { record: fb, remembered } = feedback.readBack(runDir, { api: api('COMMENTED') });
+    assert.deepEqual(fb.findings.map((f) => [f.id, f.verdict]), [['B1-business-F1', 'edited'], ['B2-technical-F1', 'dropped']]);
+    assert.deepEqual(remembered.map((e) => [e.finding_id, e.scope, e.source]), [['B2-technical-F1', 'acme/shop', 'github']]);
+    const stats = feedback.acceptanceStats();
+    assert.deepEqual([stats.total.edited, stats.total.dropped, stats.total.rate], [1, 1, 50]);
+    assert.equal(stats.groups.severity.P3.dropped, 1);
+
+    // The next draft leaves the rejected P3 out; the report says why.
+    const next = buildReview(runDir, { minSeverity: 'P3' });
+    assert.deepEqual(next.comments.map((c) => c.finding_id), ['B1-business-F1']);
+    assert.deepEqual(next.omitted.map((o) => o.finding_id), ['B2-technical-F1']);
+    assert.match(next.body, /1 finding\(s\) were left out because a person rejected them/);
+
+    // A look-alike in another run: minor ones are left out, serious ones get a note.
+    const b2 = memory.loadMemory().entries[0];
+    const alike = { id: 'X-business-F1', title: b2.title, asis: b2.asis, severity: 'P3', evidence: [{ kind: 'code', path: b2.path }] };
+    const match = memory.matchRejected(alike, { scope: 'acme/shop', run: 'acme__shop__8' });
+    assert.equal(match.same, false);
+    assert.equal(memory.publishAction(alike, match), 'omit');
+    assert.equal(memory.publishAction({ ...alike, severity: 'P1' }, match), 'publish_with_note');
+    assert.equal(memory.matchRejected(alike, { scope: 'other/repo', run: 'x' }), null, 'memory is per repository');
+    assert.equal(memory.matchRejected({ ...alike, evidence: [{ kind: 'code', path: 'other.py' }] }, { scope: 'acme/shop', run: 'y' }), null, 'and per file');
+
+    // Rejecting in the dashboard/CLI works the same and re-renders the report; forgetting undoes it.
+    const entry = feedback.rejectFinding(runDir, 'B1-business-F1', { reason: 'the threshold is inclusive by design', source: 'cli' });
+    assert.equal(buildReview(runDir, { minSeverity: 'P3' }).comments.length, 0, 'the exact finding a person rejected is never published, whatever its severity');
+    assert.match(fs.readFileSync(path.join(runDir, 'report.md'), 'utf8'), /> Rejected: the threshold is inclusive by design\. Left out of the published draft\./);
+    for (const e of memory.loadMemory().entries) memory.forget(e.id);
+    assert.equal(memory.forget(entry.id), false);
+    assert.equal(buildReview(runDir, { minSeverity: 'P3' }).comments.length, 2);
+    fs.rmSync(path.join(runDir, 'published.json'));
+    fs.rmSync(path.join(runDir, 'feedback.json'));
+  });
+
   await t.test('resume: nothing re-runs when the context and artifacts still hold', async () => {
     const again = scriptedExecutor(() => {
       throw new Error('no model call expected');

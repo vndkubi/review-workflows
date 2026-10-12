@@ -6,6 +6,7 @@ const { readJson, readJsonIfExists } = require('./util');
 const { revisionDir, readInput, loadContext } = require('./freeze');
 const { packetRel } = require('./driver');
 const { SEVERITY_RANK } = require('./cluster');
+const memory = require('./memory');
 
 const STATE_TEXT = {
   stands: 'red-team defense failed — finding stands',
@@ -118,11 +119,15 @@ function renderReport(runDir, validation, identity) {
   }
   out.push('', '## Findings', '');
   if (!metas.length) out.push('No findings were reported by any valid packet.');
+  const scope = memory.memoryScope(identity);
+  const entries = memory.loadMemory().entries;
   for (const meta of metas) {
     if (aliased.has(meta.id)) continue;
     const f = findings.get(meta.id);
     if (!f) continue;
     out.push(renderFinding(f, meta, rebuttal(meta.rebuttal_from || meta.id)), '');
+    const match = memory.matchRejected(f, { scope, run: path.basename(runDir) }, entries);
+    if (match) out.push(`> ${match.same ? 'Rejected' : `Looks like a finding rejected earlier (${match.entry_id}, similarity ${match.score})`}: ${match.reason}. ${memory.publishAction(f, match) === 'omit' ? 'Left out of the published draft.' : 'Still published because of its severity.'}`, '');
     const dups = (synthesis ? synthesis.aliases : []).filter((a) => a.duplicate_of === meta.id).map((a) => a.id);
     if (dups.length) out.push(`_Duplicates: ${dups.join(', ')}_`, '');
   }

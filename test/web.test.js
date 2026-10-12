@@ -190,6 +190,17 @@ test('dashboard server', async (t) => {
     assert.match(r.json.error, /not in config\/repos\.json/);
   });
 
+  await t.test('rejection memory and acceptance endpoints', async () => {
+    assert.equal((await call(port, 'POST', '/api/prs/acme__shop__1/findings/B1-business-F1/reject', { body: { reason: 'x' } })).status, 403, 'writes need the token');
+    const noReason = await call(port, 'POST', '/api/prs/acme__shop__1/findings/B1-business-F1/reject', { body: {}, headers: auth });
+    assert.equal(noReason.status, 400);
+    assert.match(noReason.json.error, /reason is needed/);
+    assert.equal((await call(port, 'POST', '/api/prs/acme__shop__1/findings/B1-business-F1/reject', { body: { reason: 'noise' }, headers: auth })).status, 400, 'no such run');
+    assert.deepEqual((await call(port, 'GET', '/api/memory')).json, []);
+    assert.equal((await call(port, 'POST', '/api/memory/RJ-0123456789/forget', { body: {}, headers: auth })).status, 404);
+    assert.equal((await call(port, 'GET', '/api/acceptance')).json.total.rate, null);
+  });
+
   await t.test('local reviews: a git directory becomes a queued job; bad input is refused', async () => {
     const repo = makeRepo();
     const ok = await call(port, 'POST', '/api/reviews/local', { body: { dir: repo.dir, base: 'main', mode: 'staged', noRepro: true }, headers: auth });

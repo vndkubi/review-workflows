@@ -56,6 +56,10 @@ function removeWorktree(source, worktree) {
   git(source, ['worktree', 'prune'], { allowFail: true });
 }
 
+function apiGet(apiPath) {
+  return JSON.parse(gh(['api', apiPath]));
+}
+
 function currentLogin() {
   return JSON.parse(gh(['api', 'user'])).login;
 }
@@ -73,4 +77,4 @@ function createPendingReview({ repo, pr, commitId, body, comments }) {
   return JSON.parse(gh(['api', '--method', 'POST', `repos/${repo}/pulls/${pr}/reviews`, '--input', '-'], JSON.stringify(payload)));
 }
 
-module.exports = { gh, prView, reposConfig, sourceCheckoutFor, preparePrWorktree, removeWorktree, createPendingReview, currentLogin };
+module.exports = { gh, prView, reposConfig, sourceCheckoutFor, preparePrWorktree, removeWorktree, createPendingReview, currentLogin, apiGet };

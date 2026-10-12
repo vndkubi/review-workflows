@@ -8,6 +8,7 @@ const { RUNS, ticketDir, prDir, gateState, GATES } = require('../lib/runs');
 const { revisionDir } = require('../lib/freeze');
 const { packetRel } = require('../lib/driver');
 const git = require('../lib/git');
+const memory = require('../lib/memory');
 
 const PR_ID = /^[A-Za-z0-9._-]+__[A-Za-z0-9._-]+__\d+$/;
 const TICKET_KEY = /^[A-Z][A-Z0-9]+-\d+$/;
@@ -168,11 +169,16 @@ function prDetail(id) {
   }
   const synthesis = validation.synthesis && validation.synthesis.valid ? readJsonIfExists(path.join(rdir, 'synthesis.json')) : null;
   const aliasOf = new Map((synthesis ? synthesis.aliases : []).map((a) => [a.id, a.duplicate_of]));
+  const scope = memory.memoryScope(run.identity);
+  const entries = memory.loadMemory().entries;
   out.findings = validation.findings.map((meta) => {
     const rebuttalId = meta.rebuttal_from || meta.id;
     const rebuttal = readJsonIfExists(path.join(rdir, 'rebuttals', `${rebuttalId}.json`));
-    return { ...meta, duplicate_of: aliasOf.get(meta.id) || null, detail: full.get(meta.id) || null, rebuttal };
+    const detail = full.get(meta.id) || null;
+    const rejected = detail ? memory.matchRejected(detail, { scope, run: id }, entries) : null;
+    return { ...meta, duplicate_of: aliasOf.get(meta.id) || null, detail, rebuttal, rejected, publish_action: detail ? memory.publishAction(detail, rejected) : null };
   });
+  out.feedback = readJsonIfExists(path.join(dir, 'feedback.json'));
   const { findings, clusters, ...rest } = validation;
   out.validation = { ...rest, counts: countBySeverity(validation.findings, new Set(aliasOf.keys())) };
   out.overview = synthesis ? { flows: synthesis.overview, unverified: synthesis.unverified } : null;

@@ -12,7 +12,10 @@ const { ROOT, writeFileAtomic, ensureDir } = require('../lib/util');
 const { recordGate } = require('../lib/runs');
 const { buildReview } = require('../lib/publish');
 const { executorConfig } = require('../lib/codex');
-const { reposConfig } = require('../lib/github');
+const github = require('../lib/github');
+const { reposConfig } = github;
+const feedback = require('../lib/feedback');
+const memory = require('../lib/memory');
 const data = require('./data');
 const insights = require('./insights');
 const { atlassianConfig, checkMcp } = require('../lib/ticket-mcp');
@@ -100,7 +103,7 @@ function prNumber(v) {
   return n;
 }
 
-function createServer({ port, token = crypto.randomBytes(24).toString('hex'), queue = new JobQueue() } = {}) {
+function createServer({ port, token = crypto.randomBytes(24).toString('hex'), queue = new JobQueue(), githubApi = github.apiGet } = {}) {
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   const who = `${os.userInfo().username} (dashboard)`;
 
@@ -204,7 +207,31 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
     ['GET', /^\/api\/prs\/([^/]+)\/publish-preview$/, (m, q) => {
       const { dir } = data.prDirFromId(m[1]);
       const review = buildReview(dir, { minSeverity: severity(q.get('min')) });
-      return { body: review.body, comments: review.comments, summary_only: review.summaryOnly };
+      return { body: review.body, comments: review.comments, summary_only: review.summaryOnly, omitted: review.omitted };
+    }],
+    ['POST', /^\/api\/prs\/([^/]+)\/findings\/([A-Za-z0-9._-]+)\/reject$/, (m, q, body) => {
+      const { dir } = data.prDirFromId(m[1]);
+      const reason = String(body.reason || '').trim();
+      if (!reason) throw data.httpError(400, 'a reason is needed: it is shown when a similar finding comes back');
+      try {
+        return feedback.rejectFinding(dir, m[2], { reason: reason.slice(0, 500), source: who });
+      } catch (err) {
+        throw data.httpError(400, err.message);
+      }
+    }],
+    ['POST', /^\/api\/prs\/([^/]+)\/feedback$/, (m) => {
+      const { dir } = data.prDirFromId(m[1]);
+      try {
+        return feedback.readBack(dir, { api: githubApi });
+      } catch (err) {
+        throw data.httpError(400, err.message);
+      }
+    }],
+    ['GET', /^\/api\/acceptance$/, () => feedback.acceptanceStats()],
+    ['GET', /^\/api\/memory$/, () => memory.loadMemory().entries.slice().reverse()],
+    ['POST', /^\/api\/memory\/(RJ-[0-9a-f]+)\/forget$/, (m) => {
+      if (!memory.forget(m[1])) throw data.httpError(404, 'no such memory entry');
+      return { forgotten: m[1] };
     }],
     ['POST', /^\/api\/prs\/([^/]+)\/publish$/, (m, q, body) => {
       const { repo, pr } = data.prDirFromId(m[1]);

@@ -149,6 +149,24 @@ Useful flags: `--workers N`, `--single-role` (business units get only the busine
 `--skip-seams`, `--skip-rebuttals`, `--skip-synthesis` (opt-outs are recorded in `validation.json`),
 `--refresh` (re-plan and re-freeze). `arw validate` re-checks everything on disk with no model calls.
 
+### Feedback: acceptance rate and rejected findings
+
+```bash
+node src/cli/arw.js feedback --repo your-org/payment-api --pr 123     # after you submitted the review on GitHub
+node src/cli/arw.js acceptance                                        # kept / edited / dropped, by severity, label, role
+node src/cli/arw.js reject --repo your-org/payment-api --pr 123 --finding B1-business-F1 --reason "inclusive by design"
+node src/cli/arw.js memory [--forget RJ-...]
+```
+
+`feedback` reads the submitted review back and finds each published comment by its
+`<!-- arw:finding=... -->` marker: **kept** (unchanged), **edited** (reworded, or rewritten at the same line
+without the marker) or **dropped** (deleted before submitting). Dropped findings, and findings rejected in the
+dashboard or with `arw reject`, go to `runs/memory/rejected.json`. Later findings in the same repository and
+file whose title/ASIS look alike (token Jaccard ≥ 0.5) are marked in the report and the dashboard; P3/P4
+look-alikes are left out of the published draft and P1/P2 ones are published with a note. The exact finding a
+person rejected is never published. Validation never reads this memory, so verdicts stay a function of the
+frozen context. Local reviews share memory with the configured repository whose `checkout` is that directory.
+
 ## Run layout
 
 ```
@@ -184,6 +202,5 @@ Java + Python fixture repo, with a scripted executor standing in for codex. Test
 
 ## Not built yet
 
-- Acceptance tracking: reading back which published findings were kept (`<!-- arw:finding=... -->` markers are already in each comment).
 - An eval harness that replays frozen contexts against labelled findings.
 - Multi-user access (the dashboard is single-user, loopback only).

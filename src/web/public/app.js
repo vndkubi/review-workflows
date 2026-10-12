@@ -195,7 +195,8 @@ async function render() {
 function renderHome() {
   const prs = state.runs.prs;
   const open = prs.reduce((n, p) => n + (p.counts ? p.counts.P1 + p.counts.P2 : 0), 0);
-  put($main, 
+  const acceptance = h('div', {});
+  put($main,
     h('h1', {}, 'Reviews and tickets'),
     h('p', { class: 'muted' }, 'Models propose; the runtime validates every quote; you decide at the gates.'),
     h('div', { class: 'stats' },
@@ -205,7 +206,25 @@ function renderHome() {
       stat(state.jobs.filter((j) => ['queued', 'running'].includes(j.status)).length, 'active jobs')),
     !state.config.repos.length ? h('div', { class: 'notice' }, 'No repositories configured. Copy config/repos.example.json to config/repos.json and map owner/name to a local clone.') : null,
     ...section('Recent reviews', prs.length ? prTable(prs.slice(0, 15)) : h('p', { class: 'muted' }, 'Start one with “New review”.')),
+    acceptance,
   );
+  api('GET', '/api/acceptance').then((s) => put(acceptance, acceptanceView(s))).catch(() => {});
+}
+
+// Of the findings a person decided on (submitted GitHub reviews read back),
+// how many they kept. Low acceptance in a group points at noise to fix.
+function acceptanceView(s) {
+  const t = s.total;
+  if (!t.kept && !t.edited && !t.dropped) {
+    return section('Acceptance', h('p', { class: 'muted small' }, 'No feedback yet. After you submit a published review on GitHub, use “Read back from GitHub” on the review page.'));
+  }
+  const rows = [];
+  for (const [group, buckets] of Object.entries(s.groups)) {
+    for (const [k, c] of Object.entries(buckets).sort()) rows.push([group, k, c.kept, c.edited, c.dropped, c.rate == null ? '–' : `${c.rate}%`]);
+  }
+  return section('Acceptance',
+    h('div', { class: 'stats' }, stat(t.rate == null ? '–' : `${t.rate}%`, 'kept or edited'), stat(t.kept, 'kept'), stat(t.edited, 'edited'), stat(t.dropped, 'dropped'), stat(s.runs.length, 'reviews read back')),
+    table(['By', 'Group', 'Kept', 'Edited', 'Dropped', 'Acceptance'], rows));
 }
 
 function stat(n, label) {
@@ -282,7 +301,21 @@ function prSummary(d) {
 
 function prActions(d) {
   const { repo, pr } = d.identity;
+  const local = d.identity.local || null;
   const gate = d.gate || { decision: 'NOT_RECORDED' };
+  const rerun = () => startJob(local
+    ? api('POST', '/api/reviews/local', { dir: local.dir, base: local.base, mode: local.mode })
+    : api('POST', '/api/reviews', { repo, pr, refresh: true }), 'Review');
+  const readBack = async () => {
+    try {
+      const r = await api('POST', `/api/prs/${encodeURIComponent(d.id)}/feedback`, {});
+      const c = r.record.counts;
+      toast(r.record.state === 'PENDING' ? 'Still pending on GitHub' : `kept ${c.kept} · edited ${c.edited} · dropped ${c.dropped}`);
+      render();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
   const note = h('input', { type: 'text', placeholder: 'note (optional)', class: 'minw' });
   const decide = (decision) => async () => {
     if (!confirm(`${decision === 'approved' ? 'Approve' : 'Reject'} this review as yourself? It binds to context ${d.validation.context_id}.`)) return;
@@ -304,12 +337,18 @@ function prActions(d) {
       h('button', { class: 'btn', onclick: decide('approved') }, 'Approve'),
       h('button', { class: 'btn danger', onclick: decide('rejected') }, 'Reject'),
       h('span', { class: 'spacer' }),
-      h('a', { class: 'btn', href: `#/publish/${d.id}` }, 'Publish…'),
+      h('a', { class: 'btn', href: `#/publish/${d.id}` }, local ? 'Preview draft…' : 'Publish…'),
       h('button', { class: 'btn', onclick: () => startJob(api('POST', `/api/prs/${encodeURIComponent(d.id)}/validate`, {}), 'Validate') }, 'Re-validate'),
-      h('button', { class: 'btn', onclick: () => startJob(api('POST', '/api/reviews', { repo, pr, refresh: true }), 'Review') }, 'Re-run (refresh)')) : null,
+      h('button', { class: 'btn', onclick: rerun }, local ? 'Re-run (new snapshot)' : 'Re-run (refresh)')) : null,
+    local ? h('div', { class: 'small muted mt8' }, `Local review of ${local.dir} (${local.mode}, base ${local.base}). There is no pull request yet, so it cannot be published.`) : null,
     d.published ? h('div', { class: 'small muted mt8' },
-      `Published ${fmtTime(d.published.at)}: ${d.published.inline.length} inline + ${d.published.summary_only.length} summary`,
-      d.published.html_url ? [' · ', h('a', { href: d.published.html_url, target: '_blank', rel: 'noopener noreferrer' }, 'open pending review on GitHub')] : '') : null,
+      `Published ${fmtTime(d.published.at)}: ${d.published.inline.length} inline + ${d.published.summary_only.length} summary${(d.published.omitted || []).length ? `, ${d.published.omitted.length} left out (rejected before)` : ''}`,
+      d.published.html_url ? [' · ', h('a', { href: d.published.html_url, target: '_blank', rel: 'noopener noreferrer' }, 'open review on GitHub')] : '',
+      !d.published.dry_run ? [' · ', h('button', { type: 'button', class: 'linkbtn', onclick: readBack, title: 'after you submitted the review: which comments you kept, edited or deleted' }, 'Read back from GitHub')] : '') : null,
+    d.feedback ? h('div', { class: 'small mt8' },
+      h('span', { class: 'label' }, 'Feedback '),
+      d.feedback.state === 'PENDING' ? 'the review is still pending on GitHub — submit it, then read back again' : `kept ${d.feedback.counts.kept} · edited ${d.feedback.counts.edited} · dropped ${d.feedback.counts.dropped}`,
+      h('span', { class: 'muted' }, ` (${d.feedback.state}, read ${fmtTime(d.feedback.at)})`)) : null,
   );
 }
 
@@ -340,6 +379,7 @@ function findingCard(d, meta, dupes) {
       h('span', { class: `badge ${meta.state === 'stands' ? 'bad' : meta.state === 'withdrawn' ? 'ok' : 'warn'}` }, STATE_TEXT[meta.state] || meta.state),
       h('span', { class: 'badge' }, `votes ${meta.votes}`),
       h('span', { class: 'badge', title: 'SUSPECTED = static evidence validated; CONFIRMED needs an executed reproduction' }, `${meta.label} ${meta.evidence_level}`),
+      meta.rejected ? h('span', { class: 'badge warn', title: meta.rejected.reason }, meta.rejected.same ? 'rejected' : 'rejected before') : null,
       h('span', { class: 'muted small mono' }, meta.id)));
   if (!f) return card;
   const body = h('div', { class: 'body' },
@@ -361,9 +401,43 @@ function findingCard(d, meta, dupes) {
     h('div', { class: 'label' }, 'Evidence'),
     h('ul', {}, f.evidence.map((ev) => evidenceItem(d, ev))),
     dupes.length ? h('p', { class: 'small muted' }, `Same defect also reported by: ${dupes.map((x) => x.id).join(', ')}`) : null,
+    rejectPanel(d, meta),
   );
   add(card, body);
   return card;
+}
+
+// Rejecting a finding remembers it for this repository: look-alikes in later
+// reviews are marked, and minor ones are left out of the published draft.
+function rejectPanel(d, meta) {
+  const r = meta.rejected;
+  const forget = async () => {
+    try {
+      await api('POST', `/api/memory/${encodeURIComponent(r.entry_id)}/forget`, {});
+      toast('Forgotten');
+      render();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  const note = r ? h('div', { class: 'notice' },
+    r.same ? 'You rejected this finding' : `Looks like a finding rejected earlier (similarity ${r.score})`,
+    `: ${r.reason} — ${r.source || ''} ${fmtTime(r.at)}. `,
+    meta.publish_action === 'omit' ? 'It is left out of the published draft. ' : 'It is still published because of its severity. ',
+    h('button', { type: 'button', class: 'linkbtn', onclick: forget }, r.same ? 'Undo' : 'Forget that rejection')) : null;
+  if (r && r.same) return note;
+  const reason = h('input', { type: 'text', class: 'minw', placeholder: 'why it is wrong or not worth raising', maxlength: '500' });
+  const reject = async () => {
+    if (!reason.value.trim()) return toast('Give a reason: it is shown when a similar finding comes back');
+    try {
+      await api('POST', `/api/prs/${encodeURIComponent(d.id)}/findings/${encodeURIComponent(meta.id)}/reject`, { reason: reason.value.trim() });
+      toast('Rejected and remembered');
+      render();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  return [note, h('div', { class: 'row mt8' }, reason, h('button', { type: 'button', class: 'btn danger', onclick: reject }, 'Reject finding'))];
 }
 
 function diffView(asis, tobe) {
@@ -451,6 +525,8 @@ async function openPublish(d) {
       const r = await api('GET', `/api/prs/${encodeURIComponent(d.id)}/publish-preview?min=${min.value}`);
       put(preview, 
         h('p', {}, `${r.comments.length} inline comment(s), ${r.summary_only.length} in the summary. It is created as a PENDING review: only you see it until you submit it on GitHub.`),
+        r.omitted && r.omitted.length ? h('div', { class: 'notice' }, h('strong', {}, `Left out (${r.omitted.length}) — rejected before: `),
+          r.omitted.map((o) => h('div', { class: 'small' }, h('span', { class: 'mono' }, o.finding_id), ` [${o.severity}] ${o.title} — ${o.rejected.reason}`))) : null,
         h('h3', {}, 'Review body'), h('pre', { class: 'log' }, r.body),
         ...r.comments.map((c) => [h('h3', { class: 'mono' }, `${c.path}:${c.line}`), h('pre', { class: 'log' }, c.body)]),
       );
@@ -463,7 +539,9 @@ async function openPublish(d) {
     h('a', { href: `#/pr/${d.id}` }, '← back'),
     h('h1', {}, `Publish ${d.identity.repo}#${d.identity.pr}`),
     h('div', { class: 'row' }, min,
-      h('button', { class: 'btn primary', onclick: () => { if (confirm('Create a pending review on GitHub as you?')) startJob(api('POST', `/api/prs/${encodeURIComponent(d.id)}/publish`, { minSeverity: min.value }), 'Publish'); } }, 'Create pending review')),
+      d.identity.local
+        ? h('span', { class: 'muted small' }, 'Local review: preview only. Open a PR and review it to publish.')
+        : h('button', { class: 'btn primary', onclick: () => { if (confirm('Create a pending review on GitHub as you?')) startJob(api('POST', `/api/prs/${encodeURIComponent(d.id)}/publish`, { minSeverity: min.value }), 'Publish'); } }, 'Create pending review')),
     preview,
   );
   load();
@@ -1140,6 +1218,29 @@ async function diskPanel() {
     h('p', { class: 'small muted' }, 'Removing a review worktree makes that run read-only: reports stay, re-validation and the source view need it.'));
 }
 
+async function memoryPanel() {
+  const entries = await api('GET', '/api/memory').catch(() => []);
+  const forget = (id) => async () => {
+    try {
+      await api('POST', `/api/memory/${encodeURIComponent(id)}/forget`, {});
+      toast(`Forgot ${id}`);
+      render();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  return h('section', { class: 'panel' },
+    h('h2', {}, `Rejected findings (${entries.length})`),
+    h('p', { class: 'small muted' }, 'Findings a person rejected. Similar findings in the same repository are marked; P3/P4 look-alikes are left out of published drafts, P1/P2 are still published with a note. Validation itself never reads this list.'),
+    entries.length
+      ? table(['Id', 'Repository', 'Finding', 'Reason', 'By', ''], entries.map((e) => [
+        h('span', { class: 'mono small' }, e.id), e.scope,
+        h('div', {}, h('span', { class: `badge ${e.severity}` }, e.severity), ` ${e.title}`, e.path ? h('div', { class: 'mono small muted' }, e.path) : null),
+        e.reason, h('span', { class: 'small muted' }, `${e.source} ${fmtTime(e.at)}`),
+        h('button', { type: 'button', class: 'btn', onclick: forget(e.id) }, 'Forget')]))
+      : h('p', { class: 'muted small' }, 'Nothing rejected yet.'));
+}
+
 async function renderSettings() {
   const s = await api('GET', '/api/settings');
   const by = (g) => s.env.filter((e) => e.group === g);
@@ -1167,6 +1268,7 @@ async function renderSettings() {
       mcpEditor(s.mcp, mcpSecret)),
     settingsSection('Jira / Confluence REST', jira, s.models),
     h('section', { class: 'panel' }, h('h2', {}, 'Repositories'), reposEditor(s.repos)),
+    await memoryPanel(),
     await diskPanel(),
     h('section', { class: 'panel' },
       h('h2', {}, 'Diagnostics'),
