@@ -58,6 +58,18 @@ node src/cli/arw.js publish --repo your-org/payment-api --pr 123 --dry-run
 node src/cli/arw.js publish --repo your-org/payment-api --pr 123
 ```
 
+### Dashboard (personal, local)
+
+```bash
+npm start            # = node src/cli/arw.js ui  → http://127.0.0.1:8787/
+```
+
+The dashboard lists runs, starts reviews and ticket runs as queued jobs (one at a time) that run the same `arw`
+commands and stream their logs. It shows findings with diffs, rebuttals and the cited source lines at the frozen
+commit, lets you edit requirement items, record gate decisions, and preview or create the pending GitHub review.
+It binds to 127.0.0.1 only, rejects unexpected `Host`/`Origin` headers, requires a per-start token for every
+write, and sends a strict CSP. There is no login, so do not expose it beyond your machine.
+
 Useful flags: `--workers N`, `--single-role` (business units get only the business pass),
 `--skip-seams`, `--skip-rebuttals`, `--skip-synthesis` (opt-outs are recorded in `validation.json`),
 `--refresh` (re-plan and re-freeze). `arw validate` re-checks everything on disk with no model calls.
@@ -98,4 +110,4 @@ Java + Python fixture repo, with a scripted executor standing in for codex.
 - Repro tests (RED/GREEN on the reviewed head) to promote findings to `CONFIRMED`.
 - Acceptance tracking: reading back which published findings were kept (`<!-- arw:finding=... -->` markers are already in each comment).
 - An eval harness that replays frozen contexts against labelled findings.
-- A web dashboard.
+- Multi-user access (the dashboard is single-user, loopback only).

@@ -1,0 +1,239 @@
+'use strict';
+// Personal dashboard. Loopback only; every request must carry the expected
+// Host (DNS-rebinding guard) and every write a per-start token that only the
+// served page knows. Model work is delegated to the `arw` CLI via JobQueue.
+const http = require('node:http');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { execFileSync } = require('node:child_process');
+const { ROOT, writeFileAtomic, writeJsonAtomic, readJsonIfExists, ensureDir } = require('../lib/util');
+const { recordGate } = require('../lib/runs');
+const { validateAgainst } = require('../lib/schema');
+const { buildReview } = require('../lib/publish');
+const { executorConfig } = require('../lib/codex');
+const { reposConfig } = require('../lib/github');
+const data = require('./data');
+const { JobQueue } = require('./jobs');
+
+const PUBLIC = path.join(__dirname, 'public');
+const MAX_BODY = 1024 * 1024;
+const STATIC = { '/app.js': 'application/javascript', '/style.css': 'text/css' };
+const SECURITY_HEADERS = {
+  'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+  'Cache-Control': 'no-store',
+};
+
+function send(res, status, body, type = 'application/json; charset=utf-8') {
+  const payload = type.startsWith('application/json') ? JSON.stringify(body) : body;
+  res.writeHead(status, { 'Content-Type': type, ...SECURITY_HEADERS });
+  res.end(payload);
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > MAX_BODY) {
+        reject(data.httpError(413, 'body too large'));
+        req.destroy();
+      } else chunks.push(c);
+    });
+    req.on('end', () => {
+      if (!chunks.length) return resolve({});
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      } catch {
+        reject(data.httpError(400, 'body is not JSON'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function knownRepo(repo) {
+  if (!Object.prototype.hasOwnProperty.call(reposConfig().repos, repo)) throw data.httpError(400, `${repo} is not in config/repos.json`);
+  return repo;
+}
+
+function prNumber(v) {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n <= 0) throw data.httpError(400, 'bad PR number');
+  return n;
+}
+
+function createServer({ port, token = crypto.randomBytes(24).toString('hex'), queue = new JobQueue() } = {}) {
+  const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+  const who = `${os.userInfo().username} (dashboard)`;
+
+  const routes = [
+    ['GET', /^\/api\/config$/, () => {
+      const cfg = executorConfig();
+      return {
+        repos: Object.keys(reposConfig().repos),
+        model: cfg.model,
+        judge_model: cfg.judgeModel,
+        effort: cfg.effort,
+        language: process.env.ARW_OUTPUT_LANGUAGE || 'English',
+        jira: Boolean(process.env.JIRA_URL),
+        workers: Number(process.env.ARW_WORKERS) || 4,
+      };
+    }],
+    ['GET', /^\/api\/runs$/, () => data.listRuns()],
+    ['GET', /^\/api\/jobs$/, () => queue.list()],
+    ['GET', /^\/api\/jobs\/([\w-]+)\/log$/, (m, q) => queue.readLog(m[1], q.get('from'))],
+    ['POST', /^\/api\/jobs\/([\w-]+)\/cancel$/, (m) => queue.cancel(m[1]) || Promise.reject(data.httpError(404, 'no such job'))],
+
+    ['GET', /^\/api\/github\/prs$/, (m, q) => {
+      const repo = knownRepo(q.get('repo') || '');
+      const out = execFileSync('gh', ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '40', '--json', 'number,title,author,headRefName,updatedAt,isDraft'], { encoding: 'utf8', windowsHide: true });
+      return JSON.parse(out);
+    }],
+
+    ['POST', /^\/api\/reviews$/, async (m, q, body) => {
+      const repo = knownRepo(String(body.repo || ''));
+      const pr = prNumber(body.pr);
+      const args = ['review', '--repo', repo, '--pr', String(pr)];
+      if (body.ticket) args.push('--ticket', checkKey(body.ticket));
+      if (body.workers) args.push('--workers', String(Math.max(1, Math.min(8, Number(body.workers) || 4))));
+      for (const flag of ['singleRole', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'refresh']) {
+        if (body[flag]) args.push(`--${flag.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`);
+      }
+      return queue.enqueue({ kind: 'review', title: `${repo}#${pr}`, args, target: { type: 'pr', id: `${repo.replace('/', '__')}__${pr}` } });
+    }],
+    ['GET', /^\/api\/prs\/([^/]+)$/, (m) => data.prDetail(m[1])],
+    ['GET', /^\/api\/prs\/([^/]+)\/source$/, (m, q) =>
+      data.sourceSnippet(m[1], q.get('path') || '', { revision: q.get('revision') === 'base' ? 'base' : 'reviewed', start: Number(q.get('start')) || 1, end: Number(q.get('end')) || Number(q.get('start')) || 1 })],
+    ['POST', /^\/api\/prs\/([^/]+)\/gate$/, (m, q, body) => {
+      const { dir } = data.prDirFromId(m[1]);
+      return recordGate(dir, 'REVIEW', decisionOf(body), { by: who, note: String(body.note || '') });
+    }],
+    ['POST', /^\/api\/prs\/([^/]+)\/validate$/, (m) => {
+      const { repo, pr } = data.prDirFromId(m[1]);
+      return queue.enqueue({ kind: 'validate', title: `${repo}#${pr}`, args: ['validate', '--repo', repo, '--pr', String(pr)], target: { type: 'pr', id: m[1] } });
+    }],
+    ['GET', /^\/api\/prs\/([^/]+)\/publish-preview$/, (m, q) => {
+      const { dir } = data.prDirFromId(m[1]);
+      const review = buildReview(dir, { minSeverity: severity(q.get('min')) });
+      return { body: review.body, comments: review.comments, summary_only: review.summaryOnly };
+    }],
+    ['POST', /^\/api\/prs\/([^/]+)\/publish$/, (m, q, body) => {
+      const { repo, pr } = data.prDirFromId(m[1]);
+      return queue.enqueue({ kind: 'publish', title: `${repo}#${pr}`, args: ['publish', '--repo', repo, '--pr', String(pr), '--min-severity', severity(body.minSeverity)], target: { type: 'pr', id: m[1] } });
+    }],
+
+    ['GET', /^\/api\/tickets\/([^/]+)$/, (m) => data.ticketDetail(m[1])],
+    ['POST', /^\/api\/tickets$/, (m, q, body) => {
+      const key = checkKey(String(body.key || ''));
+      const args = ['ticket', key];
+      if (body.text && String(body.text).trim()) {
+        const file = path.join(ensureDir(data.ticketDirFromKey(key)), 'input-ticket.md');
+        writeFileAtomic(file, String(body.text));
+        args.push('--from-file', file);
+      }
+      if (body.repo) args.push('--repo', knownRepo(String(body.repo)));
+      return queue.enqueue({ kind: 'ticket', title: key, args, target: { type: 'ticket', key } });
+    }],
+    ['POST', /^\/api\/tickets\/([^/]+)\/advance$/, (m, q, body) => {
+      const key = checkKey(m[1]);
+      const args = ['ticket', key];
+      if (body.repo) args.push('--repo', knownRepo(String(body.repo)));
+      if (body.redo) args.push('--redo', ['intake', 'requirements', 'analysis'].includes(body.redo) ? body.redo : 'analysis');
+      return queue.enqueue({ kind: 'ticket', title: key, args, target: { type: 'ticket', key } });
+    }],
+    ['POST', /^\/api\/tickets\/([^/]+)\/gate$/, (m, q, body) => {
+      const dir = data.ticketDirFromKey(m[1]);
+      const gate = String(body.gate || '');
+      if (!['REQUIREMENTS', 'ANALYSIS'].includes(gate)) throw data.httpError(400, 'gate must be REQUIREMENTS or ANALYSIS');
+      return recordGate(dir, gate, decisionOf(body), { by: who, note: String(body.note || '') });
+    }],
+    // A person corrects the extracted items before approving; the gate then
+    // binds the corrected bytes.
+    ['PUT', /^\/api\/tickets\/([^/]+)\/requirements$/, (m, q, body) => {
+      const dir = data.ticketDirFromKey(m[1]);
+      const file = path.join(dir, 'requirements.json');
+      const current = readJsonIfExists(file);
+      if (!current) throw data.httpError(404, 'no requirements yet');
+      const next = { ...current, items: body.items, note: [current.note, `edited by ${who}`].filter(Boolean).join('\n') };
+      const errors = validateAgainst('requirements', next);
+      const ids = (body.items || []).map((i) => i && i.id);
+      if (new Set(ids).size !== ids.length) errors.push('item ids must be unique');
+      if (errors.length) throw data.httpError(422, errors.slice(0, 10).join('; '));
+      writeJsonAtomic(file, next);
+      return { ok: true, items: next.items.length };
+    }],
+  ];
+
+  function checkKey(key) {
+    if (!data.TICKET_KEY.test(key)) throw data.httpError(400, 'ticket key must look like ABC-123');
+    return key;
+  }
+
+  function decisionOf(body) {
+    if (body.decision === 'approved' || body.decision === 'rejected') return body.decision;
+    throw data.httpError(400, 'decision must be approved or rejected');
+  }
+
+  function severity(v) {
+    return ['P1', 'P2', 'P3', 'P4'].includes(v) ? v : 'P3';
+  }
+
+  return http.createServer(async (req, res) => {
+    try {
+      if (!allowedHosts.has(req.headers.host || '')) return send(res, 421, { error: 'unexpected Host header' });
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
+        const html = fs.readFileSync(path.join(PUBLIC, 'index.html'), 'utf8').replace('__ARW_TOKEN__', token);
+        return send(res, 200, html, 'text/html; charset=utf-8');
+      }
+      if (req.method === 'GET' && STATIC[url.pathname]) {
+        return send(res, 200, fs.readFileSync(path.join(PUBLIC, url.pathname.slice(1)), 'utf8'), `${STATIC[url.pathname]}; charset=utf-8`);
+      }
+      if (req.method !== 'GET') {
+        const origin = req.headers.origin;
+        if (origin && !allowedHosts.has(origin.replace(/^https?:\/\//, ''))) return send(res, 403, { error: 'cross-origin write rejected' });
+        const given = String(req.headers['x-arw-token'] || '');
+        if (given.length !== token.length || !crypto.timingSafeEqual(Buffer.from(given), Buffer.from(token))) return send(res, 403, { error: 'missing or wrong token' });
+      }
+      for (const [method, re, handler] of routes) {
+        const m = url.pathname.match(re);
+        if (!m || method !== req.method) continue;
+        const body = method === 'GET' ? {} : await readBody(req);
+        const result = await handler(m, url.searchParams, body);
+        return send(res, 200, result);
+      }
+      return send(res, 404, { error: 'not found' });
+    } catch (err) {
+      const status = err.status || 500;
+      return send(res, status, { error: status === 500 ? `internal error: ${err.message}` : err.message });
+    }
+  });
+}
+
+function startDashboard({ port = 8787, open = true } = {}) {
+  const server = createServer({ port });
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => {
+      const url = `http://127.0.0.1:${port}/`;
+      process.stderr.write(`dashboard: ${url} (loopback only; Ctrl+C to stop)\n`);
+      if (open) {
+        try {
+          if (process.platform === 'win32') execFileSync('cmd', ['/c', 'start', '', url], { stdio: 'ignore' });
+          else if (process.platform === 'darwin') execFileSync('open', [url], { stdio: 'ignore' });
+          else execFileSync('xdg-open', [url], { stdio: 'ignore' });
+        } catch {
+          /* no browser available; the URL is printed */
+        }
+      }
+      resolve(server);
+    });
+  });
+}
+
+module.exports = { createServer, startDashboard, ROOT };

@@ -29,6 +29,7 @@ Human gates (the runtime never approves):
   arw gate approve|reject|status (--ticket KEY | --repo owner/name --pr <n>) --gate ${Object.keys(GATES).join('|')} [--note "..."]
 
 Other:
+  arw ui [--port 8787] [--no-open]   local dashboard (loopback only)
   arw status        list runs
   arw doctor        check git, gh, codex, config`;
 
@@ -184,6 +185,13 @@ async function cmdDoctor() {
   return checks.some((c) => c[1] === 'FAIL') ? 1 : 0;
 }
 
+async function cmdUi(argv) {
+  const args = parseArgs(argv, ['noOpen']);
+  const { startDashboard } = require('../web/server');
+  await startDashboard({ port: Number(args.port) || 8787, open: !args.noOpen });
+  return new Promise(() => {}); // serve until interrupted
+}
+
 async function main(argv) {
   const [cmd, ...rest] = argv;
   switch (cmd) {
@@ -201,6 +209,8 @@ async function main(argv) {
       return cmdStatus();
     case 'doctor':
       return cmdDoctor();
+    case 'ui':
+      return cmdUi(rest);
     default:
       console.log(USAGE);
       return cmd ? 1 : 0;

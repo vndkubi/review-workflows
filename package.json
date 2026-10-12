@@ -11,7 +11,8 @@
   "scripts": {
     "test": "node --test \"test/*.test.js\"",
     "arw": "node src/cli/arw.js",
-    "doctor": "node src/cli/arw.js doctor"
+    "doctor": "node src/cli/arw.js doctor",
+    "start": "node src/cli/arw.js ui"
   },
   "engines": {
     "node": ">=20"

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="arw-token" content="__ARW_TOKEN__">
+  <title>arw dashboard</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">arw</a>
+    <span class="chips" id="config"></span>
+    <span class="spacer"></span>
+    <a class="btn" href="#/new-ticket">New ticket</a>
+    <a class="btn primary" href="#/new-review">New review</a>
+    <a class="jobs-indicator" id="jobs-indicator" href="#/jobs">Jobs</a>
+  </header>
+  <div class="layout">
+    <nav class="sidebar" id="sidebar" aria-label="Runs"></nav>
+    <main class="main" id="main" tabindex="-1"></main>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
