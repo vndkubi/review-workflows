@@ -296,6 +296,9 @@ function prSummary(d) {
     v.warnings && v.warnings.length ? h('div', { class: 'notice bad' }, h('strong', {}, `Instruction-like text aimed at AI reviewers (${v.warnings.length}): `), v.warnings.map((w) => h('div', { class: 'small' }, h('code', {}, w.where), ` ${w.text}`))) : null,
     v.gaps.length ? h('div', { class: 'notice' }, h('strong', {}, 'Not verified: '), v.gaps.join(' · ')) : null,
     v.opt_outs && v.opt_outs.length ? h('div', { class: 'notice' }, `Opt-outs recorded: ${v.opt_outs.join(', ')}`) : null,
+    v.carried_over ? h('p', { class: 'small muted' }, v.carried_over.skipped
+      ? `Full re-review after the push: ${v.carried_over.skipped}.`
+      : `Incremental: ${v.carried_over.packets.length} packet(s) (${v.carried_over.packets.join(', ')}) and ${v.carried_over.rebuttals} rebuttal(s) carried over from context ${v.carried_over.from_context_id}; their files did not change and they were re-validated here.`) : null,
   );
 }
 

@@ -91,7 +91,11 @@ function freezeContext({ runDir, checkout, base, head, changed, reviewable, patc
   const dir = revisionDir(runDir, contextId);
   for (const input of allInputs) writeFileAtomic(path.join(dir, 'inputs', `${input.id}.txt`), input.content);
   writeFileAtomic(path.join(dir, 'review.patch'), patch);
-  const context = { ...body, context_id: contextId, context_digest: digest, frozen_at: nowIso() };
+  // The units this context was planned with (hash-checked against
+  // plan_sha256 by whoever reads it), so a later push can tell which units
+  // are unchanged.
+  writeJsonAtomic(path.join(dir, 'units.json'), review);
+  const context ={ ...body, context_id: contextId, context_digest: digest, frozen_at: nowIso() };
   writeJsonAtomic(path.join(dir, 'context.json'), context);
   writeJsonAtomic(path.join(reviewDir(runDir), 'context.json'), { context_id: contextId, context_digest: digest });
   return context;

@@ -431,6 +431,15 @@ function sumUsage(receipts) {
   return usage;
 }
 
+// Packets reused from the previous push that are still valid here (the
+// validator, not carried.json, decides whether they count).
+function carriedOver(dir, state) {
+  const carried = readJsonIfExists(path.join(dir, 'carried.json'));
+  if (!carried) return null;
+  const valid = new Set(state.packets.map((p) => `${p.unit_id}/${p.role}`));
+  return { from_context_id: carried.from_context_id, packets: carried.packets.filter((k) => valid.has(k)), rebuttals: carried.rebuttals.length, skipped: carried.skipped };
+}
+
 // Model-free: re-validate all artifacts, compute the outcome, write
 // validation.json and update unit statuses in run.json.
 function finish(runDir, optOuts = {}) {
@@ -470,6 +479,7 @@ function finish(runDir, optOuts = {}) {
     findings: outcome.findings,
     synthesis: synth,
     opt_outs: Object.entries(optOuts).filter(([, v]) => v).map(([k]) => k),
+    carried_over: carriedOver(dir, state),
     usage,
     human_gate: {
       gate: 'REVIEW',

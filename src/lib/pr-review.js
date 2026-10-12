@@ -17,6 +17,7 @@ const { runLooseJob } = require('./loose-job');
 const { redactSecrets, scanInjection, addedLines, textLines } = require('./guard');
 const { runBatch, finish, runModelJob } = require('./driver');
 const { runRepro } = require('./repro');
+const { carryOver } = require('./carry-over');
 const { makeSources } = require('./validate');
 const { writeReport } = require('./report');
 const { extractTicketKey } = require('./jira');
@@ -77,7 +78,7 @@ function ticketInputs(run, { ticket, info }) {
   return { key, ...t };
 }
 
-async function planPhase({ runDir, run, info, executor, models, log, singleRole, tickets }) {
+async function planPhase({ runDir, run, info, executor, models, log, singleRole, tickets, incremental = false }) {
   const { checkout, head_sha: head, base_sha: base } = run.identity;
   const changed = git.changedFiles(checkout, base, head);
   const patch = git.diffPatch(checkout, base, head);
@@ -101,9 +102,17 @@ async function planPhase({ runDir, run, info, executor, models, log, singleRole,
   const planFile = path.join(runDir, 'plan.json');
   let built;
   const cached = readJsonIfExists(planFile);
-  if (cached && cached.head_sha === head && cached.items_sha === JSON.stringify(items)) {
+  // After a new push the previous plan is kept when it still covers exactly
+  // the reviewable files and items: stable unit ids let unchanged units
+  // carry their packets over.
+  if (cached && (cached.head_sha === head || incremental) && cached.items_sha === JSON.stringify(items)) {
     built = buildUnits(cached.plan, reviewable, items, { singleRole });
-    if (built.errors.length) built = null;
+    const sameFiles = JSON.stringify([...(cached.reviewable || [])].sort()) === JSON.stringify([...reviewable].sort());
+    if (built.errors.length || (cached.head_sha !== head && !sameFiles)) built = null;
+    else if (cached.head_sha !== head) {
+      log(`keeping the plan from ${cached.head_sha.slice(0, 12)}: same reviewable files`);
+      writeJsonAtomic(planFile, { ...cached, head_sha: head });
+    }
   }
   let plan = built ? cached.plan : null;
   if (!built) {
@@ -137,7 +146,7 @@ async function planPhase({ runDir, run, info, executor, models, log, singleRole,
     if (!res.ok) throw new Error(`planning failed: ${res.errors.join('; ')}`);
     plan = res.value;
     built = buildUnits(plan, reviewable, items, { singleRole });
-    writeJsonAtomic(planFile, { head_sha: head, items_sha: JSON.stringify(items), plan });
+    writeJsonAtomic(planFile, { head_sha: head, items_sha: JSON.stringify(items), reviewable, plan });
   }
   run.review = { plan_path: 'pr-review-plan.md', required_coverage: built.required_coverage, units: built.units, single_role: Boolean(singleRole) };
   const planMd = renderPlanMarkdown({ identity: run.identity, plan, units: built.units, items, reviewable, skipped: pack.skipped.map((f) => f.path) });
@@ -182,12 +191,14 @@ async function reviewPr({ repo, pr, ticket, executor, preflight, models = {}, wo
 
   // Reuse the frozen context when it still holds.
   let context = null;
+  let previous = null; // the stale context, for an incremental review
   if (!refresh) {
     try {
       context = loadContext(runDir);
       const drift = verifyContext(runDir, context);
       if (drift.length || context.source.head_sha !== run.identity.head_sha) {
         log(`frozen context ${context.context_id} is stale: ${drift.join('; ') || 'PR head moved'}`);
+        previous = context;
         context = null;
       } else {
         log(`reusing frozen context ${context.context_id}`);
@@ -201,9 +212,13 @@ async function reviewPr({ repo, pr, ticket, executor, preflight, models = {}, wo
       const pf = await preflight();
       if (!pf.ok) throw new Error(`executor preflight failed (${pf.error_class}): ${pf.error_message}`);
     }
-    const planned = await planPhase({ runDir, run, info, executor, models, log, singleRole, tickets });
+    const planned = await planPhase({ runDir, run, info, executor, models, log, singleRole, tickets, incremental: Boolean(previous) });
     context = freezePhase({ runDir, run, info, tickets, planned });
     log(`froze context ${context.context_id} (${run.review.units.length} units)`);
+    if (previous) {
+      const carried = carryOver({ runDir, from: previous, to: context, units: run.review.units, grading: { requirements: planned.requirements, items: planned.items || [] }, log });
+      phase(run, runDir, 'carry_over', carried.skipped ? 'SKIPPED' : 'EXECUTED_PASS', { from: previous.context_id, packets: carried.packets.length, rebuttals: carried.rebuttals.length, reason: carried.skipped });
+    }
   } else if (preflight) {
     const pf = await preflight();
     if (!pf.ok) throw new Error(`executor preflight failed (${pf.error_class}): ${pf.error_message}`);

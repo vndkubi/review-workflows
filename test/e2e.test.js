@@ -513,6 +513,26 @@ test('ticket pipeline -> PR review, end to end', async (t) => {
     assert.equal(gateState(runDir, 'REVIEW').valid, true);
   });
 
+  await t.test('incremental: after a push, only units whose files changed are reviewed again', async () => {
+    const before = loadContext(runDir);
+    write(repo.dir, FEES, `${sh(repo.dir, ['show', `HEAD:${FEES}`])}\n# rounding is handled by the invoice service\n`);
+    sh(repo.dir, ['commit', '-qam', 'ACME-7 note on rounding']);
+    const head2 = sh(repo.dir, ['rev-parse', 'HEAD']);
+    const rexec = scriptedExecutor(reviewHandler);
+    const { validation, report } = await reviewPr({ repo: 'acme/shop', pr: 7, executor: rexec, prepared: { ...prepared, head: head2 }, reproRunner: fakeRunner(runnerCalls), testCommand: 'fake-test {selector} {junit}' });
+    assert.notEqual(validation.context_id, before.context_id);
+    assert.equal(validation.status, 'EXECUTED_PASS', JSON.stringify(validation.jobs.filter((j) => j.errors.length), null, 1));
+    assert.equal(validation.recommendation, 'changes_requested');
+    assert.ok(!rexec.calls.some((c) => c.prompt.startsWith('You are a read-only planner')), 'the plan is kept: same files');
+    const rerun = rexec.calls.filter((c) => c.prompt.includes('JOB: first-pass packet')).map((c) => JSON.parse(c.prompt.match(/^UNIT: (.*)$/m)[1]).id);
+    assert.deepEqual([...new Set(rerun)].sort(), ['B2', 'V0', 'V1'], 'only units that touch fees.py');
+    assert.deepEqual(validation.carried_over.packets.sort(), ['B1/business', 'B1/technical', 'S1/technical', 'T1/technical']);
+    assert.equal(validation.carried_over.rebuttals, 1);
+    assert.equal(rexec.calls.filter((c) => c.prompt.includes('JOB: red-team rebuttal')).length, 0, 'the rebuttal of an unchanged finding is reused');
+    assert.equal(validation.findings.find((f) => f.id === 'B1-business-F1').state, 'stands');
+    assert.match(fs.readFileSync(report, 'utf8'), /incremental: 4 packet\(s\) and 1 rebuttal\(s\) carried over unchanged/);
+  });
+
   await t.test('tampering with a frozen input invalidates the run', () => {
     const ctx = loadContext(runDir);
     const snap = path.join(revisionDir(runDir, ctx.context_id), 'inputs', 'review-items.txt');

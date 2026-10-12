@@ -145,6 +145,13 @@ only shows whether they are set, and MCP headers must reference them as `${NAME}
 It binds to 127.0.0.1 only, rejects unexpected `Host`/`Origin` headers, requires a per-start token for every
 write, and sends a strict CSP. There is no login, so do not expose it beyond your machine.
 
+**New pushes are reviewed incrementally.** When the PR head moves, the previous plan is kept if the PR still
+changes the same files, and a packet from the previous context is carried over when the tool, review items,
+spec and policies are byte-identical, the unit is the same, none of its files changed on either side of the
+diff, and no file it cites changed. Carried packets (and the rebuttals of their unchanged findings) are
+validated against the new frozen sources like any model output; whatever fails runs again. Synthesis and
+reproductions always run again. `--refresh` forces a full re-plan and re-review.
+
 Useful flags: `--workers N`, `--single-role` (business units get only the business pass),
 `--skip-seams`, `--skip-rebuttals`, `--skip-synthesis` (opt-outs are recorded in `validation.json`),
 `--refresh` (re-plan and re-freeze). `arw validate` re-checks everything on disk with no model calls.
