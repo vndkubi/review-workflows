@@ -143,6 +143,7 @@ function packetPrompt(runDir, context, job) {
         ? `ITEM VERDICTS (required): give exactly one item_verdicts entry for each review item ${itemIds.join(', ')} (see input "review-items" for text and expected result; scenarios with concrete values are in input "spec"). Walk the item's scenario values through the changed code.
 - "pass": code evidence that the code produces the expected result for those values.
 - "fail": it does not — record a finding that lists this item id in its items (one finding may cover several failed items).
+- To cite a review item, quote ONE line of input "review-items" (its "text" line), never a multi-line JSON block.
 - "not_applicable": the diff does not touch this item; say why.
 - "cannot_determine": missing context — an honest gap.
 - gap and contradiction items have no expected result: use "cannot_determine" and describe in note what the code actually does for those inputs, with code evidence.`
