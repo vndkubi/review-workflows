@@ -14,6 +14,39 @@ const { buildReview } = require('../lib/publish');
 const { executorConfig } = require('../lib/codex');
 const { reposConfig } = require('../lib/github');
 const data = require('./data');
+const insights = require('./insights');
+const { atlassianConfig } = require('../lib/ticket-mcp');
+const { RUNS } = require('../lib/runs');
+
+// Non-secret configuration, for the System page.
+function systemInfo() {
+  const cfg = executorConfig();
+  const mcp = atlassianConfig();
+  const flag = (k, d) => (process.env[k] === undefined || process.env[k] === '' ? d : process.env[k]);
+  return {
+    executor: {
+      model: cfg.model,
+      judge_model: cfg.judgeModel,
+      effort: cfg.effort || 'default',
+      output_schema: flag('CODEX_OUTPUT_SCHEMA', '1') !== '0',
+      user_config: flag('CODEX_USE_USER_CONFIG', '0') === '1',
+      windows_sandbox: process.platform === 'win32' ? flag('CODEX_WINDOWS_SANDBOX', 'unelevated') : 'n/a',
+      timeout_ms: Number(flag('CODEX_TIMEOUT_MS', 1800000)),
+    },
+    review: {
+      workers: Number(flag('ARW_WORKERS', 4)),
+      repair_attempts: Number(flag('ARW_REPAIR_ATTEMPTS', 2)),
+      language: flag('ARW_OUTPUT_LANGUAGE', 'English'),
+      auto_approve_spec: flag('ARW_AUTO_APPROVE_SPEC', '0') === '1',
+    },
+    repro: { timeout_ms: Number(flag('REPRO_TIMEOUT_MS', 900000)), maven_offline: flag('REPRO_MAVEN_OFFLINE', '0') === '1' },
+    ticket_source: mcp ? { kind: 'mcp', transport: mcp.server.url ? 'http' : 'stdio', target: mcp.server.url || mcp.server.command, tools: Object.fromEntries(Object.entries(mcp.tools).map(([k, v]) => [k, v ? v.name : null])) } : process.env.JIRA_URL ? { kind: 'rest', url: process.env.JIRA_URL, confluence: process.env.CONFLUENCE_URL || null } : { kind: 'file' },
+    repos: reposConfig().repos,
+    runs_dir: RUNS,
+    node: process.version,
+    platform: process.platform,
+  };
+}
 const { JobQueue } = require('./jobs');
 
 const PUBLIC = path.join(__dirname, 'public');
@@ -84,6 +117,15 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
       };
     }],
     ['GET', /^\/api\/runs$/, () => data.listRuns()],
+    ['GET', /^\/api\/system$/, () => systemInfo()],
+    ['POST', /^\/api\/doctor$/, () => queue.enqueue({ kind: 'doctor', title: 'system check', args: ['doctor'], target: { type: 'system' } })],
+    ['GET', /^\/api\/prs\/([^/]+)\/progress$/, (m) => insights.prProgress(m[1])],
+    ['GET', /^\/api\/prs\/([^/]+)\/calls$/, (m) => insights.prCalls(m[1])],
+    ['GET', /^\/api\/prs\/([^/]+)\/repro$/, (m) => insights.prRepro(m[1])],
+    ['GET', /^\/api\/prs\/([^/]+)\/file$/, (m, q) => insights.prFile(m[1], q.get('path'))],
+    ['GET', /^\/api\/tickets\/([^/]+)\/calls$/, (m) => insights.ticketCalls(m[1])],
+    ['GET', /^\/api\/tickets\/([^/]+)\/intake$/, (m) => insights.ticketIntake(m[1])],
+    ['GET', /^\/api\/tickets\/([^/]+)\/file$/, (m, q) => insights.ticketFile(m[1], q.get('path'))],
     ['GET', /^\/api\/jobs$/, () => queue.list()],
     ['GET', /^\/api\/jobs\/([\w-]+)\/log$/, (m, q) => queue.readLog(m[1], q.get('from'))],
     ['POST', /^\/api\/jobs\/([\w-]+)\/cancel$/, (m) => queue.cancel(m[1]) || Promise.reject(data.httpError(404, 'no such job'))],
@@ -169,6 +211,43 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
     return ['P1', 'P2', 'P3', 'P4'].includes(v) ? v : 'P3';
   }
 
+  // Server-Sent Events: the job's log as it is written, its status changes,
+  // and an "end" event once it finished and the whole log was sent.
+  function streamJob(req, res, id, from) {
+    if (!queue.get(id)) return send(res, 404, { error: 'no such job' });
+    res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', Connection: 'keep-alive' });
+    let offset = from;
+    let lastStatus = null;
+    let closed = false;
+    const emit = (event, payload) => res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+    const stop = () => {
+      closed = true;
+      clearInterval(timer);
+      clearInterval(heartbeat);
+    };
+    const tick = () => {
+      if (closed) return;
+      const job = queue.get(id);
+      const chunk = queue.readLog(id, offset);
+      if (chunk.text) emit('log', { text: chunk.text, offset: chunk.next });
+      offset = chunk.next;
+      if (job.status !== lastStatus) {
+        lastStatus = job.status;
+        emit('status', job);
+      }
+      if (!['queued', 'running'].includes(job.status) && (!chunk.size || offset >= chunk.size)) {
+        emit('end', { status: job.status, exit_code: job.exit_code });
+        stop();
+        res.end();
+      }
+    };
+    const timer = setInterval(tick, 400);
+    const heartbeat = setInterval(() => !closed && res.write(': ping\n\n'), 15000);
+    req.on('close', stop);
+    tick();
+    return undefined;
+  }
+
   return http.createServer(async (req, res) => {
     try {
       if (!allowedHosts.has(req.headers.host || '')) return send(res, 421, { error: 'unexpected Host header' });
@@ -180,6 +259,8 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
       if (req.method === 'GET' && STATIC[url.pathname]) {
         return send(res, 200, fs.readFileSync(path.join(PUBLIC, url.pathname.slice(1)), 'utf8'), `${STATIC[url.pathname]}; charset=utf-8`);
       }
+      const stream = req.method === 'GET' && url.pathname.match(/^\/api\/jobs\/([\w-]+)\/stream$/);
+      if (stream) return streamJob(req, res, stream[1], Number(url.searchParams.get('from')) || 0);
       if (req.method !== 'GET') {
         const origin = req.headers.origin;
         if (origin && !allowedHosts.has(origin.replace(/^https?:\/\//, ''))) return send(res, 403, { error: 'cross-origin write rejected' });

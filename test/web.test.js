@@ -111,6 +111,60 @@ test('dashboard server', async (t) => {
     assert.equal(gateState(ticketDir('WEB-1'), 'SPEC').valid, true);
   });
 
+  await t.test('job logs stream over SSE until the job ends', async () => {
+    // A queue whose job writes its log in three steps, then finishes.
+    let step = 0;
+    const lines = ['$ node src/cli/arw.js review\n', 'start B1-business attempt=1 mode=full\n', 'accepted B1-business\n'];
+    const job = { id: 'j1', kind: 'review', title: 'x', status: 'running' };
+    const streamQueue = {
+      ...fakeQueue,
+      get: () => job,
+      readLog: (id, from) => {
+        const text = lines.slice(0, step).join('');
+        return { text: text.slice(from), next: text.length, size: text.length };
+      },
+    };
+    const srv = createServer({ port: port + 1, token: TOKEN, queue: streamQueue });
+    await new Promise((r) => srv.listen(port + 1, '127.0.0.1', r));
+    const timer = setInterval(() => {
+      step += 1;
+      if (step >= lines.length) {
+        step = lines.length;
+        job.status = 'succeeded';
+        clearInterval(timer);
+      }
+    }, 150);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port + 1}/api/jobs/j1/stream`);
+      assert.equal(res.headers.get('content-type'), 'text/event-stream; charset=utf-8');
+      const body = await res.text(); // the server closes the stream after "end"
+      const events = body.split('\n\n').filter((b) => b.startsWith('event:')).map((b) => [b.match(/^event: (\w+)/)[1], JSON.parse(b.split('\ndata: ')[1])]);
+      const logText = events.filter(([e]) => e === 'log').map(([, d]) => d.text).join('');
+      assert.equal(logText, lines.join(''), 'every line arrives exactly once, in order');
+      assert.deepEqual(events.filter(([e]) => e === 'status').map(([, d]) => d.status), ['running', 'succeeded']);
+      assert.deepEqual(events[events.length - 1], ['end', { status: 'succeeded' }]);
+    } finally {
+      clearInterval(timer);
+      srv.close();
+    }
+  });
+
+  await t.test('run files are readable only inside their run', async () => {
+    const ok = await call(port, 'GET', '/api/tickets/WEB-1/file?path=spec.md');
+    assert.equal(ok.status, 200);
+    assert.match(ok.json.text, /# Spec — WEB-1/);
+    assert.equal((await call(port, 'GET', `/api/tickets/WEB-1/file?path=${encodeURIComponent('../../../package.json')}`)).status, 400);
+    assert.equal((await call(port, 'GET', '/api/tickets/WEB-1/file?path=nope.md')).status, 404);
+    const calls = await call(port, 'GET', '/api/tickets/WEB-1/calls');
+    // (prompt.txt is written by the real codex runner; the scripted one does not)
+    assert.ok(calls.json.some((c) => c.label === 'spec' && c.files.some((f) => f.endsWith('raw-candidate.txt'))), 'each call lists its attempt files');
+    const intake = await call(port, 'GET', '/api/tickets/WEB-1/intake');
+    assert.match(intake.json.source, /^file:/);
+    const sys = await call(port, 'GET', '/api/system');
+    assert.equal(sys.json.ticket_source.kind, 'file');
+    assert.ok(!JSON.stringify(sys.json).includes('secret'), 'no secret values in the system view');
+  });
+
   await t.test('reviews only for configured repositories', async () => {
     const r = await call(port, 'POST', '/api/reviews', { body: { repo: 'someone/else', pr: 1 }, headers: auth });
     assert.equal(r.status, 400);

@@ -79,6 +79,8 @@ function listRuns() {
         recommendation: v ? v.recommendation : null,
         complete: v ? v.complete : null,
         counts: v ? countBySeverity(v.findings) : null,
+        confirmed: v ? v.findings.filter((f) => f.label === 'CONFIRMED').length : 0,
+        usage: v && v.usage ? { calls: v.usage.calls + ((v.usage.plan && v.usage.plan.calls) || 0), tokens_in: v.usage.input_tokens + ((v.usage.plan && v.usage.plan.input_tokens) || 0), tokens_out: v.usage.output_tokens + ((v.usage.plan && v.usage.plan.output_tokens) || 0), elapsed_ms: v.usage.elapsed_ms } : null,
         updated_at: latest(Object.values(run.phases || {}).map((p) => p.at)) || run.created_at,
       });
     }

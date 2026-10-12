@@ -151,3 +151,18 @@ textarea { min-height: 160px; font-family: var(--mono); font-size: 12.5px; }
 .err { color: var(--bad); }
 .linkbtn { background: none; border: none; padding: 0; color: var(--accent); cursor: pointer; font: inherit; }
 .linkbtn:hover { text-decoration: underline; }
+
+/* live logs and detail views */
+.live { border-color: var(--accent); }
+.live-log { max-height: 340px; background: #0f1218; color: #d7dde6; border-color: #2a303b; }
+.tall-log { max-height: 70vh; min-height: 300px; }
+.log-line { display: block; white-space: pre-wrap; }
+.log-ok { color: #6fd38a; }
+.log-bad { color: #ff7b72; }
+.log-wave { color: #79b8ff; font-weight: 600; }
+.log-dim { color: #8b949e; }
+.pulse { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
+.file-view { max-height: 420px; }
+.repro { border-left: 3px solid var(--ok); padding: 4px 10px; margin: 8px 0; }

@@ -5,7 +5,7 @@
 const TOKEN = document.querySelector('meta[name="arw-token"]').content;
 const $main = document.getElementById('main');
 const $sidebar = document.getElementById('sidebar');
-const state = { config: null, runs: { tickets: [], prs: [] }, jobs: [], route: '', viewTimer: null, filters: { sev: new Set(['P1', 'P2', 'P3', 'P4']), hideDupes: true, showWithdrawn: false } };
+const state = { config: null, runs: { tickets: [], prs: [] }, jobs: [], route: '', viewTimer: null, streams: [], timers: [], filters: { sev: new Set(['P1', 'P2', 'P3', 'P4']), hideDupes: true, showWithdrawn: false } };
 
 // ---------- helpers ----------
 function h(tag, props, ...children) {
@@ -151,7 +151,7 @@ async function refreshJobs() {
 }
 
 function targetHash(t) {
-  return t.type === 'pr' ? `#/pr/${t.id}` : `#/ticket/${t.key}`;
+  return t.type === 'pr' ? `#/pr/${t.id}` : t.type === 'ticket' ? `#/ticket/${t.key}` : '#/system';
 }
 
 async function startJob(promise, label) {
@@ -159,7 +159,10 @@ async function startJob(promise, label) {
     const job = await promise;
     toast(`${label} queued`);
     await refreshJobs();
-    location.hash = `#/job/${job.id}`;
+    // Land on the page the job works on: its Live panel streams the log.
+    const target = job.target ? targetHash(job.target) : `#/job/${job.id}`;
+    if (location.hash === target) render();
+    else location.hash = target;
   } catch (err) {
     toast(err.message);
   }
@@ -168,6 +171,7 @@ async function startJob(promise, label) {
 // ---------- router ----------
 async function render() {
   clearInterval(state.viewTimer);
+  closeStreams();
   const hash = location.hash || '#/';
   state.route = hash;
   const [, view, arg] = hash.match(/^#\/([^/]*)\/?(.*)$/) || [];
@@ -180,6 +184,7 @@ async function render() {
     else if (view === 'new-ticket') renderNewTicket();
     else if (view === 'jobs') renderJobs();
     else if (view === 'job') renderJob(arg);
+    else if (view === 'system') await renderSystem();
     else renderHome();
   } catch (err) {
     put($main, h('div', { class: 'notice bad' }, err.message));
@@ -209,22 +214,27 @@ function stat(n, label) {
 
 function prTable(prs) {
   return h('table', {},
-    h('thead', {}, h('tr', {}, h('th', {}, 'PR'), h('th', {}, 'Title'), h('th', {}, 'Status'), h('th', {}, 'Recommendation'), h('th', {}, 'Open'), h('th', {}, 'Updated'))),
+    h('thead', {}, h('tr', {}, ['PR', 'Title', 'Status', 'Recommendation', 'Open', 'Confirmed', 'Calls', 'Tokens in / out', 'Updated'].map((c) => h('th', {}, c)))),
     h('tbody', {}, prs.map((p) => h('tr', {},
-      h('td', {}, h('a', { href: `#/pr/${p.id}` }, `${p.repo}#${p.pr}`)),
+      h('td', {}, h('a', { href: `#/pr/${p.id}` }, `${p.repo}#${p.pr}`), activeJobFor('pr', p.id) ? h('span', { class: 'pulse' }) : null),
       h('td', {}, p.title || ''),
       h('td', {}, statusBadge(p.status)),
       h('td', {}, p.recommendation ? statusBadge(p.recommendation) : '–'),
       h('td', {}, sevCounts(p.counts) || '–'),
+      h('td', {}, p.confirmed ? h('span', { class: 'badge ok' }, `${p.confirmed} CONFIRMED`) : '–'),
+      h('td', {}, p.usage ? fmtNum(p.usage.calls) : '–'),
+      h('td', { class: 'small' }, p.usage ? `${fmtNum(p.usage.tokens_in)} / ${fmtNum(p.usage.tokens_out)}` : '–'),
       h('td', { class: 'muted small' }, fmtTime(p.updated_at))))));
 }
 
 // ---------- PR view ----------
 async function renderPr(id) {
-  const d = await api('GET', `/api/prs/${encodeURIComponent(id)}`);
+  const [d, repro] = await Promise.all([api('GET', `/api/prs/${encodeURIComponent(id)}`), api('GET', `/api/prs/${encodeURIComponent(id)}/repro`).catch(() => [])]);
+  d.reproRecords = new Map(repro.map((r) => [r.finding_id, r]));
   const v = d.validation;
   const idn = d.identity;
-  const tabs = ['Findings', 'Items', 'Overview', 'Units', 'Plan', 'Cost'];
+  const job = activeJobFor('pr', id);
+  const tabs = ['Findings', 'Items', 'Progress', 'Calls', 'Timeline', 'Overview', 'Plan', 'Cost'];
   const current = sessionStorage.getItem('pr-tab') || 'Findings';
   const body = h('div', {});
   const tabBar = h('div', { class: 'tabs', role: 'tablist' }, tabs.map((t) =>
@@ -237,18 +247,22 @@ async function renderPr(id) {
       h('span', { class: 'mono' }, `head ${String(idn.head_sha || '').slice(0, 12)}`),
       h('span', { class: 'mono' }, `base ${String(idn.base_sha || '').slice(0, 12)}`),
       idn.ticket ? h('a', { href: `#/ticket/${idn.ticket}` }, idn.ticket) : h('span', {}, 'no ticket')),
-    v ? prSummary(d) : h('div', { class: 'notice' }, 'This review has no validation yet. It may still be running.'),
+    job ? livePanel(job, () => prProgressView(id)) : null,
+    v ? prSummary(d) : job ? null : h('div', { class: 'notice' }, 'This review has no validation yet.'),
     prActions(d),
     tabBar,
     body,
   );
-  if (!v) return;
+  // Progress, calls and timeline are useful while a run is still going.
+  if (current === 'Progress') return add(body, await prProgressView(id));
+  if (current === 'Calls') return add(body, await callsView(id));
+  if (current === 'Timeline') return add(body, timelineView(d));
+  if (current === 'Plan') return add(body, h('pre', { class: 'code' }, d.plan || 'No plan yet.'));
+  if (!v) return add(body, h('p', { class: 'muted' }, 'Results appear here once the run is validated.'));
   if (current === 'Findings') add(body, findingsView(d));
   else if (current === 'Overview') add(body, overviewView(d));
   else if (current === 'Items') add(body, itemsView(d));
-  else if (current === 'Units') add(body, unitsView(d));
-  else if (current === 'Plan') add(body, h('pre', { class: 'code' }, d.plan || 'No plan.'));
-  else add(body, costView(d));
+  else add(body, costView(d), unitsView(d));
 }
 
 function prSummary(d) {
@@ -337,9 +351,10 @@ function findingCard(d, meta, dupes) {
       ? [h('div', { class: 'label' }, 'Suggested fix'), h('p', { class: 'small' }, f.fix.reason), diffView(f.fix.asis, f.fix.tobe)]
       : h('p', {}, h('span', { class: 'label' }, 'Decision needed '), f.fix.reason),
     meta.repro
-      ? h('p', {}, h('span', { class: 'label' }, 'Reproduction '), statusBadge(meta.repro.status), meta.repro.test ? [' ', h('code', {}, meta.repro.test)] : null,
-        meta.repro.fix_verified === true ? h('span', { class: 'badge ok' }, 'fix verified') : meta.repro.fix_verified === false ? h('span', { class: 'badge bad' }, 'fix does not pass') : null,
-        meta.repro.reason ? h('span', { class: 'small muted' }, ` ${meta.repro.reason}`) : null)
+      ? [
+        meta.repro.from !== meta.id ? h('p', { class: 'small muted' }, `Reproduction shared with ${meta.repro.from} (same defect):`) : null,
+        reproDetail(d, d.reproRecords && d.reproRecords.get(meta.repro.from)) || h('p', {}, h('span', { class: 'label' }, 'Reproduction '), statusBadge(meta.repro.status)),
+      ]
       : null,
     meta.rebuttal ? h('p', {}, h('span', { class: 'label' }, `Rebuttal ${meta.rebuttal.verdict}${meta.rebuttal_from && meta.rebuttal_from !== meta.id ? ` (from ${meta.rebuttal_from})` : ''} `), `Tried: ${meta.rebuttal.defense_attempted} ${meta.rebuttal.reason}`) : null,
     h('div', { class: 'label' }, 'Evidence'),
@@ -455,7 +470,16 @@ async function openPublish(d) {
 
 // ---------- ticket view ----------
 async function renderTicket(key) {
-  const t = await api('GET', `/api/tickets/${encodeURIComponent(key)}`);
+  const job = activeJobFor('ticket', key);
+  let t;
+  try {
+    t = await api('GET', `/api/tickets/${encodeURIComponent(key)}`);
+  } catch (err) {
+    // A brand-new ticket has no run yet while its first job is running.
+    if (job) return put($main, h('h1', {}, key), livePanel(job));
+    throw err;
+  }
+  const extras = await ticketExtras(key).catch(() => []);
   const repo = repoSelect(true);
   const advance = (redo) => () => startJob(api('POST', `/api/tickets/${encodeURIComponent(key)}/advance`, { repo: repo.value || undefined, redo }), 'Ticket');
   const s = t.spec;
@@ -469,10 +493,12 @@ async function renderTicket(key) {
         h('button', { class: 'btn', onclick: advance('spec') }, 'Rebuild spec'),
         h('button', { class: 'btn', onclick: advance('analysis') }, 'Redo analysis')),
       h('p', { class: 'small muted' }, 'Stops at the SPEC gate. After approval the analysis reads the repository (read-only) for every review item.')),
+    job ? livePanel(job) : null,
     s ? specGate(key, t) : null,
     s ? specView(s) : section('Spec', h('p', { class: 'muted' }, 'Not built yet.')),
     t.analysis ? analysisView(t.analysis, s) : [],
     section('Requirement items', t.requirements ? requirementsTable(t.requirements) : h('p', { class: 'muted' }, 'Not extracted yet.')),
+    extras,
     section('Ticket evidence', t.evidence ? h('details', {}, h('summary', {}, 'Show ticket text (untrusted)'), h('pre', { class: 'log' }, t.evidence)) : h('p', { class: 'muted' }, 'None.')),
     section('Stages', h('table', {}, h('tbody', {}, Object.entries(t.stages).map(([name, st]) => h('tr', {}, h('td', {}, name), h('td', {}, statusBadge(st.status)), h('td', { class: 'small muted' }, fmtTime(st.at))))))),
   );
@@ -642,37 +668,271 @@ function renderJobs() {
   state.viewTimer = setInterval(() => { if (location.hash === '#/jobs') renderJobs(); }, 3000);
 }
 
+// The log streams over Server-Sent Events as the job writes it.
 function renderJob(id) {
-  const log = h('pre', { class: 'log' });
+  const job = state.jobs.find((j) => j.id === id);
+  if (!job) return put($main, h('div', { class: 'notice bad' }, 'Unknown job.'));
+  const log = h('pre', { class: 'log live-log tall-log' });
   const head = h('div', {});
-  let offset = 0;
-  const tick = async () => {
-    const job = state.jobs.find((j) => j.id === id);
-    if (!job) {
-      put(head, h('div', { class: 'notice bad' }, 'Unknown job.'));
-      return;
-    }
-    put(head, 
-      h('h1', {}, `${job.kind} ${job.title}`),
-      h('div', { class: 'row' }, statusBadge(job.status), h('span', { class: 'mono small' }, job.command),
-        ['queued', 'running'].includes(job.status) ? h('button', { class: 'btn danger', onclick: async () => { await api('POST', `/api/jobs/${id}/cancel`, {}); refreshJobs(); } }, 'Cancel') : null,
-        job.target && !['queued', 'running'].includes(job.status) ? h('a', { class: 'btn primary', href: targetHash(job.target) }, 'Open result') : null),
-    );
-    try {
-      const chunk = await api('GET', `/api/jobs/${id}/log?from=${offset}`);
-      if (chunk.text) {
-        const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
-        log.append(document.createTextNode(chunk.text));
-        if (atBottom) log.scrollTop = log.scrollHeight;
+  const progress = h('div', {});
+  const drawHead = (j, ended) => put(head,
+    h('h1', {}, `${j.kind} ${j.title}`),
+    h('div', { class: 'row' }, statusBadge(j.status), ended ? null : h('span', { class: 'pulse' }), h('span', { class: 'mono small' }, j.command),
+      j.started_at ? h('span', { class: 'small muted' }, `started ${fmtTime(j.started_at)}`) : null,
+      j.finished_at ? h('span', { class: 'small muted' }, `finished ${fmtTime(j.finished_at)}`) : null,
+      h('span', { class: 'spacer' }),
+      h('label', { class: 'small' }, h('input', { type: 'checkbox', checked: true, onchange: (e) => { log.dataset.follow = e.target.checked ? '1' : '0'; } }), ' follow'),
+      ['queued', 'running'].includes(j.status) ? h('button', { class: 'btn danger', onclick: async () => { await api('POST', `/api/jobs/${id}/cancel`, {}); toast('Cancel requested'); } }, 'Cancel') : null,
+      j.target && j.target.type !== 'system' && !['queued', 'running'].includes(j.status) ? h('a', { class: 'btn primary', href: targetHash(j.target) }, 'Open result') : null));
+  drawHead(job, !['queued', 'running'].includes(job.status));
+  put($main, head, progress, log);
+  if (job.target && job.target.type === 'pr' && ['queued', 'running'].includes(job.status)) {
+    const refresh = async () => {
+      try {
+        put(progress, await prProgressView(job.target.id));
+      } catch {
+        /* not started yet */
       }
-      offset = chunk.next;
-    } catch {
-      /* transient */
-    }
+    };
+    refresh();
+    state.timers.push(setInterval(refresh, 2000));
+  }
+  followJob(id, {
+    pre: log,
+    onStatus: (j) => drawHead(j, false),
+    onEnd: async () => {
+      await refreshJobs();
+      drawHead(state.jobs.find((j) => j.id === id) || job, true);
+      for (const t of state.timers) clearInterval(t);
+    },
+  });
+}
+
+// ---------- live streaming ----------
+// One EventSource per visible log; closed whenever the route changes.
+function closeStreams() {
+  for (const s of state.streams || []) s.close();
+  state.streams = [];
+  for (const t of state.timers || []) clearInterval(t);
+  state.timers = [];
+}
+
+const LOG_CLASSES = [
+  [/\b(accepted|-> green|READY|EXECUTED_PASS|RED_PROVEN|fix -> green|succeeded)\b/, 'log-ok'],
+  [/\b(rejected|blocked|process failure|invalid JSON|FAIL|failed|error:|Error:|degenerate|-> red|INVALIDATED)\b/, 'log-bad'],
+  [/\bW\d\b|batch (start|done)|froze context|^\$ /, 'log-wave'],
+  [/\bstart \S+ attempt=/, 'log-dim'],
+];
+
+function logLine(text) {
+  const cls = (LOG_CLASSES.find(([re]) => re.test(text)) || [])[1] || '';
+  // display:block already breaks the line; a space keeps empty lines visible.
+  return h('span', { class: `log-line ${cls}` }, text || ' ');
+}
+
+// Appends streamed text to a <pre>, line by line, keeping a partial tail.
+function logSink(pre, { maxLines = 4000 } = {}) {
+  let partial = '';
+  return (text) => {
+    const atBottom = pre.dataset.follow === '1' || (pre.dataset.follow !== '0' && pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30);
+    const lines = (partial + text).split('\n');
+    partial = lines.pop();
+    for (const l of lines) pre.append(logLine(l));
+    while (pre.childNodes.length > maxLines) pre.removeChild(pre.firstChild);
+    if (atBottom) pre.scrollTop = pre.scrollHeight;
   };
-  put($main, head, log);
-  tick();
-  state.viewTimer = setInterval(() => { if (location.hash === `#/job/${id}`) tick(); }, 1500);
+}
+
+function followJob(jobId, { pre, onStatus, onEnd }) {
+  const sink = logSink(pre);
+  const es = new EventSource(`/api/jobs/${encodeURIComponent(jobId)}/stream`);
+  es.addEventListener('log', (e) => sink(JSON.parse(e.data).text));
+  es.addEventListener('status', (e) => onStatus && onStatus(JSON.parse(e.data)));
+  es.addEventListener('end', (e) => {
+    es.close();
+    if (onEnd) onEnd(JSON.parse(e.data));
+  });
+  es.onerror = () => {
+    /* the browser reconnects; the server resends from the start */
+  };
+  state.streams.push(es);
+  return es;
+}
+
+function activeJobFor(type, idOrKey) {
+  return state.jobs.find((j) => ['queued', 'running'].includes(j.status) && j.target && j.target.type === type && (j.target.id === idOrKey || j.target.key === idOrKey));
+}
+
+// Live panel: streamed log of the running job, plus a progress view that is
+// refreshed while it runs. Re-renders the page when the job ends.
+function livePanel(job, progressView) {
+  const pre = h('pre', { class: 'log live-log' });
+  const status = h('span', {}, statusBadge(job.status));
+  const progress = h('div', {});
+  const panel = h('div', { class: 'panel live' },
+    h('div', { class: 'row' }, h('span', { class: 'label' }, 'Live'), h('span', { class: 'pulse' }), status,
+      h('span', { class: 'mono small' }, job.command), h('span', { class: 'spacer' }),
+      h('a', { class: 'btn', href: `#/job/${job.id}` }, 'Full log'),
+      h('button', { class: 'btn danger', onclick: async () => { await api('POST', `/api/jobs/${job.id}/cancel`, {}); toast('Cancel requested'); } }, 'Cancel')),
+    progress, pre);
+  followJob(job.id, {
+    pre,
+    onStatus: (j) => put(status, statusBadge(j.status)),
+    onEnd: (e) => {
+      toast(`${job.kind} ${job.title}: ${e.status}`);
+      refreshJobs().then(render);
+    },
+  });
+  if (progressView) {
+    const refresh = async () => {
+      try {
+        put(progress, await progressView());
+      } catch {
+        /* run dir not ready yet */
+      }
+    };
+    refresh();
+    state.timers.push(setInterval(refresh, 2000));
+  }
+  return panel;
+}
+
+// ---------- PR progress, calls, timeline ----------
+const LIVE_CLS = { running: 'warn', accepted: 'ok', rejected: 'bad', failed: 'bad' };
+
+async function prProgressView(id) {
+  const p = await api('GET', `/api/prs/${encodeURIComponent(id)}/progress`);
+  const done = p.units.filter((u) => u.status === 'EXECUTED_PASS').length;
+  return [
+    h('div', { class: 'row small' },
+      timelineChips(p.phases),
+      h('span', { class: 'muted' }, `units ${done}/${p.units.length} · model calls ${p.calls} · tokens in ${fmtNum(p.tokens_in)} / out ${fmtNum(p.tokens_out)}`)),
+    p.units.length
+      ? table(['Unit', 'Kind', 'Role', 'Now', 'Status', 'Last error'], p.units.map((u) => [
+        h('span', { class: 'mono' }, u.unit), u.kind, u.role,
+        u.live ? h('span', { class: `badge ${LIVE_CLS[u.live] || ''}` }, `${u.live}${u.attempt ? ` #${u.attempt} ${u.mode}` : ''}`) : '—',
+        statusBadge(u.status), h('span', { class: 'small err' }, (u.error || '').slice(0, 160))]))
+      : h('p', { class: 'muted small' }, 'Planning — units appear after the context is frozen.'),
+    p.other.length ? h('div', { class: 'row small mt8' }, p.other.map((o) => h('span', { class: `badge ${LIVE_CLS[o.state] || ''}` }, `${o.label}: ${o.state}`))) : null,
+    p.repro.length ? h('div', { class: 'row small mt8' }, p.repro.map((r) => h('span', { class: `badge ${r.status === 'RED_PROVEN' ? 'ok' : 'warn'}` }, `repro ${r.finding}: ${r.status} (${r.runs.join(', ')})${r.fix ? ' · fix verified' : ''}`))) : null,
+  ];
+}
+
+const PHASE_ORDER = ['prepare', 'ticket', 'plan', 'freeze', 'batch', 'repro'];
+
+function timelineChips(phases) {
+  return h('span', { class: 'row' }, PHASE_ORDER.filter((n) => phases[n]).map((n) => h('span', { class: `badge ${/PASS|READY/.test(phases[n].status) ? 'ok' : /FAIL|BLOCK|INVALID/.test(phases[n].status) ? 'bad' : 'warn'}` }, `${n}: ${phases[n].status}`)));
+}
+
+function timelineView(d) {
+  const rows = PHASE_ORDER.filter((n) => d.phases[n]).map((n) => {
+    const p = d.phases[n];
+    const { status, at, ...rest } = p;
+    const extra = Object.entries(rest).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' · ');
+    return [h('strong', {}, n), statusBadge(status), h('span', { class: 'small muted' }, fmtTime(at)), h('span', { class: 'small' }, extra)];
+  });
+  return [table(['Phase', 'Status', 'At', 'Details'], rows)];
+}
+
+// A button that loads a run file into an inline <pre> on demand.
+function fileToggle(url, label) {
+  const holder = h('div', {});
+  const btn = h('button', { type: 'button', class: 'linkbtn small', onclick: async () => {
+    if (holder.childNodes.length) return put(holder);
+    try {
+      const f = await api('GET', url);
+      put(holder, h('div', { class: 'small muted' }, `${f.path} · ${fmtNum(f.size)} bytes${f.truncated ? ' · truncated' : ''}`), h('pre', { class: 'log file-view' }, f.text));
+    } catch (err) {
+      put(holder, h('div', { class: 'notice bad' }, err.message));
+    }
+  } }, label);
+  return [btn, holder];
+}
+
+function callsTable(rows, fileUrl) {
+  if (!rows.length) return h('p', { class: 'muted' }, 'No model calls recorded.');
+  const tin = rows.reduce((n, r) => n + r.tokens_in, 0);
+  const tout = rows.reduce((n, r) => n + r.tokens_out, 0);
+  const cached = rows.reduce((n, r) => n + r.tokens_cached, 0);
+  return [
+    h('p', { class: 'small muted' }, `${rows.length} calls · ${rows.filter((r) => r.mode === 'repair').length} repairs · tokens in ${fmtNum(tin)} (cached ${tin ? Math.round((100 * cached) / tin) : 0}%) / out ${fmtNum(tout)} · model time ${fmtMs(rows.reduce((n, r) => n + (r.elapsed_ms || 0), 0))}`),
+    table(['When', 'Job', 'Attempt', 'Model', 'Time', 'Tokens in / cached / out', 'Result', 'Files'], rows.map((r) => [
+      h('span', { class: 'small muted' }, fmtTime(r.at)),
+      h('span', { class: 'mono' }, r.label),
+      `${r.attempt} ${r.mode}`,
+      r.model || 'default',
+      fmtMs(r.elapsed_ms),
+      `${fmtNum(r.tokens_in)} / ${fmtNum(r.tokens_cached)} / ${fmtNum(r.tokens_out)}`,
+      r.error_class ? h('span', { class: 'badge bad', title: r.error_message || '' }, r.error_class) : r.validation_errors ? h('span', { class: 'badge warn' }, `${r.validation_errors} validation errors`) : h('span', { class: 'badge ok' }, 'ok'),
+      h('div', {}, r.files.filter((f) => !/output-schema\.json$/.test(f)).map((f) => fileToggle(`${fileUrl}?path=${encodeURIComponent(f)}`, f.split('/').pop()))),
+    ])),
+  ];
+}
+
+async function callsView(id) {
+  return callsTable(await api('GET', `/api/prs/${encodeURIComponent(id)}/calls`), `/api/prs/${encodeURIComponent(id)}/file`);
+}
+
+// Reproduction detail inside a finding card.
+function reproDetail(d, rec) {
+  if (!rec) return null;
+  const fileUrl = (p) => `/api/prs/${encodeURIComponent(d.id)}/file?path=${encodeURIComponent(p)}`;
+  return h('div', { class: 'repro' },
+    h('div', { class: 'row' }, h('span', { class: 'label' }, 'Reproduction'), statusBadge(rec.status),
+      rec.fix && rec.fix.verified === true ? h('span', { class: 'badge ok' }, 'fix verified') : rec.fix && rec.fix.verified === false ? h('span', { class: 'badge bad' }, 'fix does not pass') : null,
+      rec.toolchain ? h('span', { class: 'small muted' }, rec.toolchain) : null,
+      rec.reason ? h('span', { class: 'small muted' }, rec.reason) : null),
+    rec.test ? h('p', { class: 'small' }, h('code', {}, rec.test.selector), ` — ${rec.test.fails_because}`) : null,
+    (rec.runs || []).length ? table(['Run', 'Result', 'JUnit', 'Time', 'Log'], rec.runs.map((r) => [
+      r.phase, statusBadge(r.status === 'red' ? 'RED' : r.status === 'green' ? 'GREEN' : r.status),
+      h('span', { class: 'small' }, r.junit ? `${r.junit.tests} tests, ${r.junit.failures} failures, ${r.junit.errors} errors${r.junit.message ? ` — ${r.junit.message}` : ''}` : 'no report'),
+      fmtMs(r.elapsed_ms), r.log_path ? fileToggle(fileUrl(r.log_path), 'log') : '—'])) : null,
+    rec.test && rec.test.source ? h('details', {}, h('summary', { class: 'small' }, `Test written by the model: ${rec.test.path}`), h('pre', { class: 'code' }, rec.test.source)) : null);
+}
+
+// ---------- ticket extras ----------
+async function ticketExtras(key) {
+  const [intake, calls] = await Promise.all([api('GET', `/api/tickets/${encodeURIComponent(key)}/intake`), api('GET', `/api/tickets/${encodeURIComponent(key)}/calls`)]);
+  const fileUrl = (p) => `/api/tickets/${encodeURIComponent(key)}/file?path=${encodeURIComponent(p)}`;
+  return [
+    h('h2', {}, 'Intake'),
+    h('div', { class: 'kv' },
+      h('dt', {}, 'Source'), h('dd', {}, intake.source || '—'),
+      h('dt', {}, 'Confluence pages'), h('dd', {}, intake.confluence_pages.length ? intake.confluence_pages.map((p) => `${p.title} (${p.id})`).join(' · ') : 'none'),
+      h('dt', {}, 'Evidence files'), h('dd', {}, intake.evidence.map((f) => fileToggle(fileUrl(f), f))),
+      h('dt', {}, 'Documents'), h('dd', {}, intake.docs.map((f) => fileToggle(fileUrl(f), f))),
+      h('dt', {}, 'Rejected specs'), h('dd', {}, intake.spec_history.length ? intake.spec_history.map((f) => fileToggle(fileUrl(f), f.split('/').pop())) : 'none')),
+    h('h2', {}, 'Model calls'),
+    callsTable(calls, `/api/tickets/${encodeURIComponent(key)}/file`),
+  ];
+}
+
+// ---------- system ----------
+async function renderSystem() {
+  const s = await api('GET', '/api/system');
+  const kv = (obj) => h('div', { class: 'kv' }, Object.entries(obj).flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v))]));
+  const running = state.jobs.find((j) => j.kind === 'doctor' && ['queued', 'running'].includes(j.status));
+  // jobs are newest first: the last finished check stays visible.
+  const last = !running && state.jobs.find((j) => j.kind === 'doctor');
+  let lastPanel = null;
+  if (last) {
+    const pre = h('pre', { class: 'log live-log' });
+    lastPanel = h('div', { class: 'panel' }, h('div', { class: 'row' }, h('span', { class: 'label' }, 'Last check'), statusBadge(last.status), h('span', { class: 'small muted' }, fmtTime(last.finished_at))), pre);
+    followJob(last.id, { pre });
+  }
+  put($main,
+    h('h1', {}, 'System'),
+    h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: () => startJob(api('POST', '/api/doctor', {}), 'Doctor') }, 'Run doctor'),
+      h('span', { class: 'small muted' }, 'Checks git, gh, codex (a real call that must read a file), repositories and the ticket source.')),
+    running ? livePanel(running) : lastPanel,
+    h('h2', {}, 'Executor (codex)'), kv(s.executor),
+    h('h2', {}, 'Review'), kv(s.review),
+    h('h2', {}, 'Reproduction'), kv(s.repro),
+    h('h2', {}, 'Ticket source'), kv(s.ticket_source),
+    h('h2', {}, 'Repositories'), Object.keys(s.repos).length ? table(['Repository', 'Checkout', 'Test command'], Object.entries(s.repos).map(([k, v]) => [k, h('code', {}, v.checkout), v.test_command ? h('code', {}, v.test_command) : 'auto'])) : h('p', { class: 'muted' }, 'None: copy config/repos.example.json to config/repos.json.'),
+    h('h2', {}, 'Runtime'), kv({ runs_dir: s.runs_dir, node: s.node, platform: s.platform }),
+    h('p', { class: 'small muted' }, 'Values come from .env and config/*.json; edit those files and restart the dashboard to change them.'),
+  );
 }
 
 // ---------- boot ----------
