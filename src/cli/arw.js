@@ -180,7 +180,14 @@ async function cmdDoctor() {
   });
   const repos = github.reposConfig().repos;
   checks.push(['config/repos.json', Object.keys(repos).length ? 'ok' : 'WARN', Object.keys(repos).length ? Object.keys(repos).join(', ') : 'no repos mapped; copy config/repos.example.json']);
-  checks.push(['Jira', process.env.JIRA_URL ? 'ok' : 'WARN', process.env.JIRA_URL ? process.env.JIRA_URL : 'not configured; use arw ticket --from-file']);
+  const { checkMcp } = require('../lib/ticket-mcp');
+  const mcp = await checkMcp();
+  if (mcp.configured) {
+    const detail = mcp.ok ? `${(mcp.server && mcp.server.name) || 'server'} ok, ${mcp.tools} tools` : mcp.error || `mapped tools missing on the server: ${mcp.missing.join(', ')}`;
+    checks.push(['Jira/Confluence via MCP', mcp.ok ? 'ok' : 'FAIL', detail]);
+  } else {
+    checks.push(['Jira (REST)', process.env.JIRA_URL ? 'ok' : 'WARN', process.env.JIRA_URL ? process.env.JIRA_URL : 'not configured; set up config/mcp.json or use arw ticket --from-file']);
+  }
   const pf = await preflight({ cwd: ROOT, attemptDir: path.join(RUNS, '.preflight'), model: executorConfig().model });
   checks.push([`codex preflight (model ${executorConfig().model || 'default'})`, pf.ok ? 'ok' : 'FAIL', pf.ok ? `${pf.elapsed_ms} ms, ${pf.usage.input_tokens} input tokens` : `${pf.error_class}: ${pf.error_message}`]);
   for (const [name, status, detail] of checks) console.log(`${status.padEnd(4)} ${name.padEnd(36)} ${detail}`);

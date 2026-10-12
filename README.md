@@ -84,7 +84,15 @@ npm run doctor
 1. Node ≥ 20, git, `gh auth login`, `codex` CLI logged in.
 2. `cp .env.example .env`. `CODEX_MODEL` defaults to `gpt-6-luna`; set another model if your codex login does not offer it.
 3. `cp config/repos.example.json config/repos.json` and map `owner/name` → local clone.
-4. Optional Jira: `JIRA_URL` + `JIRA_PAT` (Server/DC) or `JIRA_EMAIL` + `JIRA_API_TOKEN` (Cloud).
+4. Ticket source, first match wins:
+   - **MCP** (when Jira/Confluence are not reachable from this machine): copy `config/mcp.example.json` to
+     `config/mcp.json` and point it at a stdio command (for example `docker run ... mcp-atlassian`) or an HTTP
+     MCP URL with headers. Tool names and arguments are configurable; the defaults match `mcp-atlassian`
+     (`jira_get_issue`, `confluence_get_page`, `confluence_search`). `npm run doctor` checks the connection
+     and the mapped tools.
+   - **REST**: `JIRA_URL` + `JIRA_PAT` (Server/DC) or `JIRA_EMAIL` + `JIRA_API_TOKEN` (Cloud), plus
+     `CONFLUENCE_URL`.
+   - **File**: `arw ticket KEY --from-file ticket.md --extra page.md`.
 
 No npm dependencies.
 

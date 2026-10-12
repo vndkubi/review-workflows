@@ -13,6 +13,7 @@ const path = require('node:path');
 const { ROOT, readJson, readJsonIfExists, writeJsonAtomic, writeFileAtomic, nowIso, ensureDir } = require('./util');
 const { validateAgainst, outputSchema } = require('./schema');
 const { fetchTicketEvidence } = require('./jira');
+const { fetchTicketEvidenceMcp, atlassianConfig } = require('./ticket-mcp');
 const { extractRequirements, renderRequirementsMarkdown } = require('./requirements');
 const { buildSpec, renderSpecMarkdown, itemsFromRequirements } = require('./spec');
 const { runLooseJob } = require('./loose-job');
@@ -51,9 +52,12 @@ async function intake(dir, run, { key, fromFile, extras = [], log }) {
     text = fs.readFileSync(fromFile, 'utf8');
     source = `file:${path.resolve(fromFile)}`;
   } else {
-    const fetched = await fetchTicketEvidence(key, { log });
+    // An MCP server wins when configured: it works where Jira/Confluence are
+    // not reachable from this machine. Otherwise call the REST APIs directly.
+    const viaMcp = Boolean(atlassianConfig());
+    const fetched = viaMcp ? await fetchTicketEvidenceMcp(key, { log }) : await fetchTicketEvidence(key, { log });
     text = fetched.ticket.text;
-    source = 'jira';
+    source = viaMcp ? `mcp${fetched.server && fetched.server.name ? `:${fetched.server.name}` : ''}` : 'jira';
     pages.push(...fetched.pages);
   }
   writeFileAtomic(path.join(dir, 'ticket-evidence.md'), text);

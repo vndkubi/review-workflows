@@ -1,0 +1,33 @@
+{
+  "_comment": "Copy to config/mcp.json. Ticket intake uses this MCP server instead of the Jira/Confluence REST APIs. Values like ${VAR} come from .env. Use either a stdio command or an HTTP url.",
+  "atlassian": {
+    "transport": "stdio",
+    "command": "docker",
+    "args": [
+      "run", "-i", "--rm",
+      "-e", "JIRA_URL", "-e", "JIRA_PERSONAL_TOKEN",
+      "-e", "CONFLUENCE_URL", "-e", "CONFLUENCE_PERSONAL_TOKEN",
+      "ghcr.io/sooperset/mcp-atlassian:latest"
+    ],
+    "env": {
+      "JIRA_URL": "${JIRA_URL}",
+      "JIRA_PERSONAL_TOKEN": "${JIRA_PAT}",
+      "CONFLUENCE_URL": "${CONFLUENCE_URL}",
+      "CONFLUENCE_PERSONAL_TOKEN": "${CONFLUENCE_PAT}"
+    },
+    "tools": {
+      "issue": { "name": "jira_get_issue", "args": { "issue_key": "{key}", "comment_limit": 20 } },
+      "page": { "name": "confluence_get_page", "args": { "page_id": "{id}", "convert_to_markdown": true } },
+      "search": { "name": "confluence_search", "args": { "query": "type=page and text ~ \"{key}\"", "limit": 5 } }
+    }
+  },
+  "_http_example": {
+    "transport": "http",
+    "url": "https://mcp.your-company.example/atlassian/mcp",
+    "headers": { "Authorization": "Bearer ${ATLASSIAN_MCP_TOKEN}" },
+    "tools": {
+      "issue": { "name": "jira_get_issue" },
+      "search": null
+    }
+  }
+}

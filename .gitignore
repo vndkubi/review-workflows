@@ -8,3 +8,4 @@ _study/
 *.log
 # local repo -> checkout mapping
 config/repos.json
+config/mcp.json
