@@ -384,7 +384,11 @@ test('ticket pipeline -> PR review, end to end', async (t) => {
     const prefix = (p) => p.slice(0, p.indexOf('ROLE CHARTER'));
     assert.ok(workerPrompts.every((c) => prefix(c.prompt) === prefix(workerPrompts[0].prompt)), 'shared cacheable prefix');
 
+    // The ticket and the PR body both try to instruct the reviewer.
+    assert.deepEqual(validation.warnings.map((w) => w.where.split(':')[0]).sort(), ['PR description', 'ticket']);
+    assert.match(workerPrompts[0].prompt, /Instruction-like text in PR content \(2\)/, 'workers are told where it is');
     const text = fs.readFileSync(report, 'utf8');
+    assert.match(text, /## ⚠ Instruction-like text aimed at AI reviewers \(2\)/);
     assert.match(text, /## Review items \(/);
     assert.match(text, /### \[P2\] Member discount excludes orders of exactly 1,000,000/);
     assert.match(text, /_Duplicates: B1-technical-F1_/);

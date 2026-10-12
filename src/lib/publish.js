@@ -70,6 +70,9 @@ function buildReview(runDir, { minSeverity = 'P3' } = {}) {
     `Automated review draft for \`${run.identity.head_sha.slice(0, 12)}\` — ${comments.length + summaryOnly.length} finding(s), runtime recommendation **${validation.recommendation}**${validation.complete ? '' : ' (review incomplete)'}.`,
     'Findings are SUSPECTED (static evidence, quotes machine-verified) unless marked otherwise. A person reviewed and submitted this draft.',
   ];
+  if (validation.warnings && validation.warnings.length) {
+    header.push('', `**Instruction-like text aimed at automated reviewers** was found in this PR (${validation.warnings.length}); it was treated as data:`, ...validation.warnings.map((w) => `- \`${w.where}\` ${w.text}`));
+  }
   if (validation.gaps.length) header.push('', '**Not verified:**', ...validation.gaps.map((g) => `- ${g}`));
   if (summaryOnly.length) header.push('', '---', '', ...summaryOnly.map((s) => s.body).join('\n\n---\n\n').split('\n'));
   return { context, run, comments, summaryOnly, body: header.join('\n') };

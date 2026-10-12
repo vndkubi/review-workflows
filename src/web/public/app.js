@@ -76,7 +76,7 @@ function fmtMs(ms) {
 }
 
 function statusBadge(status) {
-  const cls = /PASS|READY|CONFIRMED|succeeded|approved|no_blocking/.test(status) ? 'ok' : /FAIL|BLOCKED|INVALID|failed|rejected|changes_requested/.test(status) ? 'bad' : 'warn';
+  const cls = /PASS|READY|CONFIRMED|succeeded|approved|no_blocking/.test(status) ? 'ok' : /FAIL|BLOCKED|INVALID|EXCEEDED|failed|rejected|changes_requested/.test(status) ? 'bad' : 'warn';
   return h('span', { class: `badge ${cls}` }, status || '–');
 }
 
@@ -274,6 +274,7 @@ function prSummary(d) {
       h('span', { class: 'muted small' }, `context ${v.context_id} · validated ${fmtTime(v.validated_at)}`)),
     h('div', { class: 'stats' }, stat(c.P1, 'P1'), stat(c.P2, 'P2'), stat(c.P3, 'P3'), stat(c.P4, 'P4'), stat(c.withdrawn, 'withdrawn')),
     v.drift && v.drift.length ? h('div', { class: 'notice bad' }, `Context drift: ${v.drift.join('; ')}. Re-run the review with “Refresh”.`) : null,
+    v.warnings && v.warnings.length ? h('div', { class: 'notice bad' }, h('strong', {}, `Instruction-like text aimed at AI reviewers (${v.warnings.length}): `), v.warnings.map((w) => h('div', { class: 'small' }, h('code', {}, w.where), ` ${w.text}`))) : null,
     v.gaps.length ? h('div', { class: 'notice' }, h('strong', {}, 'Not verified: '), v.gaps.join(' · ')) : null,
     v.opt_outs && v.opt_outs.length ? h('div', { class: 'notice' }, `Opt-outs recorded: ${v.opt_outs.join(', ')}`) : null,
   );
@@ -1085,6 +1086,25 @@ function reposEditor(repos) {
     msg);
 }
 
+const mb = (b) => `${(b / 1048576).toFixed(1)} MB`;
+
+async function diskPanel() {
+  const rows = await api('GET', '/api/disk').catch(() => []);
+  const days = h('input', { type: 'number', min: '0', value: '14' });
+  const runs = h('input', { type: 'checkbox' });
+  const go = (apply) => () => {
+    if (apply && !confirm(`Remove ${runs.checked ? 'whole runs' : 'worktrees and attempt files'} untouched for ${days.value} days?`)) return;
+    startJob(api('POST', '/api/clean', { olderThan: Number(days.value), runs: runs.checked, apply }), apply ? 'Cleanup' : 'Cleanup preview');
+  };
+  const total = rows.reduce((n, r) => n + r.size, 0);
+  return h('section', { class: 'panel' },
+    h('h2', {}, `Disk usage (${mb(total)})`),
+    rows.length ? table(['Run', 'Size', 'Worktrees', 'Attempt files', 'Last activity'], rows.slice(0, 20).map((r) => [h('a', { href: r.kind === 'pr' ? `#/pr/${r.id}` : `#/ticket/${r.id}` }, r.id), mb(r.size), r.worktrees ? `${r.worktrees} · ${mb(r.worktree_bytes)}` : '—', mb(r.attempts), h('span', { class: 'small muted' }, fmtTime(r.last))])) : h('p', { class: 'muted' }, 'No runs yet.'),
+    h('div', { class: 'row mt12' }, h('label', { class: 'small' }, 'Untouched for ', days, ' days'), h('label', { class: 'small' }, runs, ' whole runs (otherwise worktrees and attempt files)'),
+      h('button', { class: 'btn', onclick: go(false) }, 'Preview'), h('button', { class: 'btn danger', onclick: go(true) }, 'Clean up')),
+    h('p', { class: 'small muted' }, 'Removing a review worktree makes that run read-only: reports stay, re-validation and the source view need it.'));
+}
+
 async function renderSettings() {
   const s = await api('GET', '/api/settings');
   const by = (g) => s.env.filter((e) => e.group === g);
@@ -1112,6 +1132,7 @@ async function renderSettings() {
       mcpEditor(s.mcp, mcpSecret)),
     settingsSection('Jira / Confluence REST', jira, s.models),
     h('section', { class: 'panel' }, h('h2', {}, 'Repositories'), reposEditor(s.repos)),
+    await diskPanel(),
     h('section', { class: 'panel' },
       h('h2', {}, 'Diagnostics'),
       h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: () => startJob(api('POST', '/api/doctor', {}), 'Doctor') }, 'Run doctor'),

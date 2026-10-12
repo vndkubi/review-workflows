@@ -30,6 +30,8 @@ Human gates (the runtime never approves):
 
 Other:
   arw ui [--port 8787] [--no-open]   local dashboard (loopback only)
+  arw clean [--older-than 14] [--runs] [--no-worktrees] [--no-attempts] [--apply]
+                    disk usage and cleanup of old runs (preview unless --apply)
   arw status        list runs
   arw doctor        check git, gh, codex, config`;
 
@@ -194,6 +196,17 @@ async function cmdDoctor() {
   return checks.some((c) => c[1] === 'FAIL') ? 1 : 0;
 }
 
+function cmdClean(argv) {
+  const args = parseArgs(argv, ['runs', 'noWorktrees', 'noAttempts', 'apply']);
+  const { clean } = require('../lib/cleanup');
+  const mb = (b) => `${(b / 1048576).toFixed(1)} MB`;
+  const days = args.olderThan === undefined ? 14 : Number(args.olderThan);
+  const res = clean({ olderThanDays: Number.isFinite(days) ? days : 14, runs: Boolean(args.runs), worktrees: !args.noWorktrees, attempts: !args.noAttempts, apply: Boolean(args.apply) });
+  for (const a of res.actions) console.log(`${res.applied ? 'removed' : 'would remove'}  ${mb(a.bytes).padStart(9)}  ${a.action}: ${a.target}`);
+  console.log(`${res.actions.length} item(s), ${mb(res.bytes)}${res.applied ? ' freed' : ' (preview; add --apply to remove)'} — runs untouched since ${res.cutoff.slice(0, 10)}`);
+  return 0;
+}
+
 async function cmdUi(argv) {
   const args = parseArgs(argv, ['noOpen']);
   const { startDashboard } = require('../web/server');
@@ -220,6 +233,8 @@ async function main(argv) {
       return cmdDoctor();
     case 'ui':
       return cmdUi(rest);
+    case 'clean':
+      return cmdClean(rest);
     default:
       console.log(USAGE);
       return cmd ? 1 : 0;

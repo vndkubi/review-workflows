@@ -26,6 +26,8 @@ const ENV_SETTINGS = [
   ['ARW_REPAIR_ATTEMPTS', 'review', 'number', '2', 'Repairs of an invalid model answer before one fresh retry.', null, [0, 5]],
   ['ARW_OUTPUT_LANGUAGE', 'review', 'string', 'English', 'Language of titles, explanations and given/when/then. Quotes stay verbatim.'],
   ['ARW_AUTO_APPROVE_SPEC', 'review', 'bool', '0', 'Let a deterministic policy approve clean specs (no gaps, contradictions or inferred rules).'],
+  ['ARW_MAX_CALLS', 'review', 'number', '0', 'Budget: most model calls per review run (planning + review + repro). 0 = no limit.', null, [0, 1000]],
+  ['ARW_MAX_INPUT_TOKENS', 'review', 'number', '0', 'Budget: most input tokens per review run. 0 = no limit.', null, [0, 100000000]],
   ['REPRO_TIMEOUT_MS', 'repro', 'number', '900000', 'Timeout per repro test run (ms).', null, [30000, 3600000]],
   ['REPRO_MAVEN_OFFLINE', 'repro', 'bool', '0', 'Run Maven with -o (local repository only).'],
   ['JIRA_URL', 'jira', 'url', '', 'Jira base URL (REST source).'],

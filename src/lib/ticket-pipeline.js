@@ -17,6 +17,7 @@ const { fetchTicketEvidenceMcp, atlassianConfig } = require('./ticket-mcp');
 const { extractRequirements, renderRequirementsMarkdown } = require('./requirements');
 const { buildSpec, renderSpecMarkdown, itemsFromRequirements } = require('./spec');
 const { runLooseJob } = require('./loose-job');
+const { redactSecrets } = require('./guard');
 const prompts = require('./prompts');
 const { ticketDir, gateState, isApproved, recordGate } = require('./runs');
 
@@ -60,12 +61,19 @@ async function intake(dir, run, { key, fromFile, extras = [], log }) {
     source = viaMcp ? `mcp${fetched.server && fetched.server.name ? `:${fetched.server.name}` : ''}` : 'jira';
     pages.push(...fetched.pages);
   }
-  writeFileAtomic(path.join(dir, 'ticket-evidence.md'), text);
-  for (const page of pages) writeFileAtomic(path.join(dir, 'evidence', `confluence-${page.id}.md`), page.text);
+  // Credentials in tickets or pages never reach a model or the run files.
+  const redactions = [];
+  const clean = (s) => {
+    const r = redactSecrets(s);
+    redactions.push(...r.redactions);
+    return r.text;
+  };
+  writeFileAtomic(path.join(dir, 'ticket-evidence.md'), clean(text));
+  for (const page of pages) writeFileAtomic(path.join(dir, 'evidence', `confluence-${page.id}.md`), clean(page.text));
   for (const file of extras) {
-    writeFileAtomic(path.join(dir, 'evidence', path.basename(file).replace(/[^A-Za-z0-9._-]/g, '_')), fs.readFileSync(file, 'utf8'));
+    writeFileAtomic(path.join(dir, 'evidence', path.basename(file).replace(/[^A-Za-z0-9._-]/g, '_')), clean(fs.readFileSync(file, 'utf8')));
   }
-  setStage(dir, run, 'intake', 'EXECUTED_PASS', { source, confluence_pages: pages.map((p) => ({ id: p.id, title: p.title })), extras: extras.map((f) => path.basename(f)) });
+  setStage(dir, run, 'intake', 'EXECUTED_PASS', { source, confluence_pages: pages.map((p) => ({ id: p.id, title: p.title })), extras: extras.map((f) => path.basename(f)), redactions: redactions.reduce((n, r) => n + r.count, 0) });
 }
 
 function validateAnalysis(candidate, { key, items, repoDir }) {

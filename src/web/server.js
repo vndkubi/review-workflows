@@ -120,6 +120,14 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
     ['GET', /^\/api\/runs$/, () => data.listRuns()],
     ['GET', /^\/api\/system$/, () => systemInfo()],
     ['GET', /^\/api\/settings$/, () => settings.readAll()],
+    ['GET', /^\/api\/disk$/, () => require('../lib/cleanup').diskUsage().map(({ worktrees, ...r }) => ({ ...r, worktrees: worktrees.length, worktree_bytes: worktrees.reduce((n, w) => n + w.size, 0) }))],
+    ['POST', /^\/api\/clean$/, (m, q, body) => {
+      const days = Number.isInteger(Number(body.olderThan)) && Number(body.olderThan) >= 0 ? Number(body.olderThan) : 14;
+      const args = ['clean', '--older-than', String(days)];
+      if (body.runs) args.push('--runs');
+      if (body.apply) args.push('--apply');
+      return queue.enqueue({ kind: 'clean', title: body.apply ? 'disk cleanup' : 'cleanup preview', args, target: { type: 'system' } });
+    }],
     ['PUT', /^\/api\/settings\/env$/, (m, q, body) => settings.writeEnvSettings(body.changes)],
     ['PUT', /^\/api\/settings\/repos$/, (m, q, body) => settings.writeRepos(body.repos)],
     ['PUT', /^\/api\/settings\/mcp$/, (m, q, body) => settings.writeMcp(body.server === undefined ? null : body.server)],

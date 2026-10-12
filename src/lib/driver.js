@@ -20,6 +20,7 @@ const STATUS = {
   PASS: 'EXECUTED_PASS',
   FAIL: 'EXECUTED_FAIL',
   BLOCKED: 'ENVIRONMENT_BLOCKED',
+  BUDGET: 'BUDGET_EXCEEDED',
   SKIPPED: 'SKIPPED',
 };
 
@@ -83,6 +84,22 @@ function fillKnown(known) {
   };
 }
 
+// One ceiling per run for planning, review and repro calls together
+// (ARW_MAX_CALLS, ARW_MAX_INPUT_TOKENS; 0 = no limit). A job that would start
+// beyond it stops as BUDGET_EXCEEDED, which leaves the review incomplete.
+function budgetExceeded(env) {
+  const maxCalls = envInt('ARW_MAX_CALLS', 0);
+  const maxInput = envInt('ARW_MAX_INPUT_TOKENS', 0);
+  if (!maxCalls && !maxInput) return null;
+  const plan = sumUsage(readJsonIfExists(path.join(env.runDir, 'plan-work', 'receipts.json'), {}));
+  const run = sumUsage(env.receipts);
+  const calls = plan.calls + run.calls;
+  const input = plan.input_tokens + run.input_tokens;
+  if (maxCalls && calls >= maxCalls) return `budget exceeded: ${calls} model calls (limit ${maxCalls})`;
+  if (maxInput && input >= maxInput) return `budget exceeded: ${input} input tokens (limit ${maxInput})`;
+  return null;
+}
+
 // One model job with the repair loop: full -> repair x N -> one fresh full.
 async function runModelJob(env, spec) {
   const { runDir, context, executor, log, receipts, flushReceipts } = env;
@@ -101,6 +118,11 @@ async function runModelJob(env, spec) {
     const prompt = spec.buildPrompt(repair);
     const attemptDir = ensureDir(path.join(dir, 'attempts', `${spec.label.replace(/[^A-Za-z0-9_-]/g, '_')}-${attempt + 1}`));
     let res;
+    const over = budgetExceeded(env);
+    if (over) {
+      log(`stopped ${spec.label}: ${over}`);
+      return { status: STATUS.BUDGET, errors: [over] };
+    }
     for (let tries = 0; ; tries += 1) {
       const before = verify(runDir, context);
       if (before.length) throw new ContextDrift(`before ${spec.label}: ${before.join('; ')}`);
@@ -425,6 +447,7 @@ function finish(runDir, optOuts = {}) {
   outcome.gaps.push(...reproState.errors);
   outcome.complete = outcome.gaps.length === 0;
   const synth = synthesisCheck(runDir, context, state, outcome);
+  const injection = readJsonIfExists(path.join(runDir, 'injection.json'), { hits: [] }).hits;
   const usage = sumUsage(readJsonIfExists(path.join(dir, 'receipts.json'), {}));
   // Planning happens before the freeze; its cost is reported, not hidden.
   usage.plan = sumUsage(readJsonIfExists(path.join(runDir, 'plan-work', 'receipts.json'), {}));
@@ -441,6 +464,7 @@ function finish(runDir, optOuts = {}) {
     recommendation: outcome.recommendation,
     gaps: outcome.gaps,
     items: outcome.items,
+    warnings: injection.map((h) => ({ kind: `prompt-injection:${h.kind}`, where: `${h.where}:${h.line}`, text: h.text })),
     jobs: state.jobs,
     clusters: state.clusters,
     findings: outcome.findings,

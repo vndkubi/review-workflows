@@ -7,6 +7,7 @@ const { spawn, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { ensureDir, envInt } = require('./util');
+const { redactSecrets } = require('./guard');
 
 function resolveCodex() {
   if (process.env.CODEX_BIN) return { cmd: process.execPath, pre: [process.env.CODEX_BIN] };
@@ -92,8 +93,9 @@ function killTree(child) {
 // provider's structured outputs; it removes JSON syntax errors entirely.
 // Verified with codex 0.147 that tools stay usable with --output-schema.
 // Disable with CODEX_OUTPUT_SCHEMA=0 for providers that do not support it.
-function runCodex({ prompt, cwd, attemptDir, model, effort, sandbox = 'read-only', timeoutMs, outputSchema }) {
+function runCodex({ prompt: rawPrompt, cwd, attemptDir, model, effort, sandbox = 'read-only', timeoutMs, outputSchema }) {
   ensureDir(attemptDir);
+  const { text: prompt, redactions } = redactSecrets(rawPrompt);
   const outFile = path.join(attemptDir, 'last-message.txt');
   const eventsFile = path.join(attemptDir, 'events.jsonl');
   const stderrFile = path.join(attemptDir, 'stderr.txt');
@@ -169,6 +171,7 @@ function runCodex({ prompt, cwd, attemptDir, model, effort, sandbox = 'read-only
         error_message: errorMessage,
         model: model || null,
         prompt_bytes: Buffer.byteLength(prompt),
+        redactions: redactions.reduce((n, r) => n + r.count, 0),
       });
     };
     child.on('error', (err) => finish(null, err));

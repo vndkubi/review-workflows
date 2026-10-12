@@ -93,6 +93,10 @@ function renderReport(runDir, validation, identity) {
   const u = validation.usage;
   const p = u.plan || { calls: 0, input_tokens: 0, output_tokens: 0 };
   out.push(`- review calls ${u.calls} (${u.repair_calls} repairs) · tokens in ${u.input_tokens} (cached ${u.cached_input_tokens}) / out ${u.output_tokens} · planning calls ${p.calls}, tokens in ${p.input_tokens} / out ${p.output_tokens}`);
+  if (validation.warnings && validation.warnings.length) {
+    out.push('', `## ⚠ Instruction-like text aimed at AI reviewers (${validation.warnings.length})`, '', 'The PR content contains text that tries to steer an automated reviewer. It was treated as data; check whether it is intentional.', '');
+    out.push(...validation.warnings.map((w) => `- \`${w.where}\` [${w.kind}] ${w.text}`));
+  }
   if (validation.gaps.length) out.push('', '## Not verified', '', ...validation.gaps.map((g) => `- ${g}`));
   if (validation.items && validation.items.length) {
     const texts = new Map(JSON.parse(readInput(runDir, loadContext(runDir), 'review-items') || '[]').map((i) => [i.id, i]));
