@@ -14,7 +14,9 @@ const { validateAgainst, outputSchema } = require('./schema');
 const { buildUnits, renderPlanMarkdown } = require('./plan');
 const { freezeContext, loadContext, verifyContext } = require('./freeze');
 const { runLooseJob } = require('./loose-job');
-const { runBatch, finish } = require('./driver');
+const { runBatch, finish, runModelJob } = require('./driver');
+const { runRepro } = require('./repro');
+const { makeSources } = require('./validate');
 const { writeReport } = require('./report');
 const { extractTicketKey } = require('./jira');
 const { approvedTicketInputs } = require('./ticket-pipeline');
@@ -159,7 +161,7 @@ function freezePhase({ runDir, run, info, tickets, planned }) {
   return context;
 }
 
-async function reviewPr({ repo, pr, ticket, executor, preflight, models = {}, workers, singleRole, skipSeams, skipRebuttals, skipSynthesis, refresh, log = () => {}, prepared }) {
+async function reviewPr({ repo, pr, ticket, executor, preflight, models = {}, workers, singleRole, skipSeams, skipRebuttals, skipSynthesis, refresh, noRepro, reproRunner, testCommand, log = () => {}, prepared }) {
   const { runDir, run, info } = prepare({ repo, pr, prepared });
   log(`run dir ${runDir}; head ${run.identity.head_sha.slice(0, 12)} base ${run.identity.base_sha.slice(0, 12)}`);
   const tickets = ticketInputs(run, { ticket, info });
@@ -197,9 +199,30 @@ async function reviewPr({ repo, pr, ticket, executor, preflight, models = {}, wo
   }
 
   phase(run, runDir, 'batch', 'RUNNING');
-  const validation = await runBatch({ runDir, executor, workers, skipSeams, skipRebuttals, skipSynthesis, models });
+  let validation = await runBatch({ runDir, executor, workers, skipSeams, skipRebuttals, skipSynthesis, models });
   const fresh = readJson(path.join(runDir, 'run.json'));
   fresh.phases.batch = { status: validation.status, at: nowIso() };
+  writeJsonAtomic(path.join(runDir, 'run.json'), fresh);
+
+  // Phase 3.5: executed reproduction of blocking findings (CONFIRMED = L3).
+  if (!noRepro && validation.status !== 'INVALIDATED') {
+    const repoCfg = prepared ? {} : github.reposConfig().repos[repo] || {};
+    const results = await runRepro({
+      runDir,
+      executor,
+      models,
+      runner: reproRunner,
+      testCommand: testCommand || repoCfg.test_command || null,
+      log,
+      prompts,
+      runModelJob,
+      makeSources,
+    });
+    validation = finish(runDir, { skipSeams, skipRebuttals, skipSynthesis });
+    fresh.phases.repro = { status: 'EXECUTED_PASS', at: nowIso(), results: results.map((r) => ({ finding: r.finding_id, status: r.status, fix_verified: r.fix ? r.fix.verified : null })) };
+  } else {
+    fresh.phases.repro = { status: 'SKIPPED', at: nowIso(), reason: noRepro ? 'disabled (--no-repro)' : 'context invalidated' };
+  }
   writeJsonAtomic(path.join(runDir, 'run.json'), fresh);
   const report = writeReport(runDir, validation, fresh.identity);
   return { runDir, validation, report };

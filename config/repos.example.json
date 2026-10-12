@@ -5,7 +5,8 @@
       "remote": "origin"
     },
     "your-org/billing-py": {
-      "checkout": "D:/src/billing-py"
+      "checkout": "D:/src/billing-py",
+      "test_command": "python -m pytest -q -p no:cacheprovider {selector} --junitxml={junit}"
     }
   }
 }

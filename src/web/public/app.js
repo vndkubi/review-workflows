@@ -336,6 +336,11 @@ function findingCard(d, meta, dupes) {
     f.fix.kind === 'code_change'
       ? [h('div', { class: 'label' }, 'Suggested fix'), h('p', { class: 'small' }, f.fix.reason), diffView(f.fix.asis, f.fix.tobe)]
       : h('p', {}, h('span', { class: 'label' }, 'Decision needed '), f.fix.reason),
+    meta.repro
+      ? h('p', {}, h('span', { class: 'label' }, 'Reproduction '), statusBadge(meta.repro.status), meta.repro.test ? [' ', h('code', {}, meta.repro.test)] : null,
+        meta.repro.fix_verified === true ? h('span', { class: 'badge ok' }, 'fix verified') : meta.repro.fix_verified === false ? h('span', { class: 'badge bad' }, 'fix does not pass') : null,
+        meta.repro.reason ? h('span', { class: 'small muted' }, ` ${meta.repro.reason}`) : null)
+      : null,
     meta.rebuttal ? h('p', {}, h('span', { class: 'label' }, `Rebuttal ${meta.rebuttal.verdict}${meta.rebuttal_from && meta.rebuttal_from !== meta.id ? ` (from ${meta.rebuttal_from})` : ''} `), `Tried: ${meta.rebuttal.defense_attempted} ${meta.rebuttal.reason}`) : null,
     h('div', { class: 'label' }, 'Evidence'),
     h('ul', {}, f.evidence.map((ev) => evidenceItem(d, ev))),
@@ -563,7 +568,7 @@ function renderNewReview() {
   const ticket = h('input', { type: 'text', placeholder: 'optional, e.g. ACME-7 (taken from title/branch otherwise)' });
   const workers = h('input', { type: 'number', min: '1', max: '8', value: String(state.config.workers) });
   const prList = h('div', {});
-  const flags = { singleRole: 'Single role (business units: business pass only)', skipSeams: 'Skip seams', skipRebuttals: 'Skip red-team', skipSynthesis: 'Skip synthesis', refresh: 'Refresh (re-plan, re-freeze)' };
+  const flags = { singleRole: 'Single role (business units: business pass only)', skipSeams: 'Skip seams', skipRebuttals: 'Skip red-team', skipSynthesis: 'Skip synthesis', noRepro: 'Skip repro tests', refresh: 'Refresh (re-plan, re-freeze)' };
   const boxes = Object.fromEntries(Object.keys(flags).map((k) => [k, h('input', { type: 'checkbox' })]));
   const loadPrs = async () => {
     if (!repo.value) return;

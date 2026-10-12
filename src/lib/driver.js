@@ -12,6 +12,7 @@ const { makeSources, canonicalizeCandidate, validatePacket, validateRebuttal, va
 const { findingClusters } = require('./cluster');
 const { computeOutcome, BLOCKING } = require('./outcome');
 const prompts = require('./prompts');
+const { loadReproRecords } = require('./repro');
 const { outputSchema, stripNulls } = require('./schema');
 
 const STATUS = {
@@ -418,7 +419,11 @@ function finish(runDir, optOuts = {}) {
   const dir = revisionDir(runDir, context.context_id);
   const drift = verifyContext(runDir, context);
   const state = collectState(runDir, context, run.review, grading);
-  const outcome = computeOutcome({ packets: state.packets, jobs: state.jobs, clusters: state.clusters, rebuttals: state.rebuttals, items: grading.items });
+  const reproState = loadReproRecords(runDir, context);
+  const outcome = computeOutcome({ packets: state.packets, jobs: state.jobs, clusters: state.clusters, rebuttals: state.rebuttals, items: grading.items, repro: reproState.records });
+  // A repro record whose artifacts changed is not evidence of anything.
+  outcome.gaps.push(...reproState.errors);
+  outcome.complete = outcome.gaps.length === 0;
   const synth = synthesisCheck(runDir, context, state, outcome);
   const usage = sumUsage(readJsonIfExists(path.join(dir, 'receipts.json'), {}));
   // Planning happens before the freeze; its cost is reported, not hidden.

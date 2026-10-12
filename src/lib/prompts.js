@@ -200,6 +200,27 @@ function synthesisPrompt(runDir, context, job) {
     .join('\n\n');
 }
 
+// A reproduction test for one blocking finding. The harness writes, runs and
+// judges it; the model never claims a result.
+function reproPrompt(runDir, context, job) {
+  const f = job.finding;
+  const lines = [
+    `JOB: write ONE reproduction test for finding ${f.id}.`,
+    `FINDING: ${JSON.stringify({ id: f.id, severity: f.severity, title: f.title, current: f.asis, expected: f.tobe, trigger: f.trigger, evidence: f.evidence.filter((e) => e.kind === 'code'), fix: f.fix }, null, 1)}`,
+    job.items.length ? `REVIEW ITEMS IT VIOLATES (expected results come from the approved spec):\n${JSON.stringify(job.items.map(({ id, text, expected }) => ({ id, text, expected })), null, 1)}` : '',
+    `THE TEST MUST
+- fail on the reviewed head BECAUSE of this defect: an assertion on the EXPECTED result (from the finding/spec), with the concrete trigger values — never assert the current, wrong behaviour;
+- pass once the finding's fix is applied (the harness applies fix.asis -> fix.tobe and re-runs it);
+- compile and run against the head as it is: use the framework, versions and conventions of the existing tests in this repository (read a neighbouring test first; JUnit 4 vs 5, pytest fixtures);
+- be a NEW file: Java under src/test/java/<package of the class under test>/<ClassName>ReproTest.java with selector "<package>.<ClassName>ReproTest"; Python as tests/test_<name>_repro.py with selector "<path>::<test function>";
+- be deterministic and self-contained: no network, database, clock, sleeps or randomness; one focused test method is enough.
+Do not change production code. Do not run the test; you cannot. In fails_because say which assertion fails on head and with what values.`,
+  ];
+  return [globalRules(), runBlock(runDir, context), lines.filter(Boolean).join('\n\n'), `JSON SCHEMA (root = reproTest):\n${schemaFor('repro', 'reproTest')}`, repairBlock(job.repair)]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 // Planner runs before the freeze, so it gets its inputs inline.
 function planPrompt({ identity, reviewable, skipped, stats, evidencePack, items, specMarkdown, prBody, repair, plannerCharter }) {
   const fileList = reviewable.map((f) => `- ${f}${stats[f] ? ` (+${stats[f].added} -${stats[f].removed})` : ''}`).join('\n');
@@ -299,4 +320,4 @@ function specPrompt({ ticket, requirements, evidenceBlocks, feedback, repair }) 
     .join('\n\n');
 }
 
-module.exports = { packetPrompt, rebuttalPrompt, synthesisPrompt, planPrompt, requirementsPrompt, auditPrompt, analysisPrompt, specPrompt, wrapUntrusted, globalRules, numbered };
+module.exports = { packetPrompt, rebuttalPrompt, synthesisPrompt, reproPrompt, planPrompt, requirementsPrompt, auditPrompt, analysisPrompt, specPrompt, wrapUntrusted, globalRules, numbered };

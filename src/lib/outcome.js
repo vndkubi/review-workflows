@@ -8,7 +8,8 @@ const BLOCKING = new Set(['P1', 'P2']);
 // packets: [{ unit_id, role, packet }] (valid packets only)
 // jobs:    [{ unit_id, role, required, status }]
 // clusters: findingClusters output; rebuttals: Map finding_id -> rebuttal
-function computeOutcome({ packets, jobs, clusters, rebuttals, items }) {
+// repro: Map finding_id -> validated repro record (repro.loadReproRecords).
+function computeOutcome({ packets, jobs, clusters, rebuttals, items, repro = new Map() }) {
   const findings = [];
   const clusterOf = new Map();
   for (const c of clusters) for (const id of c.members) clusterOf.set(id, c);
@@ -47,10 +48,7 @@ function computeOutcome({ packets, jobs, clusters, rebuttals, items }) {
         cluster_id: cluster ? cluster.id : null,
         canonical: cluster ? cluster.canonical_id === f.id : true,
         votes: cluster ? cluster.votes : 1,
-        // Static, quote-validated evidence only. CONFIRMED needs an executed
-        // reproduction (L3); agreement between models is not proof.
-        evidence_level: 'L1',
-        label: state === 'withdrawn' ? 'NOT_A_BUG' : 'SUSPECTED',
+        ...reproFields(f.id, cluster, repro, state),
       });
     }
   }
@@ -87,6 +85,28 @@ function computeOutcome({ packets, jobs, clusters, rebuttals, items }) {
   else if (gaps.length) recommendation = 'needs_investigation';
 
   return { findings, gaps, complete: gaps.length === 0, recommendation, items: itemResults };
+}
+
+// Static, quote-validated evidence is L1 (SUSPECTED); agreement between models
+// is not proof. CONFIRMED needs a harness-executed test that failed twice on
+// the reviewed head (L3). A record is shared by its duplicate cluster.
+function reproFields(id, cluster, repro, state) {
+  const from = repro.has(id) ? id : cluster ? cluster.members.find((m) => repro.has(m)) : null;
+  const rec = from ? repro.get(from) : null;
+  const out = { evidence_level: 'L1', label: state === 'withdrawn' ? 'NOT_A_BUG' : 'SUSPECTED', repro: null };
+  if (!rec) return out;
+  out.repro = {
+    status: rec.status,
+    from,
+    test: rec.test ? rec.test.selector : null,
+    fix_verified: rec.fix ? rec.fix.verified : null,
+    reason: rec.reason || null,
+  };
+  if (rec.status === 'RED_PROVEN' && state !== 'withdrawn') {
+    out.label = 'CONFIRMED';
+    out.evidence_level = 'L3';
+  }
+  return out;
 }
 
 module.exports = { computeOutcome, BLOCKING };

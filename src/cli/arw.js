@@ -20,7 +20,7 @@ Ticket pipeline (understand the requirement; stops at each human gate):
 
 PR review (plan -> freeze -> waves -> validate -> report):
   arw review --repo owner/name --pr <n> [--ticket KEY] [--workers 4] [--single-role]
-             [--skip-seams] [--skip-rebuttals] [--skip-synthesis] [--refresh]
+             [--skip-seams] [--skip-rebuttals] [--skip-synthesis] [--refresh] [--no-repro]
   arw validate --repo owner/name --pr <n>      re-validate on disk, no model calls
   arw publish  --repo owner/name --pr <n> [--min-severity P3] [--dry-run]
                                                creates a PENDING GitHub review you submit yourself
@@ -75,7 +75,7 @@ async function cmdTicket(argv) {
 }
 
 async function cmdReview(argv) {
-  const args = parseArgs(argv, ['singleRole', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'refresh']);
+  const args = parseArgs(argv, ['singleRole', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'refresh', 'noRepro']);
   if (!args.repo || !args.pr) throw new Error('usage: arw review --repo owner/name --pr <n>');
   const pfDir = path.join(RUNS, '.preflight');
   const res = await reviewPr({
@@ -91,6 +91,7 @@ async function cmdReview(argv) {
     skipRebuttals: args.skipRebuttals,
     skipSynthesis: args.skipSynthesis,
     refresh: args.refresh,
+    noRepro: args.noRepro,
     log,
   });
   const v = res.validation;

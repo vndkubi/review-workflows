@@ -221,7 +221,46 @@ function packetFor(prompt) {
   return JSON.stringify(p);
 }
 
+const REPRO_TEST = `package com.acme;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import java.math.BigDecimal;
+import org.junit.jupiter.api.Test;
+
+class OrderServiceReproTest {
+    @Test
+    void memberAtExactlyOneMillionGetsTenPercent() {
+        assertEquals(0, new BigDecimal("100000").compareTo(new OrderService().discount(true, new BigDecimal("1000000"))));
+    }
+}
+`;
+
+// Stands in for "mvn test": judges the code actually present in the repro
+// worktree, so applying the finding's fix really changes the outcome.
+function fakeRunner(calls) {
+  return async ({ cwd, logFile, test, phase }) => {
+    calls.push({ phase, selector: test.selector, testExists: fs.existsSync(path.join(cwd, test.path)) });
+    const code = fs.readFileSync(path.join(cwd, ORDER), 'utf8');
+    const failed = code.includes('compareTo(THRESHOLD) > 0') ? 1 : 0;
+    fs.writeFileSync(
+      path.join(cwd, '.arw-junit.xml'),
+      `<testsuite name="${test.selector}" tests="1" failures="${failed}" errors="0" skipped="0">${failed ? '<testcase name="t"><failure message="expected: &lt;0&gt; but was: &lt;1&gt;"/></testcase>' : '<testcase name="t"/>'}</testsuite>`,
+    );
+    fs.writeFileSync(logFile, `fake run ${phase}: ${failed ? 'FAILED' : 'passed'}\n`);
+    return { exit_code: failed, elapsed_ms: 5 };
+  };
+}
+
 function reviewHandler(prompt) {
+  if (prompt.includes('JOB: write ONE reproduction test')) {
+    return JSON.stringify({
+      language: 'java',
+      path: 'src/test/java/com/acme/OrderServiceReproTest.java',
+      selector: 'com.acme.OrderServiceReproTest',
+      content: REPRO_TEST,
+      fails_because: 'discount(true, 1000000) returns 0 instead of 100000',
+    });
+  }
   if (prompt.startsWith('You are a read-only planner')) {
     const units = [
       { id: 'B1', kind: 'business', desc: 'member discount', files: [ORDER], items: itemsOf('F1').map((i) => i.id) },
@@ -310,10 +349,11 @@ test('ticket pipeline -> PR review, end to end', async (t) => {
     base: repo.base,
   };
   const runDir = prDir('acme/shop', 7);
+  const runnerCalls = [];
 
   await t.test('review: graded per review item; one finding covers the failed rule and boundary', async () => {
     const rexec = scriptedExecutor(reviewHandler);
-    const { validation, report } = await reviewPr({ repo: 'acme/shop', pr: 7, executor: rexec, workers: 3, prepared });
+    const { validation, report } = await reviewPr({ repo: 'acme/shop', pr: 7, executor: rexec, workers: 3, prepared, reproRunner: fakeRunner(runnerCalls), testCommand: 'fake-test {selector} {junit}' });
     assert.equal(validation.status, 'EXECUTED_PASS', JSON.stringify(validation.jobs.filter((j) => j.errors.length), null, 1));
     assert.equal(validation.recommendation, 'changes_requested');
     assert.equal(validation.complete, true, validation.gaps.join('; '));
@@ -350,6 +390,41 @@ test('ticket pipeline -> PR review, end to end', async (t) => {
     assert.match(text, /_Duplicates: B1-technical-F1_/);
   });
 
+  await t.test('repro: RED twice on head, GREEN with the fix -> CONFIRMED (L3) for the whole cluster', async () => {
+    const v = JSON.parse(fs.readFileSync(path.join(revisionDir(runDir, loadContext(runDir).context_id), 'validation.json'), 'utf8'));
+    const meta = Object.fromEntries(v.findings.map((f) => [f.id, f]));
+    assert.equal(meta['B1-business-F1'].label, 'CONFIRMED');
+    assert.equal(meta['B1-business-F1'].evidence_level, 'L3');
+    assert.equal(meta['B1-business-F1'].repro.status, 'RED_PROVEN');
+    assert.equal(meta['B1-business-F1'].repro.fix_verified, true);
+    assert.equal(meta['B1-technical-F1'].label, 'CONFIRMED', 'cluster members share the reproduction');
+    assert.equal(meta['B1-technical-F1'].repro.from, 'B1-business-F1');
+    assert.equal(meta['B2-technical-F1'].label, 'SUSPECTED', 'P3 findings are not reproduced');
+    assert.deepEqual(runnerCalls.map((c) => c.phase), ['head-1', 'head-2', 'fix']);
+    assert.ok(runnerCalls.every((c) => c.testExists && c.selector === 'com.acme.OrderServiceReproTest'));
+    // the repro worktree is restored; the frozen checkout was never touched
+    const wt = path.join(runDir, 'repro-wt');
+    // Same git config as the harness (the test helper forces autocrlf=false).
+    assert.equal(require('../src/lib/git').git(wt, ['status', '--porcelain', '--untracked-files=no']).trim(), '');
+    assert.ok(!fs.existsSync(path.join(wt, 'src/test/java/com/acme/OrderServiceReproTest.java')));
+    assert.equal(sh(repo.dir, ['status', '--porcelain']), '');
+    assert.match(fs.readFileSync(path.join(runDir, 'report.md'), 'utf8'), /\*\*Reproduction\*\* `RED_PROVEN` — `com\.acme\.OrderServiceReproTest` · the suggested fix makes it pass/);
+    assert.match(buildReview(runDir, { minSeverity: 'P2' }).comments[0].body, /\*\*Reproduced\*\* by a test that fails twice/);
+  });
+
+  await t.test('a changed repro log voids CONFIRMED and makes the review incomplete', () => {
+    const log = path.join(revisionDir(runDir, loadContext(runDir).context_id), 'repro', 'B1-business-F1', 'head-1.log');
+    const original = fs.readFileSync(log, 'utf8');
+    fs.writeFileSync(log, original.replace('FAILED', 'passed'));
+    let { validation } = revalidate(runDir);
+    assert.equal(validation.findings.find((f) => f.id === 'B1-business-F1').label, 'SUSPECTED');
+    assert.ok(validation.gaps.some((g) => /repro B1-business-F1: artifact .*head-1\.log is missing or changed/.test(g)));
+    assert.equal(validation.complete, false);
+    fs.writeFileSync(log, original);
+    ({ validation } = revalidate(runDir));
+    assert.equal(validation.findings.find((f) => f.id === 'B1-business-F1').label, 'CONFIRMED');
+  });
+
   await t.test('canonicalization re-anchored the quote and the authority id', () => {
     const ctx = loadContext(runDir);
     const packet = JSON.parse(fs.readFileSync(path.join(revisionDir(runDir, ctx.context_id), 'packets/business/B1.json'), 'utf8'));
@@ -371,7 +446,7 @@ test('ticket pipeline -> PR review, end to end', async (t) => {
     const again = scriptedExecutor(() => {
       throw new Error('no model call expected');
     });
-    const { validation } = await reviewPr({ repo: 'acme/shop', pr: 7, executor: again, prepared });
+    const { validation } = await reviewPr({ repo: 'acme/shop', pr: 7, executor: again, prepared, reproRunner: fakeRunner(runnerCalls), testCommand: 'fake-test {selector} {junit}' });
     assert.equal(again.calls.length, 0);
     assert.equal(validation.status, 'EXECUTED_PASS');
   });

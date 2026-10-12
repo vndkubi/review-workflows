@@ -36,6 +36,32 @@ for every item, and one finding can cover several failed items. Risky rule and b
 before the review counts as complete. Set `ARW_AUTO_APPROVE_SPEC=1` to let a deterministic policy approve
 clean specs (no gaps, contradictions or inferred rules).
 
+## Reproduction: from SUSPECTED to CONFIRMED
+
+After the review, every blocking (P1/P2) finding that was not withdrawn gets one reproduction attempt per
+duplicate cluster:
+
+1. A model writes **one new test file** (JUnit or pytest, in the style of the repository's own tests) that
+   asserts the *expected* result for the finding's trigger values. It returns the file as JSON and does not
+   run anything.
+2. The harness checks the file: it must be new, use the right package/class/selector, and assert something.
+   It writes the file into a **separate repro worktree** at the reviewed head, so the frozen checkout is never
+   touched.
+3. The harness runs the test twice with the repository's build (Maven, Gradle, pytest, or `test_command`
+   from `config/repos.json`), with tokens and keys removed from the environment, and reads the result from
+   JUnit XML:
+   - assertion failure both times → `RED_PROVEN`
+   - passes → `GREEN_NOT_PROVEN`
+   - one failure and one pass → `FLAKY`
+   - does not compile, or errors → `INCONCLUSIVE`
+   - no build tool → `ENVIRONMENT_BLOCKED`
+4. On `RED_PROVEN` the finding's own fix (`fix.asis → fix.tobe`) is applied and the test runs again. A
+   pass marks the fix as verified.
+
+Only `RED_PROVEN` turns a finding (and its duplicates) into **CONFIRMED (L3)**. Each run's log and the test
+file are stored with SHA-256 hashes, and validation re-checks them: an edited log turns the finding back into
+SUSPECTED and makes the review incomplete.
+
 ## Why it is built this way
 
 | Rule | Where it is enforced |
@@ -131,7 +157,6 @@ Java + Python fixture repo, with a scripted executor standing in for codex.
 
 ## Not built yet
 
-- Repro tests (RED/GREEN on the reviewed head) to promote findings to `CONFIRMED`.
 - Acceptance tracking: reading back which published findings were kept (`<!-- arw:finding=... -->` markers are already in each comment).
 - An eval harness that replays frozen contexts against labelled findings.
 - Multi-user access (the dashboard is single-user, loopback only).

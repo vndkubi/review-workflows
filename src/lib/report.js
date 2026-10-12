@@ -64,6 +64,11 @@ function renderFinding(f, meta, rebuttal) {
   } else {
     out.push('', `**Fix**: not a code change — ${f.fix.reason}`);
   }
+  if (meta.repro) {
+    const rr = meta.repro;
+    const fixText = rr.fix_verified === true ? ' · the suggested fix makes it pass' : rr.fix_verified === false ? ' · the suggested fix does NOT make it pass' : '';
+    out.push('', `**Reproduction** \`${rr.status}\`${rr.test ? ` — \`${rr.test}\`` : ''}${rr.from && rr.from !== f.id ? ` (from ${rr.from})` : ''}${fixText}${rr.reason ? ` — ${rr.reason}` : ''}`);
+  }
   if (rebuttal) {
     out.push('', `**Rebuttal** \`${rebuttal.verdict}\`${meta.rebuttal_from && meta.rebuttal_from !== f.id ? ` (inherited from ${meta.rebuttal_from})` : ''} — tried: ${rebuttal.defense_attempted}. ${rebuttal.reason}`);
   }

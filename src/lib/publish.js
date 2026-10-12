@@ -27,6 +27,9 @@ function commentBody(f, meta, contextId) {
     `**Impact:** ${f.impact}`,
     `**Authority:** ${f.authority.kind} \`${f.authority.id}\``,
   ];
+  if (meta.repro && meta.repro.status === 'RED_PROVEN') {
+    lines.push('', `**Reproduced** by a test that fails twice on this commit${meta.repro.test ? ` (\`${meta.repro.test}\`)` : ''}${meta.repro.fix_verified ? '; the suggested fix makes it pass' : ''}.`);
+  }
   if (f.fix.kind === 'code_change') lines.push('', `**Suggested fix** — ${f.fix.reason}`, '', diffBlock(f.fix.asis, f.fix.tobe));
   else lines.push('', `**Decision needed:** ${f.fix.reason}`);
   lines.push('', marker(f.id, contextId));

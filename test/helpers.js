@@ -76,10 +76,43 @@ const FEES_HEAD = `def late_fee(days, rate=0.5):
     return 0
 `;
 
+// A buildable Maven project (JUnit 5) using plugin versions that are usually
+// in a local repository already; used by live repro smoke runs.
+const POM = `<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.acme</groupId>
+  <artifactId>shop</artifactId>
+  <version>1.0</version>
+  <properties>
+    <maven.compiler.release>11</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.10.2</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.8.1</version></plugin>
+      <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><version>3.2.5</version></plugin>
+      <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-resources-plugin</artifactId><version>3.3.1</version></plugin>
+    </plugins>
+  </build>
+</project>
+`;
+
 // Returns { dir, base, head }: base on main, head one commit later.
-function makeRepo() {
+function makeRepo({ maven = false } = {}) {
   const dir = tmpDir('arw-repo-');
   sh(dir, ['init', '-q', '-b', 'main']);
+  if (maven) {
+    write(dir, 'pom.xml', POM);
+    write(dir, '.gitignore', 'target/\n');
+  }
   write(dir, 'src/main/java/com/acme/OrderService.java', ORDER_BASE);
   write(dir, 'src/main/java/com/acme/CheckoutController.java', CONTROLLER);
   write(dir, 'billing/fees.py', FEES_BASE);
