@@ -19,6 +19,7 @@ Ticket pipeline (understand the requirement; stops at each human gate):
   arw ticket <KEY> [--from-file ticket.md] [--extra notes.md ...] [--repo owner/name | --repo-dir <path>] [--redo intake|requirements|spec|analysis]
 
 PR review (plan -> freeze -> waves -> validate -> report):
+  arw review --local [<repo dir>] [--base main] [--mode branch|staged|worktree]   self-review before a PR
   arw review --repo owner/name --pr <n> [--ticket KEY] [--workers 4] [--single-role]
              [--skip-seams] [--skip-rebuttals] [--skip-synthesis] [--refresh] [--no-repro]
   arw validate --repo owner/name --pr <n>      re-validate on disk, no model calls
@@ -78,7 +79,15 @@ async function cmdTicket(argv) {
 
 async function cmdReview(argv) {
   const args = parseArgs(argv, ['singleRole', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'refresh', 'noRepro']);
-  if (!args.repo || !args.pr) throw new Error('usage: arw review --repo owner/name --pr <n>');
+  let local = null;
+  if (args.local) {
+    const { prepareLocal } = require('../lib/local-review');
+    local = prepareLocal({ dir: args.local === true ? process.cwd() : args.local, base: args.base || 'main', mode: args.mode || 'branch' });
+    args.repo = local.repo;
+    args.pr = local.pr;
+    console.error(`local review of ${local.prepared.info.title}: run ${local.repo.replace('/', '__')}__${local.pr}`);
+  }
+  if (!args.repo || !args.pr) throw new Error('usage: arw review --repo owner/name --pr <n>  |  arw review --local [dir]');
   const pfDir = path.join(RUNS, '.preflight');
   const res = await reviewPr({
     repo: args.repo,
@@ -94,6 +103,7 @@ async function cmdReview(argv) {
     skipSynthesis: args.skipSynthesis,
     refresh: args.refresh,
     noRepro: args.noRepro,
+    prepared: local ? local.prepared : undefined,
     log,
   });
   const v = res.validation;

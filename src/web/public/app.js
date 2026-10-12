@@ -611,20 +611,55 @@ function renderNewReview() {
     }
   };
   repo.addEventListener('change', loadPrs);
+  // Local self-review: no PR yet, the diff comes from a directory on disk.
+  const source = h('select', { 'aria-label': 'what to review' },
+    h('option', { value: 'pr' }, 'A pull request on GitHub'),
+    h('option', { value: 'local' }, 'Local changes (before opening a PR)'));
+  const dir = h('input', { type: 'text', list: 'arw-checkouts', placeholder: 'absolute path of the repository, e.g. D:\\code\\shop' });
+  const dirList = h('datalist', { id: 'arw-checkouts' }, (state.config.checkouts || []).map((c) => h('option', { value: c })));
+  const base = h('input', { type: 'text', value: 'main', pattern: '[A-Za-z0-9._][A-Za-z0-9._/-]*' });
+  const mode = h('select', { 'aria-label': 'local mode' },
+    h('option', { value: 'branch' }, 'Branch: commits on the current branch since it left the base'),
+    h('option', { value: 'staged' }, 'Staged: what is in the index now (git add)'),
+    h('option', { value: 'worktree' }, 'Working tree: all tracked edits, committed or not'));
+  const prPart = h('div', { class: 'stack' },
+    h('label', { class: 'field' }, 'Repository', repo),
+    prList,
+    h('label', { class: 'field' }, 'Pull request', pr),
+    h('label', { class: 'field' }, 'Ticket', ticket));
+  const localPart = h('div', { class: 'stack', hidden: true },
+    h('label', { class: 'field' }, 'Directory', dir, dirList),
+    h('label', { class: 'field' }, 'Base branch', base),
+    h('label', { class: 'field' }, 'What to review', mode),
+    h('p', { class: 'small muted' }, 'Staged and working-tree reviews use a snapshot commit; your branch, index and files are not changed. The result cannot be published until a PR exists.'));
+  const syncSource = () => {
+    const local = source.value === 'local';
+    prPart.hidden = local;
+    localPart.hidden = !local;
+    pr.required = !local;
+    dir.required = local;
+    boxes.refresh.closest('label').hidden = local;
+  };
+  source.addEventListener('change', syncSource);
   const submit = (e) => {
     e.preventDefault();
+    if (source.value === 'local') {
+      const body = { dir: dir.value.trim(), base: base.value.trim() || 'main', mode: mode.value, workers: Number(workers.value) || undefined };
+      for (const k of Object.keys(flags)) if (k !== 'refresh') body[k] = boxes[k].checked;
+      startJob(api('POST', '/api/reviews/local', body), 'Local review');
+      return;
+    }
     const body = { repo: repo.value, pr: Number(pr.value), ticket: ticket.value.trim() || undefined, workers: Number(workers.value) || undefined };
     for (const k of Object.keys(flags)) body[k] = boxes[k].checked;
     startJob(api('POST', '/api/reviews', body), 'Review');
   };
-  put($main, 
+  put($main,
     h('h1', {}, 'New review'),
     !state.config.repos.length ? h('div', { class: 'notice bad' }, 'No repositories in config/repos.json.') : null,
     h('form', { class: 'stack', onsubmit: submit },
-      h('label', { class: 'field' }, 'Repository', repo),
-      prList,
-      h('label', { class: 'field' }, 'Pull request', pr),
-      h('label', { class: 'field' }, 'Ticket', ticket),
+      h('label', { class: 'field' }, 'Review', source),
+      prPart,
+      localPart,
       h('label', { class: 'field' }, 'Parallel workers', workers),
       h('div', { class: 'checks' }, Object.entries(flags).map(([k, label]) => h('label', {}, boxes[k], ` ${label}`))),
       h('p', { class: 'small muted' }, 'Opt-outs are recorded in validation.json and shown in the report.'),

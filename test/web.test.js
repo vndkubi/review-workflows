@@ -5,7 +5,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { tmpDir, scriptedExecutor } = require('./helpers');
+const { tmpDir, scriptedExecutor, makeRepo } = require('./helpers');
 
 process.env.ARW_RUNS_DIR = tmpDir('arw-web-runs-');
 // Never touch the real .env / repos.json from tests.
@@ -188,5 +188,16 @@ test('dashboard server', async (t) => {
     const r = await call(port, 'POST', '/api/reviews', { body: { repo: 'someone/else', pr: 1 }, headers: auth });
     assert.equal(r.status, 400);
     assert.match(r.json.error, /not in config\/repos\.json/);
+  });
+
+  await t.test('local reviews: a git directory becomes a queued job; bad input is refused', async () => {
+    const repo = makeRepo();
+    const ok = await call(port, 'POST', '/api/reviews/local', { body: { dir: repo.dir, base: 'main', mode: 'staged', noRepro: true }, headers: auth });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(ok.json.args, ['review', '--local', repo.dir, '--base', 'main', '--mode', 'staged', '--no-repro']);
+    assert.match(ok.json.target.id, /^local__arw-repo-\w+__\d{6}$/);
+    for (const body of [{ dir: 'relative/path' }, { dir: repo.dir, base: '--upload-pack=x' }, { dir: repo.dir, mode: 'everything' }, { dir: tmpDir() }]) {
+      assert.equal((await call(port, 'POST', '/api/reviews/local', { body, headers: auth })).status, 400, JSON.stringify(body));
+    }
   });
 });

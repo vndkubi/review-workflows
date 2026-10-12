@@ -124,6 +124,7 @@ pre.log { max-height: 60vh; overflow-y: auto; white-space: pre-wrap; word-break:
 .filter.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 
 form.stack { display: grid; gap: 12px; max-width: 640px; }
+div.stack { display: grid; gap: 12px; }
 label.field { display: grid; gap: 4px; font-size: 13px; }
 input[type=text], input[type=number], select, textarea { font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); }
 textarea { min-height: 160px; font-family: var(--mono); font-size: 12.5px; }
@@ -174,3 +175,4 @@ textarea { min-height: 160px; font-family: var(--mono); font-size: 12.5px; }
 .setting input[type=text], .setting input[type=number], .setting input[type=password], .setting select { min-width: 280px; }
 section.panel h2 { margin-top: 0; }
 @media (max-width: 860px) { .setting { grid-template-columns: 1fr; } }
+[hidden] { display: none !important; }

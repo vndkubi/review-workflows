@@ -79,6 +79,8 @@ function buildReview(runDir, { minSeverity = 'P3' } = {}) {
 }
 
 function publish(runDir, { minSeverity, dryRun, createPendingReview }) {
+  const identity = readJson(path.join(runDir, 'run.json')).identity || {};
+  if (identity.local && !dryRun) throw new Error('this is a local review: there is no pull request to publish to yet (use --dry-run, or open a PR and review it)');
   const review = buildReview(runDir, { minSeverity });
   const record = {
     at: nowIso(),

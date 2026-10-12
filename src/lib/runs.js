@@ -17,8 +17,13 @@ function prDir(repo, pr) {
   return path.join(RUNS, 'prs', `${repo.replace('/', '__')}__${pr}`);
 }
 
+// Worktrees the tool creates live here (ARW_WT_DIR overrides it, for tests).
+function worktreeRoot() {
+  return process.env.ARW_WT_DIR || path.join(ROOT, 'wt');
+}
+
 function worktreeDir(repo, pr) {
-  return path.join(ROOT, 'wt', `${repo.replace('/', '__')}__${pr}`);
+  return path.join(worktreeRoot(), `${repo.replace('/', '__')}__${pr}`);
 }
 
 // What each gate is bound to, per run kind.
@@ -73,4 +78,4 @@ function isApproved(runDir, gate) {
   return s.decision === 'approved' && s.valid;
 }
 
-module.exports = { RUNS, ticketDir, prDir, worktreeDir, GATES, recordGate, gateState, isApproved };
+module.exports = { RUNS, ticketDir, prDir, worktreeRoot, worktreeDir, GATES, recordGate, gateState, isApproved };

@@ -37,7 +37,7 @@ function prepare({ repo, pr, prepared }) {
   let wt;
   if (prepared) {
     ({ info } = prepared);
-    wt = { checkout: prepared.checkout, head: prepared.head, base: prepared.base, source: prepared.checkout };
+    wt = { checkout: prepared.checkout, head: prepared.head, base: prepared.base, source: prepared.source || prepared.checkout };
   } else {
     info = github.prView(repo, pr);
     wt = github.preparePrWorktree({ repo, pr, info, worktree: worktreeDir(repo, pr) });
@@ -58,6 +58,7 @@ function prepare({ repo, pr, prepared }) {
     checkout: wt.checkout,
     source_checkout: wt.source,
     ticket: run.identity && run.identity.ticket,
+    local: prepared && prepared.local ? prepared.local : null,
   };
   info.body = redactSecrets(info.body || '').text;
   writeFileAtomic(path.join(runDir, 'pr-body.txt'), info.body);
@@ -216,7 +217,10 @@ async function reviewPr({ repo, pr, ticket, executor, preflight, models = {}, wo
 
   // Phase 3.5: executed reproduction of blocking findings (CONFIRMED = L3).
   if (!noRepro && validation.status !== 'INVALIDATED') {
-    const repoCfg = prepared ? {} : github.reposConfig().repos[repo] || {};
+    // Local reviews take the test command of the configured repo at that path.
+    const repoCfg = prepared
+      ? (prepared.local && Object.values(github.reposConfig().repos).find((r) => r && r.checkout && path.resolve(r.checkout) === path.resolve(prepared.local.dir))) || {}
+      : github.reposConfig().repos[repo] || {};
     const results = await runRepro({
       runDir,
       executor,

@@ -109,6 +109,7 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
       const cfg = executorConfig();
       return {
         repos: Object.keys(reposConfig().repos),
+        checkouts: Object.values(reposConfig().repos).map((r) => r && r.checkout).filter(Boolean),
         model: cfg.model,
         judge_model: cfg.judgeModel,
         effort: cfg.effort,
@@ -167,6 +168,27 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
         if (body[flag]) args.push(`--${flag.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`);
       }
       return queue.enqueue({ kind: 'review', title: `${repo}#${pr}`, args, target: { type: 'pr', id: `${repo.replace('/', '__')}__${pr}` } });
+    }],
+    ['POST', /^\/api\/reviews\/local$/, async (m, q, body) => {
+      const { localRunId, MODES } = require('../lib/local-review');
+      const dir = String(body.dir || '').trim();
+      const base = String(body.base || 'main').trim();
+      const mode = String(body.mode || 'branch');
+      if (!dir || !path.isAbsolute(dir)) throw data.httpError(400, 'dir must be an absolute path to a git repository');
+      if (!/^[A-Za-z0-9._][A-Za-z0-9._/-]*$/.test(base)) throw data.httpError(400, 'base must be a branch name');
+      if (!MODES.includes(mode)) throw data.httpError(400, `mode must be one of ${MODES.join(', ')}`);
+      let id;
+      try {
+        id = localRunId({ dir, mode });
+      } catch {
+        throw data.httpError(400, `${dir} is not a git repository`);
+      }
+      const args = ['review', '--local', dir, '--base', base, '--mode', mode];
+      if (body.workers) args.push('--workers', String(Math.max(1, Math.min(8, Number(body.workers) || 4))));
+      for (const flag of ['singleRole', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'noRepro']) {
+        if (body[flag]) args.push(`--${flag.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`);
+      }
+      return queue.enqueue({ kind: 'review', title: `local ${path.basename(dir)} (${mode})`, args, target: { type: 'pr', id } });
     }],
     ['GET', /^\/api\/prs\/([^/]+)$/, (m) => data.prDetail(m[1])],
     ['GET', /^\/api\/prs\/([^/]+)\/source$/, (m, q) =>

@@ -114,7 +114,18 @@ node src/cli/arw.js review --repo your-org/payment-api --pr 123
 # 3. Publish as a pending review, then open it on GitHub, edit, and submit yourself
 node src/cli/arw.js publish --repo your-org/payment-api --pr 123 --dry-run
 node src/cli/arw.js publish --repo your-org/payment-api --pr 123
+
+# Self-review before opening a PR (no GitHub needed)
+node src/cli/arw.js review --local D:/src/payment-api --base main --mode branch    # commits since leaving main
+node src/cli/arw.js review --local D:/src/payment-api --mode staged                # what `git add` has staged
+node src/cli/arw.js review --local D:/src/payment-api --mode worktree              # all tracked edits
 ```
+
+A local review needs an immutable commit like any other: staged and working-tree modes write a dangling
+snapshot commit (`git write-tree` / `git stash create` + `commit-tree`), so your branch, index, stash and files
+are not touched. Untracked files are not included. The run lives at `runs/prs/local__<dir name>__<n>/`, with
+one run per (repository, branch, mode) so re-running refreshes it. Repro uses the `test_command` of the
+configured repository whose `checkout` is that directory. It can be previewed but not published.
 
 ### Dashboard (personal, local)
 
@@ -167,7 +178,9 @@ npm test
 ```
 
 There are unit tests and an end-to-end test (ticket → review → publish draft → resume → tamper → drift) on a
-Java + Python fixture repo, with a scripted executor standing in for codex.
+Java + Python fixture repo, with a scripted executor standing in for codex. Tests never touch your `.env`,
+`config/*.json`, `runs/` or `wt/`: they point `ARW_ENV_FILE`, `ARW_REPOS_FILE`, `ARW_MCP_CONFIG`,
+`ARW_RUNS_DIR` and `ARW_WT_DIR` at temporary directories.
 
 ## Not built yet
 

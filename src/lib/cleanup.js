@@ -7,8 +7,8 @@
 //   runs:      whole run directories
 const fs = require('node:fs');
 const path = require('node:path');
-const { ROOT, readJsonIfExists } = require('./util');
-const { RUNS } = require('./runs');
+const { readJsonIfExists } = require('./util');
+const { RUNS, worktreeRoot } = require('./runs');
 const git = require('./git');
 
 const DAY = 24 * 3600 * 1000;
@@ -66,8 +66,8 @@ function diskUsage() {
       if (kind === 'prs') {
         const source = run.identity && run.identity.source_checkout;
         const review = run.identity && run.identity.checkout;
-        // Only worktrees this tool created: under ROOT/wt or the run's repro-wt.
-        if (review && path.resolve(review).startsWith(path.join(ROOT, 'wt') + path.sep) && fs.existsSync(review)) worktrees.push({ path: review, size: sizeOf(review), source });
+        // Only worktrees this tool created: under the worktree root or the run's repro-wt.
+        if (review && path.resolve(review).startsWith(path.resolve(worktreeRoot()) + path.sep) && fs.existsSync(review)) worktrees.push({ path: review, size: sizeOf(review), source });
         const repro = path.join(dir, 'repro-wt');
         if (fs.existsSync(repro)) worktrees.push({ path: repro, size: sizeOf(repro), source: review || source });
       }
