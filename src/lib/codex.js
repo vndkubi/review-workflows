@@ -24,8 +24,13 @@ function codexArgs({ cwd, outFile, model, effort, sandbox, schemaFile }) {
   // directory — in a PR checkout that file is author-controlled and would be
   // an instruction channel into the reviewer.
   const args = ['exec', '--json', '--skip-git-repo-check', '--ephemeral', '-s', sandbox, '-C', cwd, '-o', outFile, '-c', 'project_doc_max_bytes=0'];
-  if (process.env.CODEX_USE_USER_CONFIG !== '1') args.push('--ignore-user-config');
-  else if (process.env.CODEX_PROFILE) args.push('-p', process.env.CODEX_PROFILE);
+  if (process.env.CODEX_USE_USER_CONFIG !== '1') {
+    args.push('--ignore-user-config');
+    // Since codex 0.162 Windows has no default sandbox: without one, every
+    // shell command is rejected ("blocked by policy") and workers silently
+    // review nothing. The restricted-token sandbox still enforces read-only.
+    if (process.platform === 'win32') args.push('-c', `windows.sandbox="${process.env.CODEX_WINDOWS_SANDBOX || 'unelevated'}"`);
+  } else if (process.env.CODEX_PROFILE) args.push('-p', process.env.CODEX_PROFILE);
   if (model) args.push('-m', model);
   if (effort) args.push('-c', `model_reasoning_effort="${effort}"`);
   if (schemaFile) args.push('--output-schema', schemaFile);
@@ -110,6 +115,7 @@ function runCodex({ prompt, cwd, attemptDir, model, effort, sandbox = 'read-only
     let stdoutText = '';
     let stderrText = '';
     let timedOut = false;
+    let degenerate = false;
     const child = spawn(cmd, args, { cwd, env: { ...process.env, RUST_LOG: process.env.RUST_LOG || 'warn' }, windowsHide: true });
     const timer = setTimeout(() => {
       timedOut = true;
@@ -118,6 +124,13 @@ function runCodex({ prompt, cwd, attemptDir, model, effort, sandbox = 'read-only
     child.stdout.on('data', (d) => {
       events.write(d);
       stdoutText += d;
+      // A response cut at max_output_tokens is degenerate output (seen: endless
+      // whitespace under a strict schema). codex would reconnect and repeat it
+      // until the timeout, so stop now and let the runner fall back.
+      if (!degenerate && /max_output_tokens/.test(String(d))) {
+        degenerate = true;
+        killTree(child);
+      }
     });
     child.stderr.on('data', (d) => {
       stderr.write(d);
@@ -131,7 +144,10 @@ function runCodex({ prompt, cwd, attemptDir, model, effort, sandbox = 'read-only
       const output = fs.existsSync(outFile) ? fs.readFileSync(outFile, 'utf8') : null;
       let errorClass = null;
       let errorMessage = null;
-      if (timedOut) {
+      if (degenerate) {
+        errorClass = 'degenerate';
+        errorMessage = 'response hit max_output_tokens (degenerate output); stopped early';
+      } else if (timedOut) {
         errorClass = 'timeout';
         errorMessage = `killed after ${limit} ms`;
       } else if (spawnError) {
@@ -162,18 +178,28 @@ function runCodex({ prompt, cwd, attemptDir, model, effort, sandbox = 'read-only
   });
 }
 
-// Fail fast on auth/billing/model problems before any real job is spent.
+// Fail fast before any real job is spent: the model must answer AND be able
+// to run a read-only shell command. A worker that cannot read files still
+// returns valid JSON — full of honest "cannot_determine" — so a reply alone
+// proves nothing (seen after a codex upgrade removed the Windows sandbox).
 async function preflight({ cwd, attemptDir, model }) {
+  ensureDir(attemptDir);
+  const token = `arw-canary-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const canaryDir = ensureDir(path.join(attemptDir, 'canary'));
+  fs.writeFileSync(path.join(canaryDir, 'canary.txt'), `${token}\n`);
   const res = await runCodex({
-    prompt: 'Reply with exactly this JSON and nothing else: {"ok":true}',
-    cwd,
+    prompt: 'Use a shell command to read the file canary.txt in the working directory. Reply with exactly its first line and nothing else.',
+    cwd: canaryDir,
     attemptDir,
     model,
     effort: 'low',
-    timeoutMs: 120000,
+    timeoutMs: 180000,
   });
   if (!res.ok) return { ok: false, error_class: res.error_class, error_message: res.error_message };
-  return { ok: /"ok"\s*:\s*true/.test(res.output), usage: res.usage, elapsed_ms: res.elapsed_ms };
+  if (!res.output.includes(token)) {
+    return { ok: false, error_class: 'tools', error_message: `the worker could not read a file with a shell command (replied: ${res.output.trim().slice(0, 160)}); check the codex sandbox (CODEX_WINDOWS_SANDBOX) or approval settings` };
+  }
+  return { ok: true, usage: res.usage, elapsed_ms: res.elapsed_ms, commands: res.commands };
 }
 
 const DEFAULT_MODEL = 'gpt-6-luna';

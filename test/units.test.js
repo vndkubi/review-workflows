@@ -56,21 +56,21 @@ test('clusters: same defect from different voters merges; same voter never does'
   assert.ok(clusters.find((c) => c.members.includes('T1-technical-F1')).votes === 1);
 });
 
-test('plan: orphans, seams and viewpoints are added by code; AC coverage enforced', () => {
+test('plan: orphans, seams and viewpoints are added by code; review item coverage enforced', () => {
   const files = ['a/A.java', 'a/B.java', 'b/c.py', 'b/d.py'];
-  const req = { items: [{ id: 'AC1', kind: 'acceptance' }, { id: 'AC2', kind: 'acceptance' }, { id: 'AC3', kind: 'inferred' }] };
+  const items = [{ id: 'I1', kind: 'rule' }, { id: 'I2', kind: 'boundary' }, { id: 'I3', kind: 'gap' }];
   const plan = {
     schema_version: '1.0',
     hypotheses: [],
     units: [
-      { id: 'B1', kind: 'business', desc: 'd', files: ['a/A.java', 'b/c.py'], acs: ['AC1'] },
-      { id: 'T1', kind: 'technical', desc: 'd', files: ['a/A.java'], acs: [] },
+      { id: 'B1', kind: 'business', desc: 'd', files: ['a/A.java', 'b/c.py'], items: ['I1', 'I2'] },
+      { id: 'T1', kind: 'technical', desc: 'd', files: ['a/A.java'], items: [] },
     ],
     gaps: [],
     notes: '',
   };
-  const res = buildUnits(plan, files, req);
-  assert.deepEqual(res.errors, ['AC2 (acceptance) is not covered by any business (B*) unit']);
+  const res = buildUnits(plan, files, items);
+  assert.deepEqual(res.errors, ['I3 (gap) is not covered by any business (B*) unit']);
   const ids = res.units.map((u) => u.id);
   assert.deepEqual(ids, ['B1', 'T1', 'O1', 'S1', 'V0', 'V1']);
   const seam = res.units.find((u) => u.id === 'S1');
@@ -79,7 +79,7 @@ test('plan: orphans, seams and viewpoints are added by code; AC coverage enforce
   assert.deepEqual(res.units.find((u) => u.id === 'O1').covers, ['file:a/B.java', 'file:b/d.py']);
   assert.ok(res.units.find((u) => u.id === 'V0').covers.includes('file:b/d.py'));
   assert.deepEqual(res.units.find((u) => u.id === 'B1').roles, ['business', 'technical']);
-  const bad = buildUnits({ ...plan, units: [{ id: 'T2', kind: 'technical', desc: 'd', files: ['nope.java'], acs: ['AC1'] }] }, files, null);
+  const bad = buildUnits({ ...plan, units: [{ id: 'T2', kind: 'technical', desc: 'd', files: ['nope.java'], items: ['I1'] }] }, files, null);
   assert.ok(bad.errors.some((e) => e.includes('only business')));
   assert.ok(bad.errors.some((e) => e.includes('not a reviewable changed file')));
 });
@@ -136,20 +136,22 @@ test('parseModelJson tolerates one fence, rejects garbage; canonicalJson sorts k
   assert.equal(canonicalJson({ b: 1, a: [{ d: 1, c: 2 }] }), '{"a":[{"c":2,"d":1}],"b":1}');
 });
 
-test('outcome: withdrawal never propagates; STANDS is inherited; risk AC gaps', () => {
+test('outcome: withdrawal never propagates; STANDS is inherited; risky items must be decided', () => {
   const finding = (id, severity) => ({ id, severity, confidence: 'LIKELY', title: id });
   const packets = [
-    { unit_id: 'B1', role: 'business', packet: { findings: [finding('B1-business-F1', 'P1')], item_verdicts: [{ ac: 'AC1', verdict: 'cannot_determine' }] } },
-    { unit_id: 'B1', role: 'technical', packet: { findings: [finding('B1-technical-F1', 'P2')], item_verdicts: [] } },
+    { unit_id: 'B1', role: 'business', packet: { findings: [finding('B1-business-F1', 'P1')], item_verdicts: [{ item: 'I1', verdict: 'cannot_determine', note: 'n' }, { item: 'I2', verdict: 'cannot_determine', note: 'returns 0' }] } },
+    { unit_id: 'B1', role: 'technical', packet: { findings: [finding('B1-technical-F1', 'P2')], item_verdicts: [{ item: 'I1', verdict: 'fail', note: 'x' }] } },
   ];
   const clusters = [{ id: 'C1', canonical_id: 'B1-business-F1', members: ['B1-business-F1', 'B1-technical-F1'], voters: ['a', 'b'], votes: 2, severity: 'P1' }];
   const jobs = [{ unit_id: 'B1', role: 'business', required: true, status: 'EXECUTED_PASS' }];
-  const req = { items: [{ id: 'AC1', kind: 'acceptance', risk: 'money' }] };
-  const withdrawn = computeOutcome({ packets, jobs, clusters, rebuttals: new Map([['B1-business-F1', { verdict: 'FINDING_WITHDRAWN' }]]), requirements: req });
+  const items = [{ id: 'I1', kind: 'rule', risk: 'money' }, { id: 'I2', kind: 'gap', risk: 'money' }];
+  const withdrawn = computeOutcome({ packets, jobs, clusters, rebuttals: new Map([['B1-business-F1', { verdict: 'FINDING_WITHDRAWN' }]]), items });
   assert.equal(withdrawn.findings.find((f) => f.id === 'B1-business-F1').state, 'withdrawn');
   assert.equal(withdrawn.findings.find((f) => f.id === 'B1-technical-F1').state, 'unverified');
   assert.equal(withdrawn.recommendation, 'changes_requested');
-  assert.ok(withdrawn.gaps.some((g) => g.includes('AC1 (money risk)')));
-  const stands = computeOutcome({ packets, jobs, clusters, rebuttals: new Map([['B1-business-F1', { verdict: 'FINDING_STANDS' }]]), requirements: req });
+  assert.ok(withdrawn.gaps.some((g) => g.includes('I1 (money risk rule)')), 'a technical verdict does not decide a business item');
+  assert.ok(!withdrawn.gaps.some((g) => g.includes('I2')), 'gap items are reported, not decided');
+  assert.deepEqual(withdrawn.items.map((r) => [r.id, r.result]), [['I1', 'fail'], ['I2', 'cannot_determine']]);
+  const stands = computeOutcome({ packets, jobs, clusters, rebuttals: new Map([['B1-business-F1', { verdict: 'FINDING_STANDS' }]]), items });
   assert.equal(stands.findings.find((f) => f.id === 'B1-technical-F1').rebuttal_from, 'B1-business-F1');
 });

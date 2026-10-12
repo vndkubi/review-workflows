@@ -92,6 +92,7 @@ async function runModelJob(env, spec) {
   const backoffBase = envInt('ARW_429_BACKOFF_MS', 60000);
   const modes = ['full', ...Array(repairs).fill('repair'), 'fresh'];
   let repair = null;
+  let useSchema = true; // switched off after a degenerate structured response
   let lastErrors = [];
   for (let attempt = 0; attempt < modes.length; attempt += 1) {
     const mode = modes[attempt] === 'repair' && !repair ? 'fresh' : modes[attempt];
@@ -103,7 +104,11 @@ async function runModelJob(env, spec) {
       const before = verify(runDir, context);
       if (before.length) throw new ContextDrift(`before ${spec.label}: ${before.join('; ')}`);
       log(`start ${spec.label} attempt=${attempt + 1} mode=${mode}`);
-      res = await executor({ prompt, cwd: context.source.checkout, attemptDir, model: spec.model, effort: spec.effort, sandbox: 'read-only', outputSchema: spec.outputSchema });
+      res = await executor({ prompt, cwd: context.source.checkout, attemptDir, model: spec.model, effort: spec.effort, sandbox: 'read-only', outputSchema: useSchema ? spec.outputSchema : undefined });
+      if (res.error_class === 'degenerate') {
+        useSchema = false;
+        log(`${spec.label}: degenerate structured output; retrying without --output-schema`);
+      }
       const after = verify(runDir, context);
       if (after.length) {
         writeJsonAtomic(path.join(dir, 'invalidated.json'), { at: nowIso(), job: spec.label, errors: after });
@@ -179,7 +184,15 @@ async function runModelJob(env, spec) {
 }
 
 // Re-validate everything on disk for this context, without any model.
-function collectState(runDir, context, review, requirements) {
+// Frozen grading inputs: requirement items and the review items PRs are
+// graded against (from the approved spec, or one per requirement item).
+function gradingInputs(runDir, context) {
+  const req = readInput(runDir, context, 'requirements');
+  const items = readInput(runDir, context, 'review-items');
+  return { requirements: req ? JSON.parse(req) : null, items: items ? JSON.parse(items) : [] };
+}
+
+function collectState(runDir, context, review, grading) {
   const sources = makeSources(runDir, context);
   const dir = revisionDir(runDir, context.context_id);
   const jobsState = readJsonIfExists(path.join(dir, 'jobs.json'), {});
@@ -201,7 +214,7 @@ function collectState(runDir, context, review, requirements) {
     if (fs.existsSync(file)) {
       const packet = readJson(file);
       const refs = unit.kind === 'seam' ? depRefs(unit) : [];
-      const errors = refs.includes(null) ? ['a dependency packet is missing'] : validatePacket(packet, { sources, unit, role, requirements, expectedDependencyRefs: refs });
+      const errors = refs.includes(null) ? ['a dependency packet is missing'] : validatePacket(packet, { sources, unit, role, requirements: grading.requirements, items: grading.items, expectedDependencyRefs: refs });
       if (errors.length) {
         status = STATUS.FAIL;
         errorsByJob[key] = errors;
@@ -247,8 +260,7 @@ async function runBatch({ runDir, executor, workers = envInt('ARW_WORKERS', 4), 
     const context = loadContext(runDir);
     const run = readJson(path.join(runDir, 'run.json'));
     const review = run.review;
-    const requirementsText = readInput(runDir, context, 'requirements');
-    const requirements = requirementsText ? JSON.parse(requirementsText) : null;
+    const grading = gradingInputs(runDir, context);
     const dir = revisionDir(runDir, context.context_id);
     const drift = verifyContext(runDir, context);
     if (drift.length) throw new ContextDrift(`context no longer holds: ${drift.join('; ')} — run the freeze phase with --refresh`);
@@ -271,7 +283,7 @@ async function runBatch({ runDir, executor, workers = envInt('ARW_WORKERS', 4), 
     };
     log(`batch start context=${context.context_id} workers=${workers}`);
 
-    let state = collectState(runDir, context, review, requirements);
+    let state = collectState(runDir, context, review, grading);
     const passed = new Set(state.jobs.filter((j) => j.status === STATUS.PASS).map((j) => `${j.unit_id}/${j.role}`));
     const packetJob = (unit, role, depRefs = [], depPaths = []) => ({
       key: `${unit.id}/${role}`,
@@ -282,7 +294,7 @@ async function runBatch({ runDir, executor, workers = envInt('ARW_WORKERS', 4), 
       outputSchema: outputSchema('review', 'packet'),
       fill: fillKnown({ schema_version: '1.0', context_digest: context.context_digest, unit_id: unit.id, role, dependency_refs: depRefs }),
       buildPrompt: (repair) => prompts.packetPrompt(runDir, context, { unit, role, dependencyRefs: depRefs, packetPaths: depPaths, repair }),
-      validate: (candidate) => validatePacket(candidate, { sources: env.sources, unit, role, requirements, expectedDependencyRefs: depRefs }),
+      validate: (candidate) => validatePacket(candidate, { sources: env.sources, unit, role, requirements: grading.requirements, items: grading.items, expectedDependencyRefs: depRefs }),
     });
 
     // W1: independent first passes; viewpoints first (they cover everything).
@@ -297,7 +309,7 @@ async function runBatch({ runDir, executor, workers = envInt('ARW_WORKERS', 4), 
     });
 
     // W2: seams once every dependency packet is valid.
-    state = collectState(runDir, context, review, requirements);
+    state = collectState(runDir, context, review, grading);
     const valid = new Map(state.packets.map((p) => [`${p.unit_id}/${p.role}`, p]));
     const seams = review.units.filter((u) => u.kind === 'seam');
     const seamJobs = [];
@@ -322,7 +334,7 @@ async function runBatch({ runDir, executor, workers = envInt('ARW_WORKERS', 4), 
 
     // W3: one blind rebuttal per cluster with blocking members; a withdrawal
     // or an unresolved verdict hands the cluster to its next blocking member.
-    state = collectState(runDir, context, review, requirements);
+    state = collectState(runDir, context, review, grading);
     if (!skipRebuttals) {
       const targets = state.clusters.filter(
         (c) =>
@@ -355,8 +367,8 @@ async function runBatch({ runDir, executor, workers = envInt('ARW_WORKERS', 4), 
     }
 
     // W4: synthesis over the final packet set.
-    state = collectState(runDir, context, review, requirements);
-    let outcome = computeOutcome({ packets: state.packets, jobs: state.jobs, clusters: state.clusters, rebuttals: state.rebuttals, requirements });
+    state = collectState(runDir, context, review, grading);
+    let outcome = computeOutcome({ packets: state.packets, jobs: state.jobs, clusters: state.clusters, rebuttals: state.rebuttals, items: grading.items });
     const synth = synthesisCheck(runDir, context, state, outcome);
     if (!skipSynthesis && state.packets.length && !synth.valid) {
       const packetRefs = state.packets.map((p) => p.ref);
@@ -402,12 +414,11 @@ function finish(runDir, optOuts = {}) {
   const context = loadContext(runDir);
   const runFile = path.join(runDir, 'run.json');
   const run = readJson(runFile);
-  const requirementsText = readInput(runDir, context, 'requirements');
-  const requirements = requirementsText ? JSON.parse(requirementsText) : null;
+  const grading = gradingInputs(runDir, context);
   const dir = revisionDir(runDir, context.context_id);
   const drift = verifyContext(runDir, context);
-  const state = collectState(runDir, context, run.review, requirements);
-  const outcome = computeOutcome({ packets: state.packets, jobs: state.jobs, clusters: state.clusters, rebuttals: state.rebuttals, requirements });
+  const state = collectState(runDir, context, run.review, grading);
+  const outcome = computeOutcome({ packets: state.packets, jobs: state.jobs, clusters: state.clusters, rebuttals: state.rebuttals, items: grading.items });
   const synth = synthesisCheck(runDir, context, state, outcome);
   const usage = sumUsage(readJsonIfExists(path.join(dir, 'receipts.json'), {}));
   // Planning happens before the freeze; its cost is reported, not hidden.
@@ -424,6 +435,7 @@ function finish(runDir, optOuts = {}) {
     complete: outcome.complete,
     recommendation: outcome.recommendation,
     gaps: outcome.gaps,
+    items: outcome.items,
     jobs: state.jobs,
     clusters: state.clusters,
     findings: outcome.findings,

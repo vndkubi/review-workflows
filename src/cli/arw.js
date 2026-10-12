@@ -16,7 +16,7 @@ const github = require('../lib/github');
 const USAGE = `arw — evidence-first ticket analysis and PR review (codex CLI workers)
 
 Ticket pipeline (understand the requirement; stops at each human gate):
-  arw ticket <KEY> [--from-file ticket.md] [--extra notes.md ...] [--repo owner/name | --repo-dir <path>] [--redo intake|requirements|analysis]
+  arw ticket <KEY> [--from-file ticket.md] [--extra notes.md ...] [--repo owner/name | --repo-dir <path>] [--redo intake|requirements|spec|analysis]
 
 PR review (plan -> freeze -> waves -> validate -> report):
   arw review --repo owner/name --pr <n> [--ticket KEY] [--workers 4] [--single-role]
@@ -137,6 +137,7 @@ function cmdGate(argv) {
   }
   if (!['approve', 'reject'].includes(action) || !gate) throw new Error('usage: arw gate approve|reject ... --gate NAME');
   if (!process.stdin.isTTY && !args.yes) throw new Error('gates are for people: run this in an interactive terminal (or pass --yes if you are scripting your own decision)');
+  if (action === 'reject' && gate === 'SPEC' && !args.note) throw new Error('a SPEC rejection needs --note "what is wrong": it is fed back to the next spec attempt');
   const record = recordGate(runDir, gate, action === 'approve' ? 'approved' : 'rejected', { note: args.note || '' });
   console.log(`${gate} ${record.decision} by ${record.by} at ${record.at}; bound to ${JSON.stringify(record.bound)}`);
   return 0;

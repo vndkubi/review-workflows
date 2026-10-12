@@ -53,11 +53,12 @@ function listRuns() {
       const run = readJsonIfExists(path.join(tdir, key, 'run.json'));
       if (!run) continue;
       const stages = run.stages || {};
-      const req = readJsonIfExists(path.join(tdir, key, 'requirements.json'));
+      const spec = readJsonIfExists(path.join(tdir, key, 'spec.json'));
       tickets.push({
         key,
         state: ticketState(path.join(tdir, key), stages),
-        items: req ? req.items.length : 0,
+        items: spec ? spec.review_items.length : 0,
+        clean: spec ? spec.clean : null,
         updated_at: latest(Object.values(stages).map((s) => s.at)) || run.created_at,
       });
     }
@@ -94,8 +95,7 @@ function ticketState(dir, stages) {
   if (stages.ready) return 'READY';
   const failed = Object.entries(stages).find(([, s]) => /FAIL|BLOCKED/.test(s.status));
   if (failed) return `${failed[0]}: ${failed[1].status}`;
-  if (stages.analysis && stages.analysis.status === 'EXECUTED_PASS') return 'AWAIT_GATE_ANALYSIS';
-  if (stages.requirements && stages.requirements.status === 'EXECUTED_PASS') return 'AWAIT_GATE_REQUIREMENTS';
+  if (stages.spec && stages.spec.status === 'EXECUTED_PASS' && !stages.analysis) return 'AWAIT_GATE_SPEC';
   return 'IN_PROGRESS';
 }
 
@@ -120,6 +120,7 @@ function ticketDetail(key) {
     gates,
     evidence,
     requirements: readJsonIfExists(path.join(dir, 'requirements.json')),
+    spec: readJsonIfExists(path.join(dir, 'spec.json')),
     analysis: readJsonIfExists(path.join(dir, 'analysis.json')),
     usage: sumReceipts(readJsonIfExists(path.join(dir, 'work', 'receipts.json'), {})),
   };
@@ -173,6 +174,9 @@ function prDetail(id) {
   const { findings, clusters, ...rest } = validation;
   out.validation = { ...rest, counts: countBySeverity(validation.findings, new Set(aliasOf.keys())) };
   out.overview = synthesis ? { flows: synthesis.overview, unverified: synthesis.unverified } : null;
+  const frozenItems = readJsonIfExists(path.join(rdir, 'inputs', 'review-items.txt'), []);
+  const itemText = new Map(frozenItems.map((i) => [i.id, i]));
+  out.items = (validation.items || []).map((r) => ({ ...r, text: (itemText.get(r.id) || {}).text || '', expected: (itemText.get(r.id) || {}).expected || '', label: (itemText.get(r.id) || {}).label || '' }));
   const g = gateState(dir, 'REVIEW');
   out.gate = { decision: g.decision, valid: g.valid, by: g.record && g.record.by, at: g.record && g.record.at, note: g.record && g.record.note };
   return out;

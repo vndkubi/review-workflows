@@ -4,13 +4,37 @@ Evidence-first **ticket analysis** and **PR review** for Java/Maven and Python r
 driven by `codex exec` workers. Models propose; trusted Node scripts decide; people own the gates.
 
 ```
-ticket:  intake → requirements (deterministic | model + audit) → [GATE REQUIREMENTS]
-                → analysis (read-only investigation) → [GATE ANALYSIS] → READY
+ticket:  intake (Jira + linked Confluence, or a file) → requirement items (deterministic | model + audit)
+                → spec model (model declares variables, classes, rules)
+                → tables built by code: input matrix, decision table, scenarios, boundaries,
+                  gaps, contradictions → review items
+                → [GATE SPEC: approve | reject with a note that rebuilds the spec]
+                → analysis: current behaviour per review item → READY
 review:  PR + worktree → ticket inputs → plan (model, repaired until valid)
                 → freeze (hash-bound context, no model)
                 → W1 first-pass packets ∥ → W2 seams → W3 blind red-team per duplicate cluster → W4 synthesis
                 → validate (no model) → report.md → publish as a PENDING GitHub review → [person submits]
 ```
+
+## From spec text to review items
+
+A model only *declares* the spec: decision areas, input variables, value classes (ranges for numbers and dates,
+values for enums, plus invalid and missing classes), rules with results, and verbatim quotes. Everything that
+must be counted is done by `src/lib/spec.js`:
+
+- the classes of a numeric or date variable must partition the whole line with no gap or overlap;
+- **every** value combination is checked: none of the rules covers it → open question (gap); two rules give
+  different results → contradiction. Gaps are compressed into patterns such as `member=*, total=negative`;
+- boundary values are computed where crossing a class boundary changes the result (999,999 | 1,000,000);
+- scenario rows list every combination up to 64. Above that they are pairwise, plus one row per rule and every
+  business boundary, so business coverage is kept;
+- a rule labelled CONFIRMED must quote the ticket verbatim, or it is downgraded to INFERRED;
+- review items are generated from all this: one per rule, per business boundary, per gap and per contradiction.
+
+A PR review is graded per review item. A business reviewer gives pass, fail, not_applicable or cannot_determine
+for every item, and one finding can cover several failed items. Risky rule and boundary items must be decided
+before the review counts as complete. Set `ARW_AUTO_APPROVE_SPEC=1` to let a deterministic policy approve
+clean specs (no gaps, contradictions or inferred rules).
 
 ## Why it is built this way
 
@@ -41,13 +65,13 @@ No npm dependencies.
 ## Use
 
 ```bash
-# 1. Understand the requirement (stops at each gate)
-node src/cli/arw.js ticket ACME-7 --repo your-org/payment-api        # from Jira
+# 1. Understand the requirement (stops at the SPEC gate)
+node src/cli/arw.js ticket ACME-7 --repo your-org/payment-api        # from Jira (+ Confluence)
 node src/cli/arw.js ticket ACME-7 --from-file ACME-7.md --repo-dir D:/src/payment-api
-#    review runs/tickets/ACME-7/requirements.md, edit requirements.json if needed, then:
-node src/cli/arw.js gate approve --ticket ACME-7 --gate REQUIREMENTS
-node src/cli/arw.js ticket ACME-7 --repo your-org/payment-api        # runs the analysis
-node src/cli/arw.js gate approve --ticket ACME-7 --gate ANALYSIS
+#    read runs/tickets/ACME-7/spec.md (tables, open questions, review items), then either:
+node src/cli/arw.js gate approve --ticket ACME-7 --gate SPEC
+node src/cli/arw.js gate reject  --ticket ACME-7 --gate SPEC --note "rule for refunds is missing"
+node src/cli/arw.js ticket ACME-7 --repo your-org/payment-api        # rebuild (after reject) or analyse (after approve)
 
 # 2. Review a PR (ticket key is taken from the title/branch, or --ticket)
 node src/cli/arw.js review --repo your-org/payment-api --pr 123

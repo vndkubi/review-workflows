@@ -5,7 +5,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { tmpDir } = require('./helpers');
+const { tmpDir, scriptedExecutor } = require('./helpers');
 
 process.env.ARW_RUNS_DIR = tmpDir('arw-web-runs-');
 
@@ -27,8 +27,29 @@ function call(port, method, url, { body, headers = {} } = {}) {
 test('dashboard server', async (t) => {
   const ticketFile = path.join(tmpDir(), 'T.md');
   fs.writeFileSync(ticketFile, '# WEB-1\n\n## Acceptance Criteria\n- Refunds over 500 need a second approver.\n');
-  const res = await advanceTicket({ key: 'WEB-1', fromFile: ticketFile, executor: null });
-  assert.equal(res.state, 'AWAIT_GATE_REQUIREMENTS');
+  const refundModel = {
+    schema_version: '1.0',
+    ticket: 'WEB-1',
+    features: [{
+      id: 'F1',
+      name: 'Refund approval',
+      variables: [{ id: 'amount', description: 'refund amount', type: 'integer', classes: [
+        { id: 'neg', label: 'negative', validity: 'invalid', max: '0', max_inclusive: false },
+        { id: 'small', label: '0..500', validity: 'valid', min: '0', min_inclusive: true, max: '500', max_inclusive: true },
+        { id: 'large', label: '> 500', validity: 'valid', min: '500', min_inclusive: false },
+      ] }],
+      outcomes: [{ id: 'approvers', description: 'approvers needed' }],
+      rules: [
+        { id: 'R1', conditions: [{ variable: 'amount', classes: ['large'] }], results: [{ outcome: 'approvers', value: '2' }], acs: ['AC1'], label: 'CONFIRMED', source: { source: 'ticket', quote: 'Refunds over 500 need a second approver.' } },
+        { id: 'R2', conditions: [{ variable: 'amount', classes: ['small'] }], results: [{ outcome: 'approvers', value: '1' }], acs: ['AC1'], label: 'INFERRED', source: { source: 'ticket', quote: '' } },
+      ],
+    }],
+    other_acs: [],
+    notes: '',
+  };
+  const exec = scriptedExecutor((prompt) => (prompt.startsWith('You audit') ? '{"missing":[],"invalid":[]}' : JSON.stringify(refundModel)));
+  const res = await advanceTicket({ key: 'WEB-1', fromFile: ticketFile, executor: exec });
+  assert.equal(res.state, 'AWAIT_GATE_SPEC', res.message);
 
   const server = createServer({ port: 0, token: TOKEN, queue: fakeQueue });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -62,30 +83,32 @@ test('dashboard server', async (t) => {
   });
 
   await t.test('writes need the token and a same-origin request', async () => {
-    const body = { gate: 'REQUIREMENTS', decision: 'approved' };
+    const body = { gate: 'SPEC', decision: 'approved' };
     assert.equal((await call(port, 'POST', '/api/tickets/WEB-1/gate', { body })).status, 403);
     assert.equal((await call(port, 'POST', '/api/tickets/WEB-1/gate', { body, headers: { ...auth, Origin: 'http://evil.example' } })).status, 403);
-    assert.equal(gateState(ticketDir('WEB-1'), 'REQUIREMENTS').decision, 'NOT_RECORDED');
+    assert.equal(gateState(ticketDir('WEB-1'), 'SPEC').decision, 'NOT_RECORDED');
   });
 
   await t.test('runs and ticket detail', async () => {
     const runs = await call(port, 'GET', '/api/runs');
-    assert.deepEqual(runs.json.tickets.map((x) => [x.key, x.state, x.items]), [['WEB-1', 'AWAIT_GATE_REQUIREMENTS', 1]]);
+    assert.deepEqual(runs.json.tickets.map((x) => [x.key, x.state]), [['WEB-1', 'AWAIT_GATE_SPEC']]);
+    assert.ok(runs.json.tickets[0].items >= 3);
     const d = await call(port, 'GET', '/api/tickets/WEB-1');
     assert.equal(d.json.requirements.items[0].risk, 'money');
     assert.equal((await call(port, 'GET', '/api/tickets/..%2F..%2Fetc')).status, 400);
   });
 
-  await t.test('requirements edits are schema-checked, then the gate binds the edit', async () => {
+  await t.test('spec detail; a rejection needs a note; approval binds the spec', async () => {
     const d = await call(port, 'GET', '/api/tickets/WEB-1');
-    const bad = await call(port, 'PUT', '/api/tickets/WEB-1/requirements', { body: { items: [{ id: 'X' }] }, headers: auth });
-    assert.equal(bad.status, 422);
-    const items = d.json.requirements.items.map((i) => ({ ...i, then: 'a second approver must approve refunds over 500' }));
-    assert.equal((await call(port, 'PUT', '/api/tickets/WEB-1/requirements', { body: { items }, headers: auth })).status, 200);
-    const ok = await call(port, 'POST', '/api/tickets/WEB-1/gate', { body: { gate: 'REQUIREMENTS', decision: 'approved', note: 'checked' }, headers: auth });
+    assert.equal(d.json.spec.features[0].boundaries[0].at.join('|'), '-1|0');
+    assert.ok(d.json.spec.features[0].boundaries.some((b) => b.at.join('|') === '500|501'));
+    const noNote = await call(port, 'POST', '/api/tickets/WEB-1/gate', { body: { gate: 'SPEC', decision: 'rejected' }, headers: auth });
+    assert.equal(noNote.status, 400);
+    assert.equal((await call(port, 'PUT', '/api/tickets/WEB-1/requirements', { body: { items: [] }, headers: auth })).status, 404, 'no editing: approve or reject only');
+    const ok = await call(port, 'POST', '/api/tickets/WEB-1/gate', { body: { gate: 'SPEC', decision: 'approved', note: 'checked' }, headers: auth });
     assert.equal(ok.status, 200);
     assert.match(ok.json.by, /\(dashboard\)$/);
-    assert.equal(gateState(ticketDir('WEB-1'), 'REQUIREMENTS').valid, true);
+    assert.equal(gateState(ticketDir('WEB-1'), 'SPEC').valid, true);
   });
 
   await t.test('reviews only for configured repositories', async () => {

@@ -3,29 +3,74 @@
   "$id": "arw/review.schema.json",
   "title": "Review contracts: plan, packet, rebuttal, synthesis",
   "$defs": {
-    "text": { "type": "string", "pattern": "\\S" },
-    "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-    "id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]*$" },
-    "acId": { "type": "string", "pattern": "^AC[1-9][0-9]*$" },
-    "strings": { "type": "array", "items": { "$ref": "#/$defs/text" } },
-
+    "text": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+    },
+    "acId": {
+      "type": "string",
+      "pattern": "^AC[1-9][0-9]*$"
+    },
+    "strings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/text"
+      }
+    },
     "plan": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema_version", "hypotheses", "units", "gaps", "notes"],
+      "required": [
+        "schema_version",
+        "hypotheses",
+        "units",
+        "gaps",
+        "notes"
+      ],
       "properties": {
-        "schema_version": { "const": "1.0" },
+        "schema_version": {
+          "const": "1.0"
+        },
         "hypotheses": {
           "type": "array",
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["id", "statement", "acs", "confidence"],
+            "required": [
+              "id",
+              "statement",
+              "items",
+              "confidence"
+            ],
             "properties": {
-              "id": { "type": "string", "pattern": "^H[1-9][0-9]*$" },
-              "statement": { "$ref": "#/$defs/text" },
-              "acs": { "type": "array", "items": { "$ref": "#/$defs/acId" } },
-              "confidence": { "enum": ["CONFIRMED", "INFERRED", "UNKNOWN"] }
+              "id": {
+                "type": "string",
+                "pattern": "^H[1-9][0-9]*$"
+              },
+              "statement": {
+                "$ref": "#/$defs/text"
+              },
+              "confidence": {
+                "enum": [
+                  "CONFIRMED",
+                  "INFERRED",
+                  "UNKNOWN"
+                ]
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/itemId"
+                }
+              }
             }
           }
         },
@@ -35,199 +80,574 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["id", "kind", "desc", "files", "acs"],
+            "required": [
+              "id",
+              "kind",
+              "desc",
+              "files",
+              "items"
+            ],
             "properties": {
-              "id": { "type": "string", "pattern": "^[BT][1-9][0-9]*$" },
-              "kind": { "enum": ["business", "technical"] },
-              "desc": { "$ref": "#/$defs/text" },
-              "files": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/text" } },
-              "acs": { "type": "array", "items": { "$ref": "#/$defs/acId" } }
+              "id": {
+                "type": "string",
+                "pattern": "^[BT][1-9][0-9]*$"
+              },
+              "kind": {
+                "enum": [
+                  "business",
+                  "technical"
+                ]
+              },
+              "desc": {
+                "$ref": "#/$defs/text"
+              },
+              "files": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/text"
+                }
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/itemId"
+                }
+              }
             }
           }
         },
-        "gaps": { "$ref": "#/$defs/strings" },
-        "notes": { "type": "string" }
+        "gaps": {
+          "$ref": "#/$defs/strings"
+        },
+        "notes": {
+          "type": "string"
+        }
       }
     },
-
     "evidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "path", "start_line", "end_line", "quote"],
+      "required": [
+        "kind",
+        "path",
+        "start_line",
+        "end_line",
+        "quote"
+      ],
       "properties": {
-        "kind": { "enum": ["code", "input", "artifact"] },
-        "path": { "$ref": "#/$defs/text" },
-        "revision": { "enum": ["reviewed", "base"] },
-        "sha256": { "$ref": "#/$defs/digest" },
-        "start_line": { "type": "integer" },
-        "end_line": { "type": "integer" },
-        "quote": { "$ref": "#/$defs/text" }
+        "kind": {
+          "enum": [
+            "code",
+            "input",
+            "artifact"
+          ]
+        },
+        "path": {
+          "$ref": "#/$defs/text"
+        },
+        "revision": {
+          "enum": [
+            "reviewed",
+            "base"
+          ]
+        },
+        "sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "start_line": {
+          "type": "integer"
+        },
+        "end_line": {
+          "type": "integer"
+        },
+        "quote": {
+          "$ref": "#/$defs/text"
+        }
       }
     },
-    "evidenceList": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
-
+    "evidenceList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidence"
+      }
+    },
     "authority": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "id", "source"],
+      "required": [
+        "kind",
+        "id",
+        "source"
+      ],
       "properties": {
-        "kind": { "enum": ["requirement", "curated_viewpoint", "inferred"] },
-        "id": { "$ref": "#/$defs/text" },
-        "source": { "$ref": "#/$defs/evidence" }
+        "kind": {
+          "enum": [
+            "requirement",
+            "curated_viewpoint",
+            "inferred"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/text"
+        },
+        "source": {
+          "$ref": "#/$defs/evidence"
+        }
       }
     },
     "trigger": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["given", "when", "then"],
+      "required": [
+        "given",
+        "when",
+        "then"
+      ],
       "properties": {
-        "given": { "$ref": "#/$defs/text" },
-        "when": { "$ref": "#/$defs/text" },
-        "then": { "$ref": "#/$defs/text" }
+        "given": {
+          "$ref": "#/$defs/text"
+        },
+        "when": {
+          "$ref": "#/$defs/text"
+        },
+        "then": {
+          "$ref": "#/$defs/text"
+        }
       }
     },
     "verification": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["method", "detail", "evidence"],
+      "required": [
+        "method",
+        "detail",
+        "evidence"
+      ],
       "properties": {
-        "method": { "enum": ["inspected", "executed", "not_run", "environment_blocked"] },
-        "detail": { "$ref": "#/$defs/text" },
-        "evidence": { "$ref": "#/$defs/evidenceList" }
+        "method": {
+          "enum": [
+            "inspected",
+            "executed",
+            "not_run",
+            "environment_blocked"
+          ]
+        },
+        "detail": {
+          "$ref": "#/$defs/text"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidenceList"
+        }
       }
     },
     "finding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "severity", "confidence", "title", "asis", "tobe", "authority", "trigger", "impact", "evidence", "fix", "verification"],
+      "required": [
+        "id",
+        "severity",
+        "confidence",
+        "title",
+        "asis",
+        "tobe",
+        "authority",
+        "trigger",
+        "impact",
+        "evidence",
+        "fix",
+        "verification",
+        "items"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/id" },
-        "severity": { "enum": ["P1", "P2", "P3", "P4"] },
-        "confidence": { "enum": ["LIKELY", "HYPOTHESIS"] },
-        "title": { "$ref": "#/$defs/text" },
-        "asis": { "$ref": "#/$defs/text" },
-        "tobe": { "$ref": "#/$defs/text" },
-        "authority": { "$ref": "#/$defs/authority" },
-        "trigger": { "$ref": "#/$defs/trigger" },
-        "impact": { "$ref": "#/$defs/text" },
-        "evidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence" } },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "severity": {
+          "enum": [
+            "P1",
+            "P2",
+            "P3",
+            "P4"
+          ]
+        },
+        "confidence": {
+          "enum": [
+            "LIKELY",
+            "HYPOTHESIS"
+          ]
+        },
+        "title": {
+          "$ref": "#/$defs/text"
+        },
+        "asis": {
+          "$ref": "#/$defs/text"
+        },
+        "tobe": {
+          "$ref": "#/$defs/text"
+        },
+        "authority": {
+          "$ref": "#/$defs/authority"
+        },
+        "trigger": {
+          "$ref": "#/$defs/trigger"
+        },
+        "impact": {
+          "$ref": "#/$defs/text"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        },
         "fix": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "asis", "tobe", "reason"],
+          "required": [
+            "kind",
+            "asis",
+            "tobe",
+            "reason"
+          ],
           "properties": {
-            "kind": { "enum": ["code_change", "not_code"] },
-            "asis": { "type": "string" },
-            "tobe": { "type": "string" },
-            "reason": { "$ref": "#/$defs/text" }
+            "kind": {
+              "enum": [
+                "code_change",
+                "not_code"
+              ]
+            },
+            "asis": {
+              "type": "string"
+            },
+            "tobe": {
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/text"
+            }
           }
         },
-        "verification": { "$ref": "#/$defs/verification" }
+        "verification": {
+          "$ref": "#/$defs/verification"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/itemId"
+          }
+        }
       }
     },
     "coverage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "disposition", "evidence", "note"],
+      "required": [
+        "id",
+        "disposition",
+        "evidence",
+        "note"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/text" },
-        "disposition": { "enum": ["reviewed", "unverified"] },
-        "evidence": { "$ref": "#/$defs/evidenceList" },
-        "note": { "$ref": "#/$defs/text" }
+        "id": {
+          "$ref": "#/$defs/text"
+        },
+        "disposition": {
+          "enum": [
+            "reviewed",
+            "unverified"
+          ]
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidenceList"
+        },
+        "note": {
+          "$ref": "#/$defs/text"
+        }
       }
     },
     "itemVerdict": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ac", "verdict", "evidence", "note"],
+      "required": [
+        "item",
+        "verdict",
+        "evidence",
+        "note"
+      ],
       "properties": {
-        "ac": { "$ref": "#/$defs/acId" },
-        "verdict": { "enum": ["pass", "fail", "not_applicable", "cannot_determine"] },
-        "evidence": { "$ref": "#/$defs/evidenceList" },
-        "note": { "$ref": "#/$defs/text" }
+        "item": {
+          "$ref": "#/$defs/itemId"
+        },
+        "verdict": {
+          "enum": [
+            "pass",
+            "fail",
+            "not_applicable",
+            "cannot_determine"
+          ]
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidenceList"
+        },
+        "note": {
+          "$ref": "#/$defs/text"
+        }
       }
     },
     "packetRef": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["unit_id", "role", "path", "sha256"],
+      "required": [
+        "unit_id",
+        "role",
+        "path",
+        "sha256"
+      ],
       "properties": {
-        "unit_id": { "$ref": "#/$defs/id" },
-        "role": { "enum": ["business", "technical"] },
-        "path": { "$ref": "#/$defs/text" },
-        "sha256": { "$ref": "#/$defs/digest" }
+        "unit_id": {
+          "$ref": "#/$defs/id"
+        },
+        "role": {
+          "enum": [
+            "business",
+            "technical"
+          ]
+        },
+        "path": {
+          "$ref": "#/$defs/text"
+        },
+        "sha256": {
+          "$ref": "#/$defs/digest"
+        }
       }
     },
     "packet": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema_version", "context_digest", "unit_id", "role", "summary", "dependency_refs", "coverage", "item_verdicts", "findings", "recommendation"],
+      "required": [
+        "schema_version",
+        "context_digest",
+        "unit_id",
+        "role",
+        "summary",
+        "dependency_refs",
+        "coverage",
+        "item_verdicts",
+        "findings",
+        "recommendation"
+      ],
       "properties": {
-        "schema_version": { "const": "1.0" },
-        "context_digest": { "$ref": "#/$defs/digest" },
-        "unit_id": { "$ref": "#/$defs/id" },
-        "role": { "enum": ["business", "technical"] },
-        "summary": { "$ref": "#/$defs/text" },
-        "dependency_refs": { "type": "array", "items": { "$ref": "#/$defs/packetRef" } },
-        "coverage": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/coverage" } },
-        "item_verdicts": { "type": "array", "items": { "$ref": "#/$defs/itemVerdict" } },
-        "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
-        "recommendation": { "enum": ["no_findings", "findings", "needs_investigation"] }
+        "schema_version": {
+          "const": "1.0"
+        },
+        "context_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "unit_id": {
+          "$ref": "#/$defs/id"
+        },
+        "role": {
+          "enum": [
+            "business",
+            "technical"
+          ]
+        },
+        "summary": {
+          "$ref": "#/$defs/text"
+        },
+        "dependency_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/packetRef"
+          }
+        },
+        "coverage": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/coverage"
+          }
+        },
+        "item_verdicts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/itemVerdict"
+          }
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/finding"
+          }
+        },
+        "recommendation": {
+          "enum": [
+            "no_findings",
+            "findings",
+            "needs_investigation"
+          ]
+        }
       }
     },
-
     "rebuttal": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema_version", "context_digest", "finding_id", "finding_sha256", "role", "verdict", "defense_attempted", "reason", "evidence"],
+      "required": [
+        "schema_version",
+        "context_digest",
+        "finding_id",
+        "finding_sha256",
+        "role",
+        "verdict",
+        "defense_attempted",
+        "reason",
+        "evidence"
+      ],
       "properties": {
-        "schema_version": { "const": "1.0" },
-        "context_digest": { "$ref": "#/$defs/digest" },
-        "finding_id": { "$ref": "#/$defs/id" },
-        "finding_sha256": { "$ref": "#/$defs/digest" },
-        "role": { "const": "red-team" },
-        "verdict": { "enum": ["FINDING_STANDS", "FINDING_WITHDRAWN", "UNRESOLVED"] },
-        "defense_attempted": { "$ref": "#/$defs/text" },
-        "reason": { "$ref": "#/$defs/text" },
-        "evidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence" } }
+        "schema_version": {
+          "const": "1.0"
+        },
+        "context_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "finding_id": {
+          "$ref": "#/$defs/id"
+        },
+        "finding_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "role": {
+          "const": "red-team"
+        },
+        "verdict": {
+          "enum": [
+            "FINDING_STANDS",
+            "FINDING_WITHDRAWN",
+            "UNRESOLVED"
+          ]
+        },
+        "defense_attempted": {
+          "$ref": "#/$defs/text"
+        },
+        "reason": {
+          "$ref": "#/$defs/text"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
       }
     },
-
     "alias": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "duplicate_of", "reason"],
+      "required": [
+        "id",
+        "duplicate_of",
+        "reason"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/id" },
-        "duplicate_of": { "$ref": "#/$defs/id" },
-        "reason": { "$ref": "#/$defs/text" }
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "duplicate_of": {
+          "$ref": "#/$defs/id"
+        },
+        "reason": {
+          "$ref": "#/$defs/text"
+        }
       }
     },
     "flow": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["flow", "change", "finding_ids", "evidence"],
+      "required": [
+        "flow",
+        "change",
+        "finding_ids",
+        "evidence"
+      ],
       "properties": {
-        "flow": { "$ref": "#/$defs/text" },
-        "change": { "$ref": "#/$defs/text" },
-        "finding_ids": { "type": "array", "items": { "$ref": "#/$defs/id" } },
-        "evidence": { "$ref": "#/$defs/evidenceList" }
+        "flow": {
+          "$ref": "#/$defs/text"
+        },
+        "change": {
+          "$ref": "#/$defs/text"
+        },
+        "finding_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidenceList"
+        }
       }
     },
     "synthesis": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema_version", "context_digest", "role", "packet_refs", "aliases", "overview", "unverified", "recommendation"],
+      "required": [
+        "schema_version",
+        "context_digest",
+        "role",
+        "packet_refs",
+        "aliases",
+        "overview",
+        "unverified",
+        "recommendation"
+      ],
       "properties": {
-        "schema_version": { "const": "1.0" },
-        "context_digest": { "$ref": "#/$defs/digest" },
-        "role": { "const": "coordinator" },
-        "packet_refs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/packetRef" } },
-        "aliases": { "type": "array", "items": { "$ref": "#/$defs/alias" } },
-        "overview": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/flow" } },
-        "unverified": { "$ref": "#/$defs/strings" },
-        "recommendation": { "enum": ["no_blocking_findings", "changes_requested", "needs_investigation"] }
+        "schema_version": {
+          "const": "1.0"
+        },
+        "context_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "role": {
+          "const": "coordinator"
+        },
+        "packet_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/packetRef"
+          }
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/alias"
+          }
+        },
+        "overview": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/flow"
+          }
+        },
+        "unverified": {
+          "$ref": "#/$defs/strings"
+        },
+        "recommendation": {
+          "enum": [
+            "no_blocking_findings",
+            "changes_requested",
+            "needs_investigation"
+          ]
+        }
       }
+    },
+    "itemId": {
+      "type": "string",
+      "pattern": "^I[1-9][0-9]*$"
     }
   }
 }

@@ -12,13 +12,18 @@ async function runLooseJob({ executor, label, workDir, cwd, model, effort, build
   const receiptsFile = path.join(workDir, 'receipts.json');
   const receipts = readJsonIfExists(receiptsFile, {});
   let repair = null;
+  let useSchema = true; // switched off after a degenerate structured response
   let lastErrors = [];
   for (let attempt = 0; attempt <= repairs + 1; attempt += 1) {
     const mode = attempt === 0 ? 'full' : repair && attempt <= repairs ? 'repair' : 'fresh';
     if (mode !== 'repair') repair = null;
     const attemptDir = ensureDir(path.join(workDir, 'attempts', `${label}-${attempt + 1}`));
     log(`start ${label} attempt=${attempt + 1} mode=${mode}`);
-    const res = await executor({ prompt: buildPrompt(repair), cwd, attemptDir, model, effort, sandbox: 'read-only', outputSchema });
+    const res = await executor({ prompt: buildPrompt(repair), cwd, attemptDir, model, effort, sandbox: 'read-only', outputSchema: useSchema ? outputSchema : undefined });
+    if (res.error_class === 'degenerate') {
+      useSchema = false;
+      log(`${label}: degenerate structured output; retrying without --output-schema`);
+    }
     (receipts[label] = receipts[label] || []).push({
       attempt: attempt + 1,
       mode,

@@ -23,8 +23,9 @@ function worktreeDir(repo, pr) {
 
 // What each gate is bound to, per run kind.
 const GATES = {
-  REQUIREMENTS: { kind: 'ticket', artifact: 'requirements.json' },
-  ANALYSIS: { kind: 'ticket', artifact: 'analysis.json' },
+  // spec.json embeds the requirement items it was built from, so one gate
+  // covers requirements, tables and review items.
+  SPEC: { kind: 'ticket', artifact: 'spec.json' },
   REVIEW: { kind: 'pr', artifact: null },
 };
 

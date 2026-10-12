@@ -8,7 +8,7 @@ const BLOCKING = new Set(['P1', 'P2']);
 // packets: [{ unit_id, role, packet }] (valid packets only)
 // jobs:    [{ unit_id, role, required, status }]
 // clusters: findingClusters output; rebuttals: Map finding_id -> rebuttal
-function computeOutcome({ packets, jobs, clusters, rebuttals, requirements }) {
+function computeOutcome({ packets, jobs, clusters, rebuttals, items }) {
   const findings = [];
   const clusterOf = new Map();
   for (const c of clusters) for (const id of c.members) clusterOf.set(id, c);
@@ -60,25 +60,33 @@ function computeOutcome({ packets, jobs, clusters, rebuttals, requirements }) {
     if (job.required && job.status !== 'EXECUTED_PASS') gaps.push(`${job.unit_id}/${job.role} is ${job.status}`);
   }
   const verdicts = new Map();
-  for (const { role, packet } of packets) {
-    if (role !== 'business') continue;
+  for (const { unit_id, role, packet } of packets) {
     for (const v of packet.item_verdicts) {
-      if (!verdicts.has(v.ac)) verdicts.set(v.ac, []);
-      verdicts.get(v.ac).push(v.verdict);
+      if (!verdicts.has(v.item)) verdicts.set(v.item, []);
+      verdicts.get(v.item).push({ unit_id, role, verdict: v.verdict, note: v.note });
     }
   }
-  for (const item of (requirements && requirements.items) || []) {
-    if (item.kind === 'inferred' || item.risk === 'normal') continue;
-    const vs = verdicts.get(item.id) || [];
-    if (!vs.some((v) => v !== 'cannot_determine')) gaps.push(`${item.id} (${item.risk} risk) has no determinate business verdict`);
+  // Risky items with an expected result must be decided; gaps and
+  // contradictions are reported, not decided.
+  for (const item of items || []) {
+    if (item.risk === 'normal' || !['rule', 'boundary', 'ac'].includes(item.kind)) continue;
+    const vs = (verdicts.get(item.id) || []).filter((v) => v.role === 'business');
+    if (!vs.some((v) => v.verdict !== 'cannot_determine')) gaps.push(`${item.id} (${item.risk} risk ${item.kind}) has no determinate business verdict`);
   }
+  // Per-item grading for the report: fail beats pass; any pass beats "unknown".
+  const itemResults = (items || []).map((item) => {
+    const vs = verdicts.get(item.id) || [];
+    const has = (x) => vs.some((v) => v.verdict === x);
+    const result = has('fail') ? 'fail' : has('pass') ? 'pass' : has('not_applicable') ? 'not_applicable' : vs.length ? 'cannot_determine' : 'not_graded';
+    return { id: item.id, kind: item.kind, risk: item.risk, result, verdicts: vs };
+  });
 
   const blockingOpen = findings.filter((f) => BLOCKING.has(f.severity) && f.state !== 'withdrawn');
   let recommendation = 'no_blocking_findings';
   if (blockingOpen.length) recommendation = 'changes_requested';
   else if (gaps.length) recommendation = 'needs_investigation';
 
-  return { findings, gaps, complete: gaps.length === 0, recommendation };
+  return { findings, gaps, complete: gaps.length === 0, recommendation, items: itemResults };
 }
 
 module.exports = { computeOutcome, BLOCKING };

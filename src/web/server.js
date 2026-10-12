@@ -8,9 +8,8 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
-const { ROOT, writeFileAtomic, writeJsonAtomic, readJsonIfExists, ensureDir } = require('../lib/util');
+const { ROOT, writeFileAtomic, ensureDir } = require('../lib/util');
 const { recordGate } = require('../lib/runs');
-const { validateAgainst } = require('../lib/schema');
 const { buildReview } = require('../lib/publish');
 const { executorConfig } = require('../lib/codex');
 const { reposConfig } = require('../lib/github');
@@ -143,29 +142,16 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
       const key = checkKey(m[1]);
       const args = ['ticket', key];
       if (body.repo) args.push('--repo', knownRepo(String(body.repo)));
-      if (body.redo) args.push('--redo', ['intake', 'requirements', 'analysis'].includes(body.redo) ? body.redo : 'analysis');
+      if (body.redo) args.push('--redo', ['intake', 'requirements', 'spec', 'analysis'].includes(body.redo) ? body.redo : 'spec');
       return queue.enqueue({ kind: 'ticket', title: key, args, target: { type: 'ticket', key } });
     }],
     ['POST', /^\/api\/tickets\/([^/]+)\/gate$/, (m, q, body) => {
       const dir = data.ticketDirFromKey(m[1]);
-      const gate = String(body.gate || '');
-      if (!['REQUIREMENTS', 'ANALYSIS'].includes(gate)) throw data.httpError(400, 'gate must be REQUIREMENTS or ANALYSIS');
-      return recordGate(dir, gate, decisionOf(body), { by: who, note: String(body.note || '') });
-    }],
-    // A person corrects the extracted items before approving; the gate then
-    // binds the corrected bytes.
-    ['PUT', /^\/api\/tickets\/([^/]+)\/requirements$/, (m, q, body) => {
-      const dir = data.ticketDirFromKey(m[1]);
-      const file = path.join(dir, 'requirements.json');
-      const current = readJsonIfExists(file);
-      if (!current) throw data.httpError(404, 'no requirements yet');
-      const next = { ...current, items: body.items, note: [current.note, `edited by ${who}`].filter(Boolean).join('\n') };
-      const errors = validateAgainst('requirements', next);
-      const ids = (body.items || []).map((i) => i && i.id);
-      if (new Set(ids).size !== ids.length) errors.push('item ids must be unique');
-      if (errors.length) throw data.httpError(422, errors.slice(0, 10).join('; '));
-      writeJsonAtomic(file, next);
-      return { ok: true, items: next.items.length };
+      if (String(body.gate || 'SPEC') !== 'SPEC') throw data.httpError(400, 'the ticket gate is SPEC');
+      const decision = decisionOf(body);
+      // A rejection note is the feedback the next spec attempt is built from.
+      if (decision === 'rejected' && !String(body.note || '').trim()) throw data.httpError(400, 'say what is wrong: the note is fed back to the next spec attempt');
+      return recordGate(dir, 'SPEC', decision, { by: who, note: String(body.note || '') });
     }],
   ];
 

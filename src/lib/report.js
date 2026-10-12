@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { readJson, readJsonIfExists } = require('./util');
-const { revisionDir } = require('./freeze');
+const { revisionDir, readInput, loadContext } = require('./freeze');
 const { packetRel } = require('./driver');
 const { SEVERITY_RANK } = require('./cluster');
 
@@ -89,6 +89,19 @@ function renderReport(runDir, validation, identity) {
   const p = u.plan || { calls: 0, input_tokens: 0, output_tokens: 0 };
   out.push(`- review calls ${u.calls} (${u.repair_calls} repairs) · tokens in ${u.input_tokens} (cached ${u.cached_input_tokens}) / out ${u.output_tokens} · planning calls ${p.calls}, tokens in ${p.input_tokens} / out ${p.output_tokens}`);
   if (validation.gaps.length) out.push('', '## Not verified', '', ...validation.gaps.map((g) => `- ${g}`));
+  if (validation.items && validation.items.length) {
+    const texts = new Map(JSON.parse(readInput(runDir, loadContext(runDir), 'review-items') || '[]').map((i) => [i.id, i]));
+    const tally = {};
+    for (const r of validation.items) tally[r.result] = (tally[r.result] || 0) + 1;
+    out.push('', `## Review items (${Object.entries(tally).map(([k, n]) => `${k} ${n}`).join(' · ')})`, '');
+    out.push('| Item | Kind | Risk | Result | Expected | Reviewer notes |', '|---|---|---|---|---|---|');
+    const cell = (s) => String(s || '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+    for (const r of validation.items) {
+      const item = texts.get(r.id) || {};
+      const notes = r.verdicts.map((v) => `${v.unit_id}/${v.role}: ${v.verdict} — ${v.note}`).join('; ');
+      out.push(`| ${r.id} | ${r.kind} | ${r.risk} | **${r.result}** | ${cell(item.expected)} | ${cell(notes).slice(0, 400)} |`);
+    }
+  }
   if (synthesis) {
     out.push('', '## Overview', '');
     for (const flow of synthesis.overview) out.push(`- **${flow.flow}** — ${flow.change}${flow.finding_ids.length ? ` (${flow.finding_ids.join(', ')})` : ''}`);

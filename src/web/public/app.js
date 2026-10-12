@@ -224,7 +224,7 @@ async function renderPr(id) {
   const d = await api('GET', `/api/prs/${encodeURIComponent(id)}`);
   const v = d.validation;
   const idn = d.identity;
-  const tabs = ['Findings', 'Overview', 'Units', 'Plan', 'Cost'];
+  const tabs = ['Findings', 'Items', 'Overview', 'Units', 'Plan', 'Cost'];
   const current = sessionStorage.getItem('pr-tab') || 'Findings';
   const body = h('div', {});
   const tabBar = h('div', { class: 'tabs', role: 'tablist' }, tabs.map((t) =>
@@ -245,6 +245,7 @@ async function renderPr(id) {
   if (!v) return;
   if (current === 'Findings') add(body, findingsView(d));
   else if (current === 'Overview') add(body, overviewView(d));
+  else if (current === 'Items') add(body, itemsView(d));
   else if (current === 'Units') add(body, unitsView(d));
   else if (current === 'Plan') add(body, h('pre', { class: 'code' }, d.plan || 'No plan.'));
   else add(body, costView(d));
@@ -383,6 +384,20 @@ function overviewView(d) {
   return out;
 }
 
+function itemsView(d) {
+  if (!d.items || !d.items.length) return [h('p', { class: 'muted' }, 'No review items: the PR has no ticket spec or requirement items.')];
+  const tally = {};
+  for (const r of d.items) tally[r.result] = (tally[r.result] || 0) + 1;
+  const cls = { pass: 'ok', fail: 'bad', not_applicable: '', cannot_determine: 'warn', not_graded: 'warn' };
+  return [
+    h('div', { class: 'stats mt12' }, Object.entries(tally).map(([k, n]) => stat(n, k))),
+    table(['Item', 'Kind', 'Risk', 'Result', 'Expected', 'Reviewer verdicts'], d.items.map((r) => [
+      h('strong', { title: r.text }, r.id), r.kind, r.risk, h('span', { class: `badge ${cls[r.result] || ''}` }, r.result), r.expected,
+      h('div', { class: 'small' }, r.verdicts.map((v) => h('div', {}, h('span', { class: 'mono' }, `${v.unit_id}/${v.role} `), `${v.verdict} — ${v.note}`))),
+    ])),
+  ];
+}
+
 function unitsView(d) {
   const v = d.validation;
   const unitById = new Map(d.units.map((u) => [u.id, u]));
@@ -437,88 +452,101 @@ async function openPublish(d) {
 async function renderTicket(key) {
   const t = await api('GET', `/api/tickets/${encodeURIComponent(key)}`);
   const repo = repoSelect(true);
-  const gateRow = (gate, artifactReady) => {
-    const g = t.gates[gate] || {};
-    const note = h('input', { type: 'text', placeholder: 'note (optional)' });
-    const decide = (decision) => async () => {
-      if (!confirm(`${decision === 'approved' ? 'Approve' : 'Reject'} ${gate} as yourself? The decision binds to the current file contents.`)) return;
-      try {
-        await api('POST', `/api/tickets/${encodeURIComponent(key)}/gate`, { gate, decision, note: note.value });
-        toast(`${gate} ${decision}`);
-        render();
-      } catch (err) {
-        toast(err.message);
-      }
-    };
-    return h('tr', {},
-      h('td', {}, gate),
-      h('td', {}, statusBadge(g.decision), g.decision !== 'NOT_RECORDED' && !g.valid ? h('span', { class: 'badge warn' }, 'stale') : null),
-      h('td', { class: 'small muted' }, g.by ? `${g.by} ${fmtTime(g.at)}` : ''),
-      h('td', {}, artifactReady ? h('div', { class: 'row' }, note, h('button', { class: 'btn', onclick: decide('approved') }, 'Approve'), h('button', { class: 'btn danger', onclick: decide('rejected') }, 'Reject')) : h('span', { class: 'muted small' }, 'not produced yet')));
-  };
-  put($main, 
+  const advance = (redo) => () => startJob(api('POST', `/api/tickets/${encodeURIComponent(key)}/advance`, { repo: repo.value || undefined, redo }), 'Ticket');
+  const s = t.spec;
+  put($main,
     h('h1', {}, key),
-    h('div', { class: 'row' }, statusBadge(t.state), h('span', { class: 'muted small' }, `model calls ${t.usage.calls} · ${fmtNum(t.usage.input_tokens)} input tokens`)),
+    h('div', { class: 'row' }, statusBadge(t.state), s ? h('span', { class: `badge ${s.clean ? 'ok' : 'warn'}` }, s.clean ? 'spec clean' : 'spec needs a decision') : null,
+      h('span', { class: 'muted small' }, `model calls ${t.usage.calls} · ${fmtNum(t.usage.input_tokens)} input tokens`)),
     h('div', { class: 'panel' },
-      h('div', { class: 'row' }, h('span', { class: 'label' }, 'Next step'), repo,
-        h('button', { class: 'btn primary', onclick: () => startJob(api('POST', `/api/tickets/${encodeURIComponent(key)}/advance`, { repo: repo.value || undefined }), 'Ticket') }, 'Continue pipeline'),
-        h('button', { class: 'btn', onclick: () => startJob(api('POST', `/api/tickets/${encodeURIComponent(key)}/advance`, { repo: repo.value || undefined, redo: 'analysis' }), 'Ticket') }, 'Redo analysis')),
-      h('p', { class: 'small muted' }, 'The pipeline stops at each gate. Pick a repository so the analysis can read the code (read-only).')),
-    ...section('Gates', h('table', {}, h('tbody', {}, gateRow('REQUIREMENTS', Boolean(t.requirements)), gateRow('ANALYSIS', Boolean(t.analysis))))),
-    ...section('Requirements', t.requirements ? requirementsView(key, t.requirements) : h('p', { class: 'muted' }, 'Not extracted yet.')),
-    ...(t.analysis ? analysisView(t.analysis) : section('Analysis', h('p', { class: 'muted' }, 'Runs after REQUIREMENTS is approved.'))),
-    ...section('Ticket evidence', t.evidence ? h('details', {}, h('summary', {}, 'Show ticket text (untrusted)'), h('pre', { class: 'log' }, t.evidence)) : h('p', { class: 'muted' }, 'None.')),
-    ...section('Stages', h('table', {}, h('tbody', {}, Object.entries(t.stages).map(([name, s]) => h('tr', {}, h('td', {}, name), h('td', {}, statusBadge(s.status)), h('td', { class: 'small muted' }, fmtTime(s.at)))))))
+      h('div', { class: 'row' }, h('span', { class: 'label' }, 'Pipeline'), repo,
+        h('button', { class: 'btn primary', onclick: advance() }, 'Continue'),
+        h('button', { class: 'btn', onclick: advance('spec') }, 'Rebuild spec'),
+        h('button', { class: 'btn', onclick: advance('analysis') }, 'Redo analysis')),
+      h('p', { class: 'small muted' }, 'Stops at the SPEC gate. After approval the analysis reads the repository (read-only) for every review item.')),
+    s ? specGate(key, t) : null,
+    s ? specView(s) : section('Spec', h('p', { class: 'muted' }, 'Not built yet.')),
+    t.analysis ? analysisView(t.analysis, s) : [],
+    section('Requirement items', t.requirements ? requirementsTable(t.requirements) : h('p', { class: 'muted' }, 'Not extracted yet.')),
+    section('Ticket evidence', t.evidence ? h('details', {}, h('summary', {}, 'Show ticket text (untrusted)'), h('pre', { class: 'log' }, t.evidence)) : h('p', { class: 'muted' }, 'None.')),
+    section('Stages', h('table', {}, h('tbody', {}, Object.entries(t.stages).map(([name, st]) => h('tr', {}, h('td', {}, name), h('td', {}, statusBadge(st.status)), h('td', { class: 'small muted' }, fmtTime(st.at))))))),
   );
 }
 
-function requirementsView(key, req) {
-  const table = h('table', {},
-    h('thead', {}, h('tr', {}, ['ID', 'Kind', 'Risk', 'Given', 'When', 'Then', 'Quote'].map((c) => h('th', {}, c)))),
-    h('tbody', {}, req.items.map((i) => h('tr', {},
-      h('td', { class: 'mono' }, i.id), h('td', {}, i.kind), h('td', {}, i.risk !== 'normal' ? h('span', { class: 'badge warn' }, i.risk) : 'normal'),
-      h('td', {}, i.given), h('td', {}, i.when), h('td', {}, i.then), h('td', { class: 'small muted' }, i.evidence.quote)))));
-  const editor = h('textarea', { 'aria-label': 'requirement items JSON', class: 'wide tall' });
-  const editBox = h('div', { hidden: true },
-    h('p', { class: 'small muted' }, 'Edit the items array. Saving validates against the schema; approving REQUIREMENTS afterwards binds the edited version.'),
-    editor,
-    h('div', { class: 'row' },
-      h('button', { class: 'btn primary', onclick: async () => {
-        let items;
-        try {
-          items = JSON.parse(editor.value);
-        } catch (err) {
-          return toast(`Not valid JSON: ${err.message}`);
-        }
-        try {
-          await api('PUT', `/api/tickets/${encodeURIComponent(key)}/requirements`, { items });
-          toast('Requirements saved');
-          render();
-        } catch (err) {
-          toast(err.message);
-        }
-      } }, 'Save'),
-      h('button', { class: 'btn', onclick: () => { editBox.hidden = true; } }, 'Cancel')));
+function specGate(key, t) {
+  const g = t.gates.SPEC || { decision: 'NOT_RECORDED' };
+  const note = h('textarea', { class: 'wide', placeholder: 'Rejection note: what is wrong or missing. It is sent to the model to rebuild the spec.' });
+  const decide = (decision) => async () => {
+    if (decision === 'rejected' && !note.value.trim()) return toast('Write what is wrong first: the note drives the rebuild.');
+    if (!confirm(`${decision === 'approved' ? 'Approve' : 'Reject'} the spec as yourself? Approval binds to the current spec.json.`)) return;
+    try {
+      await api('POST', `/api/tickets/${encodeURIComponent(key)}/gate`, { gate: 'SPEC', decision, note: note.value });
+      toast(`SPEC ${decision}`);
+      if (decision === 'rejected') startJob(api('POST', `/api/tickets/${encodeURIComponent(key)}/advance`, {}), 'Spec rebuild');
+      else render();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  return h('div', { class: 'panel' },
+    h('div', { class: 'row' }, h('span', { class: 'label' }, 'Gate SPEC'), statusBadge(g.decision),
+      g.decision !== 'NOT_RECORDED' ? h('span', { class: 'small muted' }, `${g.by || ''} ${fmtTime(g.at)}${g.valid ? '' : ' — not bound to the current spec'}`) : null),
+    g.note ? h('p', { class: 'small' }, h('span', { class: 'label' }, 'Last note '), g.note) : null,
+    note,
+    h('div', { class: 'row mt8' }, h('button', { class: 'btn primary', onclick: decide('approved') }, 'Approve spec'), h('button', { class: 'btn danger', onclick: decide('rejected') }, 'Reject and rebuild')));
+}
+
+function specView(s) {
+  const st = s.stats;
+  const out = [
+    h('h2', {}, 'Spec'),
+    h('div', { class: 'stats' }, stat(st.rules, 'rules'), stat(st.combinations, 'combinations checked'), stat(st.scenarios, 'scenarios'), stat(st.items, 'review items'),
+      stat(st.gaps, 'gaps'), stat(st.contradictions, 'contradictions'), stat(st.inferred_rules, 'inferred rules')),
+  ];
+  if (s.questions.length) out.push(h('h3', {}, 'Open questions'), h('ul', {}, s.questions.map((q) => h('li', {}, h('strong', {}, q.id), ` (${q.kind}) ${q.text}`))));
+  if (s.warnings.length) out.push(h('div', { class: 'notice' }, s.warnings.join(' · ')));
+  for (const f of s.features) {
+    const vars = f.variables.map((v) => v.id);
+    const outs = f.outcomes.map((o) => o.id);
+    out.push(
+      h('h3', {}, `${f.id} — ${f.name}`),
+      h('p', { class: 'small muted' }, `${f.combinations} value combinations checked exhaustively · scenarios ${f.mode} · ${f.gaps} uncovered combinations`),
+      h('div', { class: 'label' }, 'Input matrix'),
+      table(['Variable', 'Type', 'Class', 'Validity', 'Range / value', 'Example'], f.variables.flatMap((v) => v.classes.map((c) => [v.id, `${v.type}${v.unit ? ` (${v.unit})` : ''}`, c.label, statusBadge(c.validity === 'valid' ? 'valid' : 'INVALID'), h('code', {}, c.range), c.example]))),
+      h('div', { class: 'label mt12' }, 'Decision table'),
+      table(['Rule', ...vars, ...outs.map((o) => `→ ${o}`), 'AC', 'Label'], f.decision_table.map((r) => [h('strong', {}, r.rule), ...vars.map((v) => r.conditions[v].join(', ')), ...outs.map((o) => h('strong', {}, r.results[o])), r.acs.join(', '), statusBadge(r.label)])),
+      h('div', { class: 'label mt12' }, 'Scenarios'),
+      table(['ID', ...vars, 'Expected', 'Rule'], f.scenarios.map((sc) => [sc.boundary ? h('span', {}, sc.id, ' ', h('span', { class: 'badge warn' }, 'boundary')) : sc.id, ...vars.map((v) => h('code', {}, sc.values[v])), sc.kind === 'rule' ? sc.expected : h('span', { class: 'badge bad' }, sc.expected), sc.rules.join(', ') || '—'])),
+    );
+  }
+  out.push(h('h3', {}, 'Review items'), table(['ID', 'Kind', 'Risk', 'Label', 'Item'], s.review_items.map((i) => [h('strong', {}, i.id), i.kind, i.risk !== 'normal' ? h('span', { class: 'badge warn' }, i.risk) : 'normal', statusBadge(i.label), i.text])));
+  return out;
+}
+
+function table(cols, rows) {
+  return h('table', {}, h('thead', {}, h('tr', {}, cols.map((c) => h('th', {}, c)))), h('tbody', {}, rows.map((r) => h('tr', {}, r.map((c) => h('td', {}, c))))));
+}
+
+function requirementsTable(req) {
   return [
     h('p', { class: 'small muted' }, `extraction ${req.extraction} · sources ${req.sources.join(', ')}`),
     req.note ? h('div', { class: 'notice' }, req.note) : null,
-    table,
-    h('div', { class: 'row mt8' }, h('button', { class: 'btn', onclick: () => { editor.value = JSON.stringify(req.items, null, 2); editBox.hidden = false; } }, 'Edit items')),
-    editBox,
+    table(['ID', 'Kind', 'Risk', 'Given', 'When', 'Then', 'Quote'], req.items.map((i) => [i.id, i.kind, i.risk, i.given, i.when, i.then, h('span', { class: 'small muted' }, i.evidence.quote)])),
   ];
 }
 
-function analysisView(a) {
-  const t = (cols, rows) => h('table', {}, h('thead', {}, h('tr', {}, cols.map((c) => h('th', {}, c)))), h('tbody', {}, rows.map((r) => h('tr', {}, r.map((c) => h('td', {}, c))))));
+function analysisView(a, s) {
+  const items = new Map(((s && s.review_items) || []).map((i) => [i.id, i]));
+  const statusCls = { matches: 'ok', differs: 'bad', not_implemented: 'warn', unknown: 'warn' };
   return [
-    ...section('Current vs expected', t(['AC', 'Current', 'Expected', 'Label'], a.current_vs_expected.map((x) => [x.ac, x.current, x.expected, statusBadge(x.label)]))),
-    ...section('Open questions', a.questions.length ? h('ul', {}, a.questions.map((q) => h('li', {}, h('strong', {}, q.id), ` ${q.question} `, h('span', { class: 'muted' }, `— ${q.why}${q.blocks.length ? ` (blocks ${q.blocks.join(', ')})` : ''}`)))) : h('p', { class: 'muted' }, 'None.')),
-    a.contradictions.length ? section('Contradictions', h('ul', {}, a.contradictions.map((c) => h('li', {}, `${c.items.join(' vs ')}: ${c.description}`)))) : [],
-    ...section('Business rules', h('ul', {}, a.rules.map((r) => h('li', {}, h('strong', {}, r.id), ' ', statusBadge(r.label), ` ${r.rule} `, h('span', { class: 'muted small' }, r.source))))),
-    ...section('Scenarios', t(['ID', 'AC', 'Kind', 'Given', 'When', 'Then'], a.scenarios.map((s) => [s.id, s.ac, s.kind, s.given, s.when, s.then]))),
-    ...section('Impacted', h('ul', {}, a.impacted.map((x) => h('li', {}, h('code', {}, x.path), x.symbol ? ` (${x.symbol})` : '', ' ', statusBadge(x.label), ` ${x.reason}`)))),
-    a.options.length ? section('Options', h('ul', {}, a.options.map((o) => h('li', {}, h('strong', {}, o.name), ` — ${o.summary} `, h('span', { class: 'muted' }, `Trade-offs: ${o.tradeoffs}`))))) : [],
-    ...section('Acceptance tests', h('ul', {}, a.acceptance_tests.map((x) => h('li', {}, h('strong', {}, x.ac), ` ${x.test}`, x.existing_test ? h('span', { class: 'muted small' }, ` (existing: ${x.existing_test})`) : '')))),
+    h('h2', {}, 'Analysis against the repository'),
+    table(['Item', 'Expected', 'Current behaviour', 'Status', 'Label'], a.items.map((x) => [h('strong', {}, x.item), (items.get(x.item) || {}).expected || '', x.current, h('span', { class: `badge ${statusCls[x.status]}` }, x.status), statusBadge(x.label)])),
+    a.questions.length ? [h('h3', {}, 'Questions'), h('ul', {}, a.questions.map((q) => h('li', {}, h('strong', {}, q.id), ` ${q.question} `, h('span', { class: 'muted' }, `— ${q.why}`))))] : [],
+    h('h3', {}, 'Impacted'),
+    h('ul', {}, a.impacted.map((x) => h('li', {}, h('code', {}, x.path), x.symbol ? ` (${x.symbol})` : '', ' ', statusBadge(x.label), ` ${x.reason}`))),
+    a.options.length ? [h('h3', {}, 'Options'), h('ul', {}, a.options.map((o) => h('li', {}, h('strong', {}, o.name), ` — ${o.summary} `, h('span', { class: 'muted' }, `Trade-offs: ${o.tradeoffs}`))))] : [],
+    h('h3', {}, 'Acceptance tests'),
+    h('ul', {}, a.acceptance_tests.map((x) => h('li', {}, h('strong', {}, x.item), ` ${x.test}`, x.existing_test ? h('span', { class: 'muted small' }, ` (existing: ${x.existing_test})`) : ''))),
   ];
 }
 

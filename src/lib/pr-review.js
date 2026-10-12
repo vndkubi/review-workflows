@@ -61,8 +61,8 @@ function prepare({ repo, pr, prepared }) {
   return { runDir, run, info };
 }
 
-// Phase 0.5: approved ticket artifacts when they exist; otherwise raw evidence
-// is still frozen, but requirements are marked unapproved.
+// Phase 0.5: review items from the ticket's approved spec when it exists;
+// otherwise one item per requirement item, frozen but labelled unapproved.
 function ticketInputs(run, { ticket, info }) {
   const key = ticket || extractTicketKey(info.title, info.headRefName, (info.body || '').slice(0, 2000));
   run.identity.ticket = key || null;
@@ -82,13 +82,14 @@ async function planPhase({ runDir, run, info, executor, models, log, singleRole,
   const deleted = pack.reviewable.filter((f) => f.status === 'D').map((f) => f.path);
   const stats = Object.fromEntries(parsed.map((p) => [p.path, { added: p.added, removed: p.removed }]));
   const requirements = tickets.requirements && tickets.requirements.items.length ? tickets.requirements : null;
+  const items = tickets.items && tickets.items.length ? tickets.items : null;
   if (!reviewable.length) throw new Error('the PR changes no reviewable files');
 
   const planFile = path.join(runDir, 'plan.json');
   let built;
   const cached = readJsonIfExists(planFile);
-  if (cached && cached.head_sha === head && cached.requirements_sha === JSON.stringify(requirements)) {
-    built = buildUnits(cached.plan, reviewable, requirements, { singleRole });
+  if (cached && cached.head_sha === head && cached.items_sha === JSON.stringify(items)) {
+    built = buildUnits(cached.plan, reviewable, items, { singleRole });
     if (built.errors.length) built = null;
   }
   let plan = built ? cached.plan : null;
@@ -109,27 +110,27 @@ async function planPhase({ runDir, run, info, executor, models, log, singleRole,
           skipped: [...pack.skipped.map((f) => f.path), ...deleted.map((f) => `${f} (deleted)`)],
           stats,
           evidencePack: pack.text,
-          requirements,
-          scenarios: tickets.scenarios,
+          items,
+          specMarkdown: tickets.specMarkdown,
           prBody: info.body,
           repair,
           plannerCharter: fs.readFileSync(path.join(ROOT, 'agents', 'planner.md'), 'utf8'),
         }),
       validate: (candidate) => {
         const errors = validateAgainst('review', candidate, 'plan');
-        return errors.length ? errors : buildUnits(candidate, reviewable, requirements, { singleRole }).errors;
+        return errors.length ? errors : buildUnits(candidate, reviewable, items, { singleRole }).errors;
       },
     });
     if (!res.ok) throw new Error(`planning failed: ${res.errors.join('; ')}`);
     plan = res.value;
-    built = buildUnits(plan, reviewable, requirements, { singleRole });
-    writeJsonAtomic(planFile, { head_sha: head, requirements_sha: JSON.stringify(requirements), plan });
+    built = buildUnits(plan, reviewable, items, { singleRole });
+    writeJsonAtomic(planFile, { head_sha: head, items_sha: JSON.stringify(items), plan });
   }
   run.review = { plan_path: 'pr-review-plan.md', required_coverage: built.required_coverage, units: built.units, single_role: Boolean(singleRole) };
-  const planMd = renderPlanMarkdown({ identity: run.identity, plan, units: built.units, requirements, reviewable, skipped: pack.skipped.map((f) => f.path) });
+  const planMd = renderPlanMarkdown({ identity: run.identity, plan, units: built.units, items, reviewable, skipped: pack.skipped.map((f) => f.path) });
   writeFileAtomic(path.join(runDir, 'pr-review-plan.md'), planMd);
   phase(run, runDir, 'plan', 'EXECUTED_PASS', { units: built.units.length });
-  return { changed, patch, pack, reviewable, requirements, planMd };
+  return { changed, patch, pack, reviewable, requirements, items, planMd };
 }
 
 function freezePhase({ runDir, run, info, tickets, planned }) {
@@ -138,8 +139,10 @@ function freezePhase({ runDir, run, info, tickets, planned }) {
     { id: 'plan', kind: 'plan', content: planned.planMd },
     { id: 'pr-body', kind: 'untrusted', content: info.body || '' },
   ];
-  if (planned.requirements) inputs.push({ id: 'requirements', kind: tickets.requirements_approved ? 'requirement' : 'requirement-unapproved', content: `${JSON.stringify(planned.requirements, null, 2)}\n` });
-  if (tickets.scenarios) inputs.push({ id: 'scenarios', kind: 'requirement', content: `${tickets.scenarios}\n` });
+  const kind = tickets.approved ? 'requirement' : 'requirement-unapproved';
+  if (planned.requirements) inputs.push({ id: 'requirements', kind, content: `${JSON.stringify(planned.requirements, null, 2)}\n` });
+  if (planned.items) inputs.push({ id: 'review-items', kind, content: `${JSON.stringify(planned.items, null, 2)}\n` });
+  if (tickets.specMarkdown) inputs.push({ id: 'spec', kind, content: tickets.specMarkdown });
   if (tickets.evidence) inputs.push({ id: 'ticket-evidence', kind: 'untrusted', content: tickets.evidence });
   const context = freezeContext({
     runDir,
@@ -161,8 +164,8 @@ async function reviewPr({ repo, pr, ticket, executor, preflight, models = {}, wo
   log(`run dir ${runDir}; head ${run.identity.head_sha.slice(0, 12)} base ${run.identity.base_sha.slice(0, 12)}`);
   const tickets = ticketInputs(run, { ticket, info });
   if (tickets.note) log(tickets.note);
-  if (tickets.requirements && !tickets.requirements_approved) log(`requirements for ${tickets.key} are NOT approved; they are frozen but labelled unapproved`);
-  phase(run, runDir, 'ticket', tickets.key ? 'EXECUTED_PASS' : 'SKIPPED', { ticket: tickets.key, requirements_approved: Boolean(tickets.requirements_approved) });
+  if (tickets.items && !tickets.approved) log(`the spec for ${tickets.key} is NOT approved; review items come from raw requirement items and are labelled unapproved`);
+  phase(run, runDir, 'ticket', tickets.key ? 'EXECUTED_PASS' : 'SKIPPED', { ticket: tickets.key, spec_approved: Boolean(tickets.approved), items: tickets.items ? tickets.items.length : 0 });
 
   // Reuse the frozen context when it still holds.
   let context = null;

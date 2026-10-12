@@ -184,7 +184,7 @@ function canonicalizeCandidate(candidate, sources) {
     if (f.verification) list(f.verification.evidence, `$.findings[${i}].verification.evidence`);
     if (f.authority) {
       fixEvidence(f.authority.source, `$.findings[${i}].authority.source`);
-      const m = typeof f.authority.id === 'string' && f.authority.kind === 'requirement' && f.authority.id.match(/\bAC[1-9][0-9]*\b/);
+      const m = typeof f.authority.id === 'string' && f.authority.kind === 'requirement' && f.authority.id.match(/\b(?:AC|I)[1-9][0-9]*\b/);
       if (m && m[0] !== f.authority.id) {
         changes.push(`$.findings[${i}].authority.id: "${f.authority.id}" -> "${m[0]}"`);
         f.authority.id = m[0];
@@ -238,7 +238,7 @@ function sortRefs(refs) {
   return [...refs].sort((a, b) => `${a.unit_id}/${a.role}`.localeCompare(`${b.unit_id}/${b.role}`));
 }
 
-// env: { sources, unit, role, requirements, expectedDependencyRefs }
+// env: { sources, unit, role, items, requirements, expectedDependencyRefs }
 function validatePacket(packet, env) {
   const errors = validateAgainst('review', packet, 'packet');
   if (errors.length) return errors;
@@ -258,8 +258,8 @@ function validatePacket(packet, env) {
   }
 
   // Coverage: every covered file/viewpoint exactly once, reviewed rows backed
-  // by evidence. AC items are accounted for by item_verdicts instead.
-  const coverIds = unit.covers.filter((c) => !/^AC[1-9][0-9]*$/.test(c));
+  // by evidence. Review items are accounted for by item_verdicts instead.
+  const coverIds = unit.covers.filter((c) => c.startsWith('file:') || c.startsWith('viewpoint:'));
   const seen = new Map();
   packet.coverage.forEach((row, i) => {
     const at = `$.coverage[${i}]`;
@@ -279,26 +279,33 @@ function validatePacket(packet, env) {
     if (n > 1) errors.push(`$.coverage: "${id}" appears ${n} times; exactly once is required`);
   }
 
-  // Requirement item verdicts.
-  const coveredAcs = unit.covers.filter((c) => /^AC[1-9][0-9]*$/.test(c));
-  const verdictAcs = new Map();
+  // Review item verdicts. Gap and contradiction items have no expected
+  // result, so they can only be described, never passed or failed.
+  const itemById = new Map((env.items || []).map((i) => [i.id, i]));
+  const coveredItems = unit.covers.filter((c) => /^I[1-9][0-9]*$/.test(c));
+  const verdictItems = new Map();
   packet.item_verdicts.forEach((v, i) => {
     const at = `$.item_verdicts[${i}]`;
-    verdictAcs.set(v.ac, (verdictAcs.get(v.ac) || 0) + 1);
-    if (!coveredAcs.includes(v.ac)) errors.push(`${at}.ac: ${v.ac} is not covered by unit ${unit.id}`);
+    verdictItems.set(v.item, (verdictItems.get(v.item) || 0) + 1);
+    if (!coveredItems.includes(v.item)) errors.push(`${at}.item: ${v.item} is not covered by unit ${unit.id}`);
+    const item = itemById.get(v.item);
+    if (item && ['gap', 'contradiction'].includes(item.kind) && ['pass', 'fail'].includes(v.verdict)) {
+      errors.push(`${at}: ${v.item} is a ${item.kind} item with no expected result; use "cannot_determine" (describe what the code does in note, with code evidence) or "not_applicable"`);
+    }
     if (v.verdict === 'pass' && !v.evidence.some((ev) => ev.kind === 'code')) errors.push(`${at}: "pass" needs code evidence; without it use "cannot_determine"`);
-    if (v.verdict === 'fail' && !packet.findings.some((f) => f.authority.kind === 'requirement' && f.authority.id === v.ac)) {
-      errors.push(`${at}: "fail" for ${v.ac} needs a finding whose authority is {kind:"requirement", id:"${v.ac}"}`);
+    if (v.verdict === 'fail' && !packet.findings.some((f) => f.items.includes(v.item) || (f.authority.kind === 'requirement' && f.authority.id === v.item))) {
+      errors.push(`${at}: "fail" for ${v.item} needs a finding that lists "${v.item}" in its items`);
     }
     v.evidence.forEach((ev, j) => errors.push(...validateEvidence(ev, sources, `${at}.evidence[${j}]`)));
   });
-  for (const [ac, n] of verdictAcs) if (n > 1) errors.push(`$.item_verdicts: ${ac} appears ${n} times`);
+  for (const [id, n] of verdictItems) if (n > 1) errors.push(`$.item_verdicts: ${id} appears ${n} times`);
   if (role === 'business') {
-    for (const ac of coveredAcs) if (!verdictAcs.has(ac)) errors.push(`$.item_verdicts: missing a verdict for ${ac}`);
+    for (const id of coveredItems) if (!verdictItems.has(id)) errors.push(`$.item_verdicts: missing a verdict for ${id}`);
   }
 
   // Findings.
-  const reqIds = new Set(((env.requirements && env.requirements.items) || []).map((i) => i.id));
+  // Requirement authority: a review item (I*) or a requirement item (AC*).
+  const reqIds = new Set([...itemById.keys(), ...((env.requirements && env.requirements.items) || []).map((i) => i.id)]);
   const idPattern = new RegExp(`^${unit.id}-${role}-F[1-9][0-9]*$`);
   const ids = new Set();
   packet.findings.forEach((f, i) => {
@@ -308,14 +315,15 @@ function validatePacket(packet, env) {
     ids.add(f.id);
     const blocking = f.severity === 'P1' || f.severity === 'P2';
     if (blocking && f.confidence === 'HYPOTHESIS') errors.push(`${at}: a HYPOTHESIS cannot be ${f.severity}; downgrade to P3/P4 or support it as LIKELY`);
+    for (const id of f.items) if (!itemById.has(id)) errors.push(`${at}.items: ${id} is not a review item`);
     if (!f.evidence.some((ev) => ev.kind === 'code')) errors.push(`${at}.evidence: needs at least one code evidence`);
     f.evidence.forEach((ev, j) => errors.push(...validateEvidence(ev, sources, `${at}.evidence[${j}]`)));
 
     const a = f.authority;
     errors.push(...validateEvidence(a.source, sources, `${at}.authority.source`));
     if (a.kind === 'requirement') {
-      if (!reqIds.has(a.id)) errors.push(`${at}.authority.id: "${a.id}" is not a frozen requirement item id`);
-      if (a.source.kind !== 'input' || a.source.path !== 'requirements') errors.push(`${at}.authority.source: cite the frozen input "requirements"`);
+      if (!reqIds.has(a.id)) errors.push(`${at}.authority.id: "${a.id}" is not a frozen review item (I*) or requirement item (AC*)`);
+      if (a.source.kind !== 'input' || !['review-items', 'requirements', 'spec'].includes(a.source.path)) errors.push(`${at}.authority.source: cite the frozen input "review-items" (or "requirements" / "spec")`);
     } else if (a.kind === 'curated_viewpoint') {
       if (!sources.policyText().includes(a.id)) errors.push(`${at}.authority.id: "${a.id}" does not occur in any frozen policy/checklist input`);
     } else if (a.kind === 'inferred' && blocking) {

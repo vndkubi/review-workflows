@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "arw/spec.schema.json",
+  "title": "Spec model a model extracts from ticket text; tables, scenarios and review items are derived from it by code",
+  "$defs": {
+    "text": { "type": "string", "pattern": "\\S" },
+    "acId": { "type": "string", "pattern": "^AC[1-9][0-9]*$" },
+    "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+
+    "specModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "ticket", "features", "other_acs", "notes"],
+      "properties": {
+        "schema_version": { "const": "1.0" },
+        "ticket": { "type": "string", "pattern": "^[A-Z][A-Z0-9]+-[0-9]+$" },
+        "features": { "type": "array", "items": { "$ref": "#/$defs/feature" } },
+        "other_acs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["ac", "reason"],
+            "properties": { "ac": { "$ref": "#/$defs/acId" }, "reason": { "$ref": "#/$defs/text" } }
+          }
+        },
+        "notes": { "type": "string" }
+      }
+    },
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "variables", "outcomes", "rules"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^F[1-9][0-9]*$" },
+        "name": { "$ref": "#/$defs/text" },
+        "variables": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/variable" } },
+        "outcomes": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/outcome" } },
+        "rules": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/rule" } }
+      }
+    },
+    "variable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description", "type", "classes"],
+      "properties": {
+        "id": { "$ref": "#/$defs/name" },
+        "description": { "$ref": "#/$defs/text" },
+        "type": { "enum": ["boolean", "enum", "integer", "decimal", "date", "text"] },
+        "unit": { "type": "string" },
+        "step": { "type": "string" },
+        "classes": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/class" } }
+      }
+    },
+    "class": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "validity"],
+      "properties": {
+        "id": { "$ref": "#/$defs/name" },
+        "label": { "$ref": "#/$defs/text" },
+        "validity": { "enum": ["valid", "invalid"] },
+        "value": { "type": "string" },
+        "min": { "type": "string" },
+        "max": { "type": "string" },
+        "min_inclusive": { "type": "boolean" },
+        "max_inclusive": { "type": "boolean" },
+        "special": { "enum": ["missing", "malformed"] }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description"],
+      "properties": { "id": { "$ref": "#/$defs/name" }, "description": { "$ref": "#/$defs/text" } }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "conditions", "results", "acs", "label", "source"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^R[1-9][0-9]*$" },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["variable", "classes"],
+            "properties": {
+              "variable": { "$ref": "#/$defs/name" },
+              "classes": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/name" } }
+            }
+          }
+        },
+        "results": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["outcome", "value"],
+            "properties": { "outcome": { "$ref": "#/$defs/name" }, "value": { "$ref": "#/$defs/text" } }
+          }
+        },
+        "acs": { "type": "array", "items": { "$ref": "#/$defs/acId" } },
+        "label": { "enum": ["CONFIRMED", "INFERRED"] },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "quote"],
+          "properties": { "source": { "type": "string" }, "quote": { "type": "string" } }
+        }
+      }
+    }
+  }
+}

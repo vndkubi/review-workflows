@@ -1,39 +1,25 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "arw/analysis.schema.json",
-  "title": "Read-only requirement investigation against a repository (ticket pipeline)",
+  "title": "Read-only investigation of approved review items against a repository (ticket pipeline)",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "ticket", "current_vs_expected", "rules", "questions", "contradictions", "scenarios", "impacted", "options", "acceptance_tests"],
+  "required": ["schema_version", "ticket", "items", "questions", "impacted", "options", "acceptance_tests"],
   "properties": {
     "schema_version": { "const": "1.0" },
     "ticket": { "type": "string", "pattern": "^[A-Z][A-Z0-9]+-[0-9]+$" },
-    "current_vs_expected": {
+    "items": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["ac", "current", "expected", "label", "evidence"],
+        "required": ["item", "current", "status", "label", "evidence"],
         "properties": {
-          "ac": { "$ref": "#/$defs/acId" },
+          "item": { "$ref": "#/$defs/itemId" },
           "current": { "$ref": "#/$defs/text" },
-          "expected": { "$ref": "#/$defs/text" },
+          "status": { "enum": ["matches", "differs", "not_implemented", "unknown"] },
           "label": { "$ref": "#/$defs/label" },
           "evidence": { "$ref": "#/$defs/refs" }
-        }
-      }
-    },
-    "rules": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "rule", "label", "source"],
-        "properties": {
-          "id": { "type": "string", "pattern": "^R[1-9][0-9]*$" },
-          "rule": { "$ref": "#/$defs/text" },
-          "label": { "$ref": "#/$defs/label" },
-          "source": { "$ref": "#/$defs/text" }
         }
       }
     },
@@ -47,35 +33,7 @@
           "id": { "type": "string", "pattern": "^Q[1-9][0-9]*$" },
           "question": { "$ref": "#/$defs/text" },
           "why": { "$ref": "#/$defs/text" },
-          "blocks": { "type": "array", "items": { "$ref": "#/$defs/acId" } }
-        }
-      }
-    },
-    "contradictions": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["items", "description"],
-        "properties": {
-          "items": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/text" } },
-          "description": { "$ref": "#/$defs/text" }
-        }
-      }
-    },
-    "scenarios": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "ac", "kind", "given", "when", "then"],
-        "properties": {
-          "id": { "type": "string", "pattern": "^S[1-9][0-9]*$" },
-          "ac": { "$ref": "#/$defs/acId" },
-          "kind": { "enum": ["happy", "boundary", "negative", "error", "concurrency"] },
-          "given": { "$ref": "#/$defs/text" },
-          "when": { "$ref": "#/$defs/text" },
-          "then": { "$ref": "#/$defs/text" }
+          "blocks": { "type": "array", "items": { "$ref": "#/$defs/itemId" } }
         }
       }
     },
@@ -111,9 +69,9 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["ac", "test"],
+        "required": ["item", "test"],
         "properties": {
-          "ac": { "$ref": "#/$defs/acId" },
+          "item": { "$ref": "#/$defs/itemId" },
           "test": { "$ref": "#/$defs/text" },
           "existing_test": { "type": "string" }
         }
@@ -122,7 +80,7 @@
   },
   "$defs": {
     "text": { "type": "string", "pattern": "\\S" },
-    "acId": { "type": "string", "pattern": "^AC[1-9][0-9]*$" },
+    "itemId": { "type": "string", "pattern": "^I[1-9][0-9]*$" },
     "label": { "enum": ["CONFIRMED", "INFERRED", "UNKNOWN"] },
     "refs": { "type": "array", "items": { "$ref": "#/$defs/text" } }
   }

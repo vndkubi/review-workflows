@@ -12,6 +12,13 @@ const ORDER = 'src/main/java/com/acme/OrderService.java';
 const IF_LINE = 'if (member && total.compareTo(THRESHOLD) > 0) {';
 const DIGEST = 'a'.repeat(64);
 const REQUIREMENTS = '{\n  "items": [\n    { "id": "AC1", "then": "10% off from 1,000,000" }\n  ]\n}\n';
+const ITEMS = [
+  '[',
+  '  { "id": "I1", "kind": "rule", "text": "R1: member and total >= 1,000,000 -> 10%" },',
+  '  { "id": "I2", "kind": "gap", "text": "total negative: unspecified" }',
+  ']',
+  '',
+].join('\n');
 const CHECKLIST = '- CK-BZ-1: Boundary conditions match the requirement wording.\n';
 
 // Minimal stand-in for makeSources(): code from the fixture repo, two inputs.
@@ -21,16 +28,17 @@ const sources = {
     const text = git.showFile(repo.dir, rev === 'base' ? repo.base : repo.head, file);
     return text == null ? null : splitLines(text);
   },
-  input: (id) => ({ requirements: splitLines(REQUIREMENTS), 'policy-policies-checklist': splitLines(CHECKLIST) })[id] || null,
+  input: (id) => ({ requirements: splitLines(REQUIREMENTS), 'review-items': splitLines(ITEMS), 'policy-policies-checklist': splitLines(CHECKLIST) })[id] || null,
   artifact: () => null,
   artifactSha: () => null,
-  inputIds: () => ['requirements', 'policy-policies-checklist'],
+  inputIds: () => ['requirements', 'review-items', 'policy-policies-checklist'],
   policyText: () => CHECKLIST,
 };
 
-const unit = { id: 'B1', kind: 'business', covers: [`file:${ORDER}`, 'AC1'], depends_on: [] };
+const unit = { id: 'B1', kind: 'business', covers: [`file:${ORDER}`, 'I1', 'I2'], depends_on: [] };
 const codeEv = { kind: 'code', path: ORDER, start_line: 9, end_line: 9, quote: IF_LINE };
 const reqEv = { kind: 'input', path: 'requirements', start_line: 3, end_line: 3, quote: '10% off from 1,000,000' };
+const itemEv = { kind: 'input', path: 'review-items', start_line: 2, end_line: 2, quote: 'R1: member and total >= 1,000,000 -> 10%' };
 
 function goodFinding() {
   return {
@@ -40,7 +48,8 @@ function goodFinding() {
     title: 'Boundary excludes the threshold',
     asis: 'Exactly 1,000,000 gets nothing.',
     tobe: 'It gets 10%.',
-    authority: { kind: 'requirement', id: 'AC1', source: reqEv },
+    authority: { kind: 'requirement', id: 'I1', source: itemEv },
+    items: ['I1'],
     trigger: { given: 'total 1,000,000', when: 'discount()', then: '0 returned' },
     impact: 'overcharge',
     evidence: [codeEv],
@@ -60,13 +69,13 @@ function goodPacket() {
     coverage: [
       { id: `file:${ORDER}`, disposition: 'reviewed', evidence: [codeEv], note: 'n' },
     ],
-    item_verdicts: [{ ac: 'AC1', verdict: 'fail', evidence: [codeEv], note: 'n' }],
+    item_verdicts: [{ item: 'I1', verdict: 'fail', evidence: [codeEv], note: 'n' }, { item: 'I2', verdict: 'cannot_determine', evidence: [codeEv], note: 'negative totals fall through to zero discount' }],
     findings: [goodFinding()],
     recommendation: 'findings',
   };
 }
 
-const check = (packet) => validatePacket(packet, { sources, unit, role: 'business', requirements: { items: [{ id: 'AC1' }] }, expectedDependencyRefs: [] });
+const check = (packet) => validatePacket(packet, { sources, unit, role: 'business', requirements: { items: [{ id: 'AC1' }] }, items: [{ id: 'I1', kind: 'rule' }, { id: 'I2', kind: 'gap' }], expectedDependencyRefs: [] });
 const has = (errors, re) => assert.ok(errors.some((e) => re.test(e)), `expected ${re} in:\n${errors.join('\n')}`);
 
 test('a correct packet validates', () => {
@@ -77,7 +86,7 @@ test('packet rules reject what a reviewer would reject', () => {
   let p = goodPacket();
   p.findings = [];
   p.recommendation = 'no_findings';
-  has(check(p), /"fail" for AC1 needs a finding/);
+  has(check(p), /"fail" for I1 needs a finding/);
 
   p = goodPacket();
   p.findings[0].confidence = 'HYPOTHESIS';
@@ -97,8 +106,16 @@ test('packet rules reject what a reviewer would reject', () => {
   has(check(p), /"viewpoint:V0" is not a coverage id/);
 
   p = goodPacket();
-  p.coverage.push({ id: 'AC1', disposition: 'unverified', evidence: [], note: 'n' });
-  has(check(p), /"AC1" is not a coverage id/);
+  p.coverage.push({ id: 'I1', disposition: 'unverified', evidence: [], note: 'n' });
+  has(check(p), /"I1" is not a coverage id/);
+
+  p = goodPacket();
+  p.item_verdicts[1] = { item: 'I2', verdict: 'pass', evidence: [codeEv], note: 'fine' };
+  has(check(p), /I2 is a gap item with no expected result/);
+
+  p = goodPacket();
+  p.item_verdicts.pop();
+  has(check(p), /missing a verdict for I2/);
 
   p = goodPacket();
   p.coverage.push({ ...p.coverage[0] });
@@ -121,7 +138,7 @@ test('packet rules reject what a reviewer would reject', () => {
   has(check(p), /must be repository-relative/);
 
   p = goodPacket();
-  p.item_verdicts[0] = { ac: 'AC1', verdict: 'pass', evidence: [], note: 'looks fine' };
+  p.item_verdicts[0] = { item: 'I1', verdict: 'pass', evidence: [], note: 'looks fine' };
   has(check(p), /"pass" needs code evidence/);
 
   p = goodPacket();
@@ -182,6 +199,24 @@ test('evidence pack: Java and Python symbols, callers, skips, boundary signals',
   assert.equal(sym.late_fee.language, 'python');
   assert.match(pack.text, /## Notes/);
   sh(repo.dir, ['status']);
+});
+
+test('a degenerate structured response is stopped and retried without the output schema', async () => {
+  const { runLooseJob } = require('../src/lib/loose-job');
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const seen = [];
+  const exec = async (opts) => {
+    seen.push(Boolean(opts.outputSchema));
+    if (seen.length === 1) return { ok: false, output: null, error_class: 'degenerate', error_message: 'max_output_tokens', usage: {}, elapsed_ms: 1 };
+    return { ok: true, output: '{"ok":true}', error_class: null, usage: {}, elapsed_ms: 1 };
+  };
+  const res = await runLooseJob({ executor: exec, label: 'spec', workDir: fs.mkdtempSync(path.join(os.tmpdir(), 'arw-lj-')), cwd: '.', outputSchema: { type: 'object' }, buildPrompt: () => 'p', validate: () => [] });
+  assert.equal(res.ok, true);
+  assert.deepEqual(seen, [true, false]);
+  const { classifyError } = require('../src/lib/codex');
+  assert.equal(classifyError('Incomplete response returned, reason: max_output_tokens'), 'error', 'detected from the event stream, not by message class');
 });
 
 test('driver job: 429 backs off and retries; auth failure blocks without retrying', async () => {

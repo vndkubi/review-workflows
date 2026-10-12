@@ -12,11 +12,12 @@ const VIEWPOINTS = [
 
 // Returns { units, required_coverage, errors }. Errors are phrased for the
 // planner's repair prompt.
-function buildUnits(plan, reviewableFiles, requirements, { singleRole = false } = {}) {
+// items: review items (spec-derived, or one per requirement item) or null.
+function buildUnits(plan, reviewableFiles, items, { singleRole = false } = {}) {
   const errors = [];
   const fileSet = new Set(reviewableFiles);
-  const acItems = requirements && Array.isArray(requirements.items) ? requirements.items : [];
-  const acIds = new Set(acItems.map((i) => i.id));
+  const reviewItems = Array.isArray(items) ? items : [];
+  const itemIds = new Set(reviewItems.map((i) => i.id));
   const units = [];
   const seen = new Set();
 
@@ -25,15 +26,15 @@ function buildUnits(plan, reviewableFiles, requirements, { singleRole = false } 
     seen.add(u.id);
     const expectedKind = u.id.startsWith('B') ? 'business' : 'technical';
     if (u.kind !== expectedKind) errors.push(`unit ${u.id}: id prefix ${u.id[0]} requires kind "${expectedKind}"`);
-    if (u.kind === 'technical' && u.acs.length) errors.push(`unit ${u.id}: only business (B*) units may cover AC items`);
+    if (u.kind === 'technical' && u.items.length) errors.push(`unit ${u.id}: only business (B*) units may cover review items`);
     for (const f of u.files) if (!fileSet.has(f)) errors.push(`unit ${u.id}: "${f}" is not a reviewable changed file`);
-    for (const ac of u.acs) if (!acIds.has(ac)) errors.push(`unit ${u.id}: ${ac} is not a requirement item id`);
+    for (const id of u.items) if (!itemIds.has(id)) errors.push(`unit ${u.id}: ${id} is not a review item id`);
     const roles = u.kind === 'business' ? (singleRole ? ['business'] : ['business', 'technical']) : ['technical'];
     units.push({
       id: u.id,
       kind: u.kind,
       desc: u.desc,
-      covers: [...new Set([...u.files.map((f) => `file:${f}`), ...u.acs])],
+      covers: [...new Set([...u.files.map((f) => `file:${f}`), ...u.items])],
       depends_on: [],
       required: true,
       roles,
@@ -41,8 +42,9 @@ function buildUnits(plan, reviewableFiles, requirements, { singleRole = false } 
     });
   }
 
-  for (const item of acItems) {
-    if (item.kind === 'inferred') continue;
+  // Every review item is graded, gaps and contradictions included (the
+  // reviewer reports what the code does where the spec is silent).
+  for (const item of reviewItems) {
     if (!units.some((u) => u.kind === 'business' && u.covers.includes(item.id))) {
       errors.push(`${item.id} (${item.kind}) is not covered by any business (B*) unit`);
     }
@@ -113,14 +115,14 @@ function buildUnits(plan, reviewableFiles, requirements, { singleRole = false } 
   return { units, required_coverage, errors };
 }
 
-function renderPlanMarkdown({ identity, plan, units, requirements, reviewable, skipped }) {
+function renderPlanMarkdown({ identity, plan, units, items, reviewable, skipped }) {
   const out = [];
   out.push(`# Review plan — ${identity.repo}#${identity.pr}`, '');
   out.push(`${identity.title}`, '', `- head: \`${identity.head_sha}\``, `- base (merge-base): \`${identity.base_sha}\``);
-  out.push(`- ticket: ${identity.ticket || '(none found)'}`, `- requirements: ${requirements ? `${requirements.items.length} items (${requirements.extraction})` : 'unavailable'}`, '');
+  out.push(`- ticket: ${identity.ticket || '(none found)'}`, `- review items: ${items && items.length ? items.length : 'none (no ticket spec or requirements)'}`, '');
   out.push('## Hypotheses', '');
   if (!plan.hypotheses.length) out.push('(none)');
-  plan.hypotheses.forEach((h) => out.push(`- **${h.id}** [${h.confidence}] ${h.statement}${h.acs.length ? ` — ${h.acs.join(', ')}` : ''}`));
+  plan.hypotheses.forEach((h) => out.push(`- **${h.id}** [${h.confidence}] ${h.statement}${h.items.length ? ` — ${h.items.join(', ')}` : ''}`));
   out.push('', '## Units', '', '| Unit | Kind | Roles | Covers | Depends on | Description |', '|---|---|---|---|---|---|');
   for (const u of units) {
     out.push(`| ${u.id} | ${u.kind} | ${u.roles.join(', ')} | ${u.covers.length} | ${u.depends_on.join(', ') || '—'} | ${u.desc.replace(/\|/g, '\\|')} |`);
