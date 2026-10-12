@@ -8,6 +8,9 @@ const path = require('node:path');
 const { tmpDir, scriptedExecutor } = require('./helpers');
 
 process.env.ARW_RUNS_DIR = tmpDir('arw-web-runs-');
+// Never touch the real .env / repos.json from tests.
+process.env.ARW_ENV_FILE = path.join(tmpDir('arw-web-env-'), '.env');
+process.env.ARW_REPOS_FILE = path.join(tmpDir('arw-web-repos-'), 'repos.json');
 
 const { createServer } = require('../src/web/server');
 const { advanceTicket } = require('../src/lib/ticket-pipeline');
@@ -163,6 +166,22 @@ test('dashboard server', async (t) => {
     const sys = await call(port, 'GET', '/api/system');
     assert.equal(sys.json.ticket_source.kind, 'file');
     assert.ok(!JSON.stringify(sys.json).includes('secret'), 'no secret values in the system view');
+  });
+
+  await t.test('settings: writes need the token; secrets never come back', async () => {
+    const changes = { CODEX_EFFORT: 'medium', JIRA_PAT: 'pat-from-ui' };
+    assert.equal((await call(port, 'PUT', '/api/settings/env', { body: { changes } })).status, 403);
+    const ok = await call(port, 'PUT', '/api/settings/env', { body: { changes }, headers: auth });
+    assert.equal(ok.status, 200);
+    const s = await call(port, 'GET', '/api/settings');
+    assert.equal(s.json.env.find((e) => e.key === 'CODEX_EFFORT').value, 'medium');
+    assert.equal(s.json.env.find((e) => e.key === 'JIRA_PAT').set, true);
+    assert.ok(!JSON.stringify(s.json).includes('pat-from-ui'));
+    assert.equal((await call(port, 'GET', '/api/config')).json.effort, 'medium', 'applies without a restart');
+    const bad = await call(port, 'PUT', '/api/settings/env', { body: { changes: { ARW_WORKERS: '0' } }, headers: auth });
+    assert.equal(bad.status, 422);
+    const mcpTest = await call(port, 'POST', '/api/settings/mcp/test', { body: { server: { transport: 'stdio', command: process.execPath, args: [path.join(__dirname, 'fixtures', 'fake-mcp.js')] } }, headers: auth });
+    assert.equal(mcpTest.json.ok, true, 'a draft MCP config can be tested before saving');
   });
 
   await t.test('reviews only for configured repositories', async () => {

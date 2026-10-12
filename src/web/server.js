@@ -15,7 +15,8 @@ const { executorConfig } = require('../lib/codex');
 const { reposConfig } = require('../lib/github');
 const data = require('./data');
 const insights = require('./insights');
-const { atlassianConfig } = require('../lib/ticket-mcp');
+const { atlassianConfig, checkMcp } = require('../lib/ticket-mcp');
+const settings = require('../lib/settings');
 const { RUNS } = require('../lib/runs');
 
 // Non-secret configuration, for the System page.
@@ -118,6 +119,18 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
     }],
     ['GET', /^\/api\/runs$/, () => data.listRuns()],
     ['GET', /^\/api\/system$/, () => systemInfo()],
+    ['GET', /^\/api\/settings$/, () => settings.readAll()],
+    ['PUT', /^\/api\/settings\/env$/, (m, q, body) => settings.writeEnvSettings(body.changes)],
+    ['PUT', /^\/api\/settings\/repos$/, (m, q, body) => settings.writeRepos(body.repos)],
+    ['PUT', /^\/api\/settings\/mcp$/, (m, q, body) => settings.writeMcp(body.server === undefined ? null : body.server)],
+    // Test a configuration before (or after) saving it.
+    ['POST', /^\/api\/settings\/mcp\/test$/, (m, q, body) => {
+      if (!body.server) return checkMcp();
+      const { DEFAULT_TOOLS } = require('../lib/ticket-mcp');
+      const tools = { ...DEFAULT_TOOLS };
+      for (const [k, v] of Object.entries(body.server.tools || {})) tools[k] = v === null ? null : { ...DEFAULT_TOOLS[k], ...v };
+      return checkMcp({ server: { name: 'atlassian', ...body.server }, tools });
+    }],
     ['POST', /^\/api\/doctor$/, () => queue.enqueue({ kind: 'doctor', title: 'system check', args: ['doctor'], target: { type: 'system' } })],
     ['GET', /^\/api\/prs\/([^/]+)\/progress$/, (m) => insights.prProgress(m[1])],
     ['GET', /^\/api\/prs\/([^/]+)\/calls$/, (m) => insights.prCalls(m[1])],

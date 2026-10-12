@@ -151,7 +151,7 @@ async function refreshJobs() {
 }
 
 function targetHash(t) {
-  return t.type === 'pr' ? `#/pr/${t.id}` : t.type === 'ticket' ? `#/ticket/${t.key}` : '#/system';
+  return t.type === 'pr' ? `#/pr/${t.id}` : t.type === 'ticket' ? `#/ticket/${t.key}` : '#/settings';
 }
 
 async function startJob(promise, label) {
@@ -184,7 +184,7 @@ async function render() {
     else if (view === 'new-ticket') renderNewTicket();
     else if (view === 'jobs') renderJobs();
     else if (view === 'job') renderJob(arg);
-    else if (view === 'system') await renderSystem();
+    else if (view === 'settings' || view === 'system') await renderSettings();
     else renderHome();
   } catch (err) {
     put($main, h('div', { class: 'notice bad' }, err.message));
@@ -907,31 +907,217 @@ async function ticketExtras(key) {
   ];
 }
 
-// ---------- system ----------
-async function renderSystem() {
-  const s = await api('GET', '/api/system');
-  const kv = (obj) => h('div', { class: 'kv' }, Object.entries(obj).flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v))]));
+// ---------- settings ----------
+const GROUP_TITLES = { executor: 'Executor (codex)', review: 'Review', repro: 'Reproduction tests' };
+
+// One input per setting; returns { row, read } where read() yields the
+// change to send (undefined = unchanged, null = reset to default).
+function settingField(s) {
+  const id = `set-${s.key}`;
+  let input;
+  let reset = false;
+  if (s.type === 'bool') input = h('input', { id, type: 'checkbox', checked: (s.value || s.default) === '1' });
+  else if (s.type === 'enum') input = h('select', { id }, s.options.map((o) => h('option', { value: o, selected: (s.value || s.default) === o }, o || '(default)')));
+  else if (s.type === 'secret') input = h('input', { id, type: 'password', autocomplete: 'off', placeholder: s.set ? '•••••• (set — type to replace)' : '(not set)' });
+  else input = h('input', { id, type: s.type === 'number' ? 'number' : 'text', value: s.value, placeholder: s.default || '', min: s.range ? s.range[0] : null, max: s.range ? s.range[1] : null, list: /MODEL$/.test(s.key) ? 'model-list' : null, class: 'wide' });
+  const clear = s.type === 'secret' && s.set ? h('label', { class: 'small' }, h('input', { type: 'checkbox', onchange: (e) => { reset = e.target.checked; } }), ' clear') : null;
+  const resetBtn = s.source === '.env' && s.type !== 'secret' ? h('button', { type: 'button', class: 'linkbtn small', title: `back to default (${s.default || 'empty'})`, onclick: () => { reset = true; input.disabled = true; } }, 'reset') : null;
+  const row = h('div', { class: 'setting' },
+    h('label', { for: id, class: 'setting-key' }, h('code', {}, s.key), h('span', { class: `badge ${s.source === '.env' ? 'ok' : ''}` }, s.source)),
+    h('div', {}, h('div', { class: 'row' }, input, clear, resetBtn), h('div', { class: 'small muted' }, s.help, s.default && s.type !== 'secret' ? ` Default: ${s.default}.` : '')));
+  const read = () => {
+    if (reset) return null;
+    if (s.type === 'bool') {
+      const v = input.checked ? '1' : '0';
+      return v === (s.value || s.default) ? undefined : v;
+    }
+    if (s.type === 'secret') return input.value ? input.value : undefined;
+    // A select starts on the effective value (often the default): compare to that.
+    if (s.type === 'enum') return input.value === (s.value || s.default) ? undefined : input.value;
+    return input.value === s.value ? undefined : input.value;
+  };
+  return { row, read };
+}
+
+function settingsSection(title, list, models, after) {
+  const fields = list.map((s) => settingField(s));
+  const msg = h('span', { class: 'small' });
+  const save = async () => {
+    const changes = {};
+    for (const [i, f] of fields.entries()) {
+      const v = f.read();
+      if (v !== undefined) changes[list[i].key] = v;
+    }
+    if (!Object.keys(changes).length) return put(msg, 'Nothing changed.');
+    try {
+      const r = await api('PUT', '/api/settings/env', { changes });
+      toast(`Saved ${r.updated.join(', ')}`);
+      await loadConfig();
+      render();
+    } catch (err) {
+      put(msg, h('span', { class: 'err' }, err.message));
+    }
+  };
+  return h('section', { class: 'panel' }, h('h2', {}, title), fields.map((f) => f.row), after || null,
+    h('div', { class: 'row mt12' }, h('button', { class: 'btn primary', onclick: save }, 'Save'), msg));
+}
+
+function linesToMap(text, sep) {
+  const out = {};
+  for (const line of String(text).split('\n').map((l) => l.trim()).filter(Boolean)) {
+    const i = line.indexOf(sep);
+    if (i > 0) out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  return out;
+}
+
+const MCP_PRESET = {
+  transport: 'stdio',
+  command: 'docker',
+  args: ['run', '-i', '--rm', '-e', 'JIRA_URL', '-e', 'JIRA_PERSONAL_TOKEN', '-e', 'CONFLUENCE_URL', '-e', 'CONFLUENCE_PERSONAL_TOKEN', 'ghcr.io/sooperset/mcp-atlassian:latest'],
+  env: { JIRA_URL: '${JIRA_URL}', JIRA_PERSONAL_TOKEN: '${JIRA_PAT}', CONFLUENCE_URL: '${CONFLUENCE_URL}', CONFLUENCE_PERSONAL_TOKEN: '${CONFLUENCE_PAT}' },
+  tools: {},
+};
+
+function mcpEditor(saved, mcpSecret) {
+  let cfg = saved ? JSON.parse(JSON.stringify(saved)) : null;
+  const holder = h('div', {});
+  const result = h('div', {});
+  const draw = () => {
+    const c = cfg || { transport: 'stdio', command: '', args: [], env: {}, tools: {} };
+    const transport = h('select', {}, ['stdio', 'http'].map((t) => h('option', { value: t, selected: c.transport === t }, t)));
+    const command = h('input', { type: 'text', class: 'wide', value: c.command || '', placeholder: 'docker / npx / uvx / path to server' });
+    const args = h('textarea', { class: 'wide', placeholder: 'one argument per line' });
+    args.value = (c.args || []).join('\n');
+    const env = h('textarea', { class: 'wide', placeholder: 'NAME=${SETTING} per line' });
+    env.value = Object.entries(c.env || {}).map(([k, v]) => `${k}=${v}`).join('\n');
+    const url = h('input', { type: 'text', class: 'wide', value: c.url || '', placeholder: 'https://mcp.example/atlassian/mcp' });
+    const headers = h('textarea', { class: 'wide', placeholder: 'Authorization: Bearer ${ATLASSIAN_MCP_TOKEN}' });
+    headers.value = Object.entries(c.headers || {}).map(([k, v]) => `${k}: ${v}`).join('\n');
+    const toolRow = (kind, def) => {
+      const t = c.tools && kind in c.tools ? c.tools[kind] : undefined;
+      const off = h('input', { type: 'checkbox', checked: t === null });
+      const name = h('input', { type: 'text', value: t && t.name ? t.name : '', placeholder: def });
+      const args2 = h('input', { type: 'text', class: 'wide', value: t && t.args ? JSON.stringify(t.args) : '', placeholder: 'arguments JSON (default for the server)' });
+      return { kind, off, name, args: args2, row: h('tr', {}, h('td', {}, kind), h('td', {}, name), h('td', {}, args2), h('td', {}, kind === 'issue' ? '' : h('label', { class: 'small' }, off, ' off'))) };
+    };
+    const tools = [toolRow('issue', 'jira_get_issue'), toolRow('page', 'confluence_get_page'), toolRow('search', 'confluence_search')];
+    const stdioBox = h('div', { hidden: c.transport !== 'stdio' }, h('label', { class: 'field' }, 'Command', command), h('label', { class: 'field' }, 'Arguments', args), h('label', { class: 'field' }, 'Environment (values may use ${SETTING})', env));
+    const httpBox = h('div', { hidden: c.transport !== 'http' }, h('label', { class: 'field' }, 'URL', url), h('label', { class: 'field' }, 'Headers (Name: value)', headers));
+    transport.addEventListener('change', () => {
+      stdioBox.hidden = transport.value !== 'stdio';
+      httpBox.hidden = transport.value !== 'http';
+    });
+    const collect = () => {
+      const out = { transport: transport.value, tools: {} };
+      if (out.transport === 'stdio') Object.assign(out, { command: command.value.trim(), args: args.value.split('\n').map((s) => s.trim()).filter(Boolean), env: linesToMap(env.value, '=') });
+      else Object.assign(out, { url: url.value.trim(), headers: linesToMap(headers.value, ':') });
+      for (const t of tools) {
+        if (t.off.checked) out.tools[t.kind] = null;
+        else if (t.name.value.trim()) {
+          let a;
+          if (t.args.value.trim()) a = JSON.parse(t.args.value);
+          out.tools[t.kind] = { name: t.name.value.trim(), ...(a ? { args: a } : {}) };
+        }
+      }
+      return out;
+    };
+    const guard = (fn) => async () => {
+      try {
+        await fn();
+      } catch (err) {
+        put(result, h('div', { class: 'notice bad' }, err.message));
+      }
+    };
+    put(holder,
+      h('div', { class: 'row' }, h('span', { class: 'label' }, 'Transport'), transport,
+        h('button', { type: 'button', class: 'btn', onclick: () => { cfg = JSON.parse(JSON.stringify(MCP_PRESET)); draw(); } }, 'Preset: mcp-atlassian (docker)')),
+      stdioBox, httpBox,
+      h('div', { class: 'label mt12' }, 'Tool mapping (empty = mcp-atlassian names)'),
+      h('table', {}, h('thead', {}, h('tr', {}, ['Use', 'Tool name', 'Arguments', ''].map((c) => h('th', {}, c)))), h('tbody', {}, tools.map((x) => x.row))),
+      mcpSecret,
+      h('div', { class: 'row mt12' },
+        h('button', { class: 'btn', onclick: guard(async () => {
+          put(result, h('p', { class: 'small muted' }, 'Connecting…'));
+          const r = await api('POST', '/api/settings/mcp/test', { server: collect() });
+          put(result, r.ok ? h('div', { class: 'notice' }, `Connected to ${(r.server && r.server.name) || 'server'}: ${r.tools} tools, mapped tools present.`) : h('div', { class: 'notice bad' }, r.error || `Missing tools on the server: ${r.missing.join(', ')}`));
+        }) }, 'Test connection'),
+        h('button', { class: 'btn primary', onclick: guard(async () => {
+          await api('PUT', '/api/settings/mcp', { server: collect() });
+          toast('MCP configuration saved');
+          render();
+        }) }, 'Save MCP server'),
+        saved ? h('button', { class: 'btn danger', onclick: guard(async () => {
+          if (!confirm('Remove the MCP configuration? Ticket intake falls back to REST or files.')) return;
+          await api('PUT', '/api/settings/mcp', { server: null });
+          toast('MCP configuration removed');
+          render();
+        }) }, 'Remove') : null),
+      result);
+  };
+  draw();
+  return holder;
+}
+
+function reposEditor(repos) {
+  const rows = Object.entries(repos).map(([name, r]) => ({ name, checkout: r.checkout, remote: r.remote || '', test_command: r.test_command || '' }));
+  const body = h('tbody', {});
+  const msg = h('div', {});
+  const draw = () => put(body, rows.map((r, i) => h('tr', {},
+    ...['name', 'checkout', 'remote', 'test_command'].map((k) => h('td', {}, h('input', { type: 'text', class: 'wide', value: r[k], placeholder: { name: 'owner/repository', checkout: 'D:/src/repo', remote: 'origin', test_command: 'auto (Maven/Gradle/pytest)' }[k], oninput: (e) => { r[k] = e.target.value; } }))),
+    h('td', {}, h('button', { type: 'button', class: 'linkbtn', onclick: () => { rows.splice(i, 1); draw(); } }, 'remove')))));
+  draw();
+  return h('div', {},
+    h('table', {}, h('thead', {}, h('tr', {}, ['Repository', 'Local checkout', 'Remote', 'Test command', ''].map((c) => h('th', {}, c)))), body),
+    h('p', { class: 'small muted' }, 'Test command placeholders: {selector} {class} {path} {junit}. Leave empty to detect Maven, Gradle or pytest.'),
+    h('div', { class: 'row' },
+      h('button', { type: 'button', class: 'btn', onclick: () => { rows.push({ name: '', checkout: '', remote: '', test_command: '' }); draw(); } }, 'Add repository'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        try {
+          await api('PUT', '/api/settings/repos', { repos: rows.filter((r) => r.name || r.checkout) });
+          toast('Repositories saved');
+          await loadConfig();
+          render();
+        } catch (err) {
+          put(msg, h('div', { class: 'notice bad' }, err.message));
+        }
+      } }, 'Save')),
+    msg);
+}
+
+async function renderSettings() {
+  const s = await api('GET', '/api/settings');
+  const by = (g) => s.env.filter((e) => e.group === g);
+  const jira = by('jira');
+  const active = s.mcp ? 'MCP server' : jira.find((e) => e.key === 'JIRA_URL').value ? 'Jira REST' : 'files only (--from-file / paste)';
+  const mcpSecret = settingsSection('Secret for the MCP server', by('mcp'), s.models);
   const running = state.jobs.find((j) => j.kind === 'doctor' && ['queued', 'running'].includes(j.status));
-  // jobs are newest first: the last finished check stays visible.
   const last = !running && state.jobs.find((j) => j.kind === 'doctor');
-  let lastPanel = null;
-  if (last) {
+  let diag = null;
+  if (running) diag = livePanel(running);
+  else if (last) {
     const pre = h('pre', { class: 'log live-log' });
-    lastPanel = h('div', { class: 'panel' }, h('div', { class: 'row' }, h('span', { class: 'label' }, 'Last check'), statusBadge(last.status), h('span', { class: 'small muted' }, fmtTime(last.finished_at))), pre);
+    diag = h('div', {}, h('div', { class: 'row' }, h('span', { class: 'label' }, 'Last check'), statusBadge(last.status), h('span', { class: 'small muted' }, fmtTime(last.finished_at))), pre);
     followJob(last.id, { pre });
   }
   put($main,
-    h('h1', {}, 'System'),
-    h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: () => startJob(api('POST', '/api/doctor', {}), 'Doctor') }, 'Run doctor'),
-      h('span', { class: 'small muted' }, 'Checks git, gh, codex (a real call that must read a file), repositories and the ticket source.')),
-    running ? livePanel(running) : lastPanel,
-    h('h2', {}, 'Executor (codex)'), kv(s.executor),
-    h('h2', {}, 'Review'), kv(s.review),
-    h('h2', {}, 'Reproduction'), kv(s.repro),
-    h('h2', {}, 'Ticket source'), kv(s.ticket_source),
-    h('h2', {}, 'Repositories'), Object.keys(s.repos).length ? table(['Repository', 'Checkout', 'Test command'], Object.entries(s.repos).map(([k, v]) => [k, h('code', {}, v.checkout), v.test_command ? h('code', {}, v.test_command) : 'auto'])) : h('p', { class: 'muted' }, 'None: copy config/repos.example.json to config/repos.json.'),
-    h('h2', {}, 'Runtime'), kv({ runs_dir: s.runs_dir, node: s.node, platform: s.platform }),
-    h('p', { class: 'small muted' }, 'Values come from .env and config/*.json; edit those files and restart the dashboard to change them.'),
+    h('h1', {}, 'Settings'),
+    h('p', { class: 'muted small' }, 'Saved to .env and config/*.json. New jobs use the new values right away; secrets are never shown again after saving.'),
+    h('datalist', { id: 'model-list' }, s.models.map((m) => h('option', { value: m }))),
+    ['executor', 'review', 'repro'].map((g) => settingsSection(GROUP_TITLES[g], by(g), s.models)),
+    h('section', { class: 'panel' },
+      h('h2', {}, 'Ticket source'),
+      h('p', {}, 'Active: ', h('strong', {}, active), h('span', { class: 'small muted' }, ' — an MCP server wins, then Jira REST, then files.')),
+      h('h3', {}, 'MCP server (when Jira/Confluence are not reachable from this machine)'),
+      mcpEditor(s.mcp, mcpSecret)),
+    settingsSection('Jira / Confluence REST', jira, s.models),
+    h('section', { class: 'panel' }, h('h2', {}, 'Repositories'), reposEditor(s.repos)),
+    h('section', { class: 'panel' },
+      h('h2', {}, 'Diagnostics'),
+      h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: () => startJob(api('POST', '/api/doctor', {}), 'Doctor') }, 'Run doctor'),
+        h('span', { class: 'small muted' }, 'git, gh, codex (a real call that must read a file), repositories and the ticket source.')),
+      diag),
+    h('p', { class: 'small muted' }, `Files: ${s.files.env} · ${s.files.repos} · ${s.files.mcp}`),
   );
 }
 

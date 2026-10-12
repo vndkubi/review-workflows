@@ -20,7 +20,8 @@ function prView(repo, pr) {
 }
 
 function reposConfig() {
-  return readJsonIfExists(path.join(ROOT, 'config', 'repos.json'), { repos: {} });
+  const file = process.env.ARW_REPOS_FILE ? path.resolve(process.env.ARW_REPOS_FILE) : path.join(ROOT, 'config', 'repos.json');
+  return readJsonIfExists(file, { repos: {} });
 }
 
 // Local clone used to create worktrees for `repo` ("owner/name").

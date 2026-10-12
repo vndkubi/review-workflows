@@ -166,3 +166,11 @@ textarea { min-height: 160px; font-family: var(--mono); font-size: 12.5px; }
 @media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
 .file-view { max-height: 420px; }
 .repro { border-left: 3px solid var(--ok); padding: 4px 10px; margin: 8px 0; }
+
+/* settings */
+.setting { display: grid; grid-template-columns: 260px 1fr; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); align-items: start; }
+.setting:last-of-type { border-bottom: none; }
+.setting-key { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.setting input[type=text], .setting input[type=number], .setting input[type=password], .setting select { min-width: 280px; }
+section.panel h2 { margin-top: 0; }
+@media (max-width: 860px) { .setting { grid-template-columns: 1fr; } }

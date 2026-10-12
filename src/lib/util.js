@@ -75,7 +75,8 @@ function parseModelJson(text) {
   }
 }
 
-function loadEnv(file = path.join(ROOT, '.env')) {
+// Variables already in the environment win over the file.
+function loadEnv(file = process.env.ARW_ENV_FILE || path.join(ROOT, '.env')) {
   if (!fs.existsSync(file)) return;
   for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
     const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
