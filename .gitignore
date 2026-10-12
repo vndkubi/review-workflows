@@ -1,0 +1,10 @@
+node_modules/
+.env
+# run data: frozen contexts, packets, reports (may contain reviewed-project code)
+runs/
+wt/
+# personal study notes derived from another private repo
+_study/
+*.log
+# local repo -> checkout mapping
+config/repos.json

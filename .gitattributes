@@ -1,0 +1,3 @@
+# LF everywhere: frozen contexts hash policy and tool files byte-for-byte,
+# so line endings must not depend on the machine that checked them out.
+* text=auto eol=lf

@@ -1,0 +1,19 @@
+{
+  "name": "agent-review-workflows",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Evidence-first ticket analysis and PR review driven by codex CLI workers; trusted Node scripts decide, humans own the gates.",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "arw": "src/cli/arw.js"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "arw": "node src/cli/arw.js",
+    "doctor": "node src/cli/arw.js doctor"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

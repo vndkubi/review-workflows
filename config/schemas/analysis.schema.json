@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "arw/analysis.schema.json",
+  "title": "Read-only requirement investigation against a repository (ticket pipeline)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "ticket", "current_vs_expected", "rules", "questions", "contradictions", "scenarios", "impacted", "options", "acceptance_tests"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "ticket": { "type": "string", "pattern": "^[A-Z][A-Z0-9]+-[0-9]+$" },
+    "current_vs_expected": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ac", "current", "expected", "label", "evidence"],
+        "properties": {
+          "ac": { "$ref": "#/$defs/acId" },
+          "current": { "$ref": "#/$defs/text" },
+          "expected": { "$ref": "#/$defs/text" },
+          "label": { "$ref": "#/$defs/label" },
+          "evidence": { "$ref": "#/$defs/refs" }
+        }
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "rule", "label", "source"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^R[1-9][0-9]*$" },
+          "rule": { "$ref": "#/$defs/text" },
+          "label": { "$ref": "#/$defs/label" },
+          "source": { "$ref": "#/$defs/text" }
+        }
+      }
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "question", "why", "blocks"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^Q[1-9][0-9]*$" },
+          "question": { "$ref": "#/$defs/text" },
+          "why": { "$ref": "#/$defs/text" },
+          "blocks": { "type": "array", "items": { "$ref": "#/$defs/acId" } }
+        }
+      }
+    },
+    "contradictions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["items", "description"],
+        "properties": {
+          "items": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/text" } },
+          "description": { "$ref": "#/$defs/text" }
+        }
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "ac", "kind", "given", "when", "then"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^S[1-9][0-9]*$" },
+          "ac": { "$ref": "#/$defs/acId" },
+          "kind": { "enum": ["happy", "boundary", "negative", "error", "concurrency"] },
+          "given": { "$ref": "#/$defs/text" },
+          "when": { "$ref": "#/$defs/text" },
+          "then": { "$ref": "#/$defs/text" }
+        }
+      }
+    },
+    "impacted": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "reason", "label"],
+        "properties": {
+          "path": { "$ref": "#/$defs/text" },
+          "symbol": { "type": "string" },
+          "reason": { "$ref": "#/$defs/text" },
+          "label": { "$ref": "#/$defs/label" }
+        }
+      }
+    },
+    "options": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "summary", "tradeoffs"],
+        "properties": {
+          "name": { "$ref": "#/$defs/text" },
+          "summary": { "$ref": "#/$defs/text" },
+          "tradeoffs": { "$ref": "#/$defs/text" }
+        }
+      }
+    },
+    "acceptance_tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ac", "test"],
+        "properties": {
+          "ac": { "$ref": "#/$defs/acId" },
+          "test": { "$ref": "#/$defs/text" },
+          "existing_test": { "type": "string" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "text": { "type": "string", "pattern": "\\S" },
+    "acId": { "type": "string", "pattern": "^AC[1-9][0-9]*$" },
+    "label": { "enum": ["CONFIRMED", "INFERRED", "UNKNOWN"] },
+    "refs": { "type": "array", "items": { "$ref": "#/$defs/text" } }
+  }
+}

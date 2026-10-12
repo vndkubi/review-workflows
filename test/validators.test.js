@@ -1,0 +1,216 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { makeRepo, sh } = require('./helpers');
+const { validatePacket, splitLines } = require('../src/lib/validate');
+const { buildEvidencePack } = require('../src/lib/evidence-pack');
+const { parsePatch } = require('../src/lib/patch');
+const git = require('../src/lib/git');
+
+const repo = makeRepo();
+const ORDER = 'src/main/java/com/acme/OrderService.java';
+const IF_LINE = 'if (member && total.compareTo(THRESHOLD) > 0) {';
+const DIGEST = 'a'.repeat(64);
+const REQUIREMENTS = '{\n  "items": [\n    { "id": "AC1", "then": "10% off from 1,000,000" }\n  ]\n}\n';
+const CHECKLIST = '- CK-BZ-1: Boundary conditions match the requirement wording.\n';
+
+// Minimal stand-in for makeSources(): code from the fixture repo, two inputs.
+const sources = {
+  context: { context_digest: DIGEST },
+  code: (file, rev) => {
+    const text = git.showFile(repo.dir, rev === 'base' ? repo.base : repo.head, file);
+    return text == null ? null : splitLines(text);
+  },
+  input: (id) => ({ requirements: splitLines(REQUIREMENTS), 'policy-policies-checklist': splitLines(CHECKLIST) })[id] || null,
+  artifact: () => null,
+  artifactSha: () => null,
+  inputIds: () => ['requirements', 'policy-policies-checklist'],
+  policyText: () => CHECKLIST,
+};
+
+const unit = { id: 'B1', kind: 'business', covers: [`file:${ORDER}`, 'AC1'], depends_on: [] };
+const codeEv = { kind: 'code', path: ORDER, start_line: 9, end_line: 9, quote: IF_LINE };
+const reqEv = { kind: 'input', path: 'requirements', start_line: 3, end_line: 3, quote: '10% off from 1,000,000' };
+
+function goodFinding() {
+  return {
+    id: 'B1-business-F1',
+    severity: 'P2',
+    confidence: 'LIKELY',
+    title: 'Boundary excludes the threshold',
+    asis: 'Exactly 1,000,000 gets nothing.',
+    tobe: 'It gets 10%.',
+    authority: { kind: 'requirement', id: 'AC1', source: reqEv },
+    trigger: { given: 'total 1,000,000', when: 'discount()', then: '0 returned' },
+    impact: 'overcharge',
+    evidence: [codeEv],
+    fix: { kind: 'code_change', asis: IF_LINE, tobe: 'if (member && total.compareTo(THRESHOLD) >= 0) {', reason: 'inclusive' },
+    verification: { method: 'inspected', detail: 'read it', evidence: [] },
+  };
+}
+
+function goodPacket() {
+  return {
+    schema_version: '1.0',
+    context_digest: DIGEST,
+    unit_id: 'B1',
+    role: 'business',
+    summary: 's',
+    dependency_refs: [],
+    coverage: [
+      { id: `file:${ORDER}`, disposition: 'reviewed', evidence: [codeEv], note: 'n' },
+    ],
+    item_verdicts: [{ ac: 'AC1', verdict: 'fail', evidence: [codeEv], note: 'n' }],
+    findings: [goodFinding()],
+    recommendation: 'findings',
+  };
+}
+
+const check = (packet) => validatePacket(packet, { sources, unit, role: 'business', requirements: { items: [{ id: 'AC1' }] }, expectedDependencyRefs: [] });
+const has = (errors, re) => assert.ok(errors.some((e) => re.test(e)), `expected ${re} in:\n${errors.join('\n')}`);
+
+test('a correct packet validates', () => {
+  assert.deepEqual(check(goodPacket()), []);
+});
+
+test('packet rules reject what a reviewer would reject', () => {
+  let p = goodPacket();
+  p.findings = [];
+  p.recommendation = 'no_findings';
+  has(check(p), /"fail" for AC1 needs a finding/);
+
+  p = goodPacket();
+  p.findings[0].confidence = 'HYPOTHESIS';
+  has(check(p), /HYPOTHESIS cannot be P2/);
+
+  p = goodPacket();
+  p.findings[0].authority = { kind: 'inferred', id: 'judgement', source: codeEv };
+  has(check(p), /inferred authority cannot support P2/);
+
+  p = goodPacket();
+  p.findings[0].authority = { kind: 'curated_viewpoint', id: 'CK-XX-9', source: { kind: 'input', path: 'policy-policies-checklist', start_line: 1, end_line: 1, quote: 'CK-BZ-1' } };
+  has(check(p), /CK-XX-9" does not occur/);
+
+  p = goodPacket();
+  p.coverage[0].id = 'viewpoint:V0';
+  has(check(p), /missing a row for "file:/);
+  has(check(p), /"viewpoint:V0" is not a coverage id/);
+
+  p = goodPacket();
+  p.coverage.push({ id: 'AC1', disposition: 'unverified', evidence: [], note: 'n' });
+  has(check(p), /"AC1" is not a coverage id/);
+
+  p = goodPacket();
+  p.coverage.push({ ...p.coverage[0] });
+  has(check(p), /appears 2 times/);
+
+  p = goodPacket();
+  p.findings[0].evidence = [{ ...codeEv, quote: 'if (member && total > THRESHOLD) {' }];
+  has(check(p), /quote not found at lines 9-9/);
+
+  p = goodPacket();
+  p.findings[0].fix.asis = 'return total.multiply(BigDecimal.TEN);';
+  has(check(p), /fix\.asis: must be copied verbatim/);
+
+  p = goodPacket();
+  p.findings[0].verification = { method: 'executed', detail: 'ran it', evidence: [] };
+  has(check(p), /"executed" needs a hash-bound artifact/);
+
+  p = goodPacket();
+  p.findings[0].evidence = [{ ...codeEv, path: '../../etc/passwd' }];
+  has(check(p), /must be repository-relative/);
+
+  p = goodPacket();
+  p.item_verdicts[0] = { ac: 'AC1', verdict: 'pass', evidence: [], note: 'looks fine' };
+  has(check(p), /"pass" needs code evidence/);
+
+  p = goodPacket();
+  p.valid = true;
+  has(check(p), /unknown field "valid"/);
+});
+
+test('canonicalize: strips N| prefixes from input quotes only, never touches normal quotes', () => {
+  const { canonicalizeCandidate } = require('../src/lib/validate');
+  // Regression: a backslash-stripped regex once deleted spaces from quotes.
+  const normal = { evidence: [{ kind: 'input', path: 'requirements', start_line: 3, end_line: 3, quote: '10% off from 1,000,000' }] };
+  assert.deepEqual(canonicalizeCandidate(normal, sources), []);
+  assert.equal(normal.evidence[0].quote, '10% off from 1,000,000');
+
+  const prefixed = { evidence: [{ kind: 'input', path: 'requirements', start_line: 3, end_line: 3, quote: '3|     { "id": "AC1", "then": "10% off from 1,000,000" }' }] };
+  canonicalizeCandidate(prefixed, sources);
+  assert.equal(prefixed.evidence[0].quote, '    { "id": "AC1", "then": "10% off from 1,000,000" }');
+
+  const code = { evidence: [{ kind: 'code', path: ORDER, start_line: 9, end_line: 9, quote: '9| x' }] };
+  canonicalizeCandidate(code, sources);
+  assert.equal(code.evidence[0].quote, '9| x', 'code quotes are never rewritten');
+});
+
+test('canonicalize: a repeated input quote re-anchors to its first occurrence; repeated code does not', () => {
+  const { canonicalizeCandidate } = require('../src/lib/validate');
+  const dup = { evidence: [{ kind: 'input', path: 'policy-policies-checklist', start_line: 9, end_line: 9, quote: 'Boundary conditions' }] };
+  canonicalizeCandidate(dup, sources);
+  assert.equal(dup.evidence[0].start_line, 1);
+  const ambiguous = { evidence: [{ kind: 'code', path: ORDER, start_line: 1, end_line: 1, quote: 'BigDecimal' }] };
+  canonicalizeCandidate(ambiguous, sources);
+  assert.equal(ambiguous.evidence[0].start_line, 1, 'ambiguous code quotes are left for the validator to reject');
+});
+
+test('strict output schema: every property required, optional ones nullable; nulls stripped after', () => {
+  const { outputSchema, stripNulls, validateAgainst } = require('../src/lib/schema');
+  const s = outputSchema('review', 'rebuttal');
+  assert.equal(s.type, 'object');
+  const ev = s.$defs.evidence;
+  assert.deepEqual(ev.required.sort(), ['end_line', 'kind', 'path', 'quote', 'revision', 'sha256', 'start_line']);
+  assert.deepEqual(ev.properties.revision.anyOf[1], { type: 'null' });
+  // Strict mode rejects a const/enum leaf without an explicit type (seen live).
+  assert.equal(outputSchema('review', 'packet').properties.schema_version.type, 'string');
+  assert.equal(s.properties.verdict.type, 'string');
+  const { classifyError } = require('../src/lib/codex');
+  assert.equal(classifyError('{"code":"invalid_json_schema","type":"invalid_request_error"}'), 'config');
+  const cleaned = stripNulls({ kind: 'code', path: ORDER, start_line: 9, end_line: 9, quote: IF_LINE, revision: null, sha256: null });
+  assert.deepEqual(validateAgainst('review', cleaned, 'evidence'), []);
+});
+
+test('evidence pack: Java and Python symbols, callers, skips, boundary signals', () => {
+  const changed = git.changedFiles(repo.dir, repo.base, repo.head);
+  const parsed = parsePatch(git.diffPatch(repo.dir, repo.base, repo.head));
+  const pack = buildEvidencePack({ cwd: repo.dir, base: repo.base, head: repo.head, changed, parsed });
+  assert.deepEqual(pack.skipped.map((f) => f.path), ['package-lock.json']);
+  const sym = Object.fromEntries(pack.symbols.map((s) => [s.name, s]));
+  assert.ok(sym.OrderService.referenced_in.includes('src/main/java/com/acme/CheckoutController.java'));
+  assert.ok(sym.discount.referenced_in.includes('src/main/java/com/acme/CheckoutController.java'));
+  assert.equal(sym.late_fee.language, 'python');
+  assert.match(pack.text, /## Notes/);
+  sh(repo.dir, ['status']);
+});
+
+test('driver job: 429 backs off and retries; auth failure blocks without retrying', async () => {
+  process.env.ARW_429_BACKOFF_MS = '1';
+  const { runModelJob } = require('../src/lib/driver');
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'arw-job-'));
+  const context = { context_id: 'c0ffee', context_digest: DIGEST, source: { checkout: repo.dir } };
+  {
+    let n = 0;
+    const flaky = async () => {
+      n += 1;
+      if (n === 1) return { ok: false, output: null, error_class: 'rate_limit', error_message: '429', usage: {}, elapsed_ms: 1 };
+      return { ok: true, output: '{"x":1}', error_class: null, usage: {}, elapsed_ms: 1 };
+    };
+    const env = { runDir, context, executor: flaky, log: () => {}, receipts: {}, flushReceipts: () => {}, sources, verify: () => [] };
+    const ok = await runModelJob(env, { label: 'j', outRel: 'out/j.json', buildPrompt: () => 'p', validate: () => [] });
+    assert.equal(ok.status, 'EXECUTED_PASS');
+    assert.equal(n, 2);
+
+    let calls = 0;
+    const denied = async () => {
+      calls += 1;
+      return { ok: false, output: null, error_class: 'auth', error_message: '401', usage: {}, elapsed_ms: 1 };
+    };
+    const blocked = await runModelJob({ ...env, executor: denied }, { label: 'k', outRel: 'out/k.json', buildPrompt: () => 'p', validate: () => [] });
+    assert.equal(blocked.status, 'ENVIRONMENT_BLOCKED');
+    assert.equal(calls, 1);
+  }
+});

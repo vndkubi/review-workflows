@@ -1,0 +1,11 @@
+{
+  "repos": {
+    "your-org/payment-api": {
+      "checkout": "D:/src/payment-api",
+      "remote": "origin"
+    },
+    "your-org/billing-py": {
+      "checkout": "D:/src/billing-py"
+    }
+  }
+}

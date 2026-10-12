@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "arw/requirements.schema.json",
+  "title": "Checkable requirement items extracted from ticket evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "ticket", "generated_at", "extraction", "sources", "items"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "ticket": { "type": "string", "pattern": "^[A-Z][A-Z0-9]+-[0-9]+$" },
+    "generated_at": { "type": "string" },
+    "extraction": { "enum": ["deterministic", "model", "none"] },
+    "sources": { "type": "array", "items": { "type": "string" } },
+    "note": { "type": "string" },
+    "audit": { "type": "object" },
+    "items": { "type": "array", "items": { "$ref": "#/$defs/item" } }
+  },
+  "$defs": {
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "given", "when", "then", "evidence", "risk"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^AC[1-9][0-9]*$" },
+        "kind": { "enum": ["acceptance", "constraint", "edge-case", "nonfunctional", "inferred"] },
+        "given": { "type": "string", "pattern": "\\S" },
+        "when": { "type": "string", "pattern": "\\S" },
+        "then": { "type": "string", "pattern": "\\S" },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "quote"],
+          "properties": {
+            "source": { "type": "string", "pattern": "\\S" },
+            "quote": { "type": "string" }
+          }
+        },
+        "risk": { "enum": ["money", "data", "security", "normal"] },
+        "note": { "type": "string" }
+      }
+    },
+    "modelItems": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["items"],
+      "properties": { "items": { "type": "array", "items": { "$ref": "#/$defs/item" } } }
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["missing", "invalid"],
+      "properties": {
+        "missing": { "type": "array", "items": { "$ref": "#/$defs/item" } },
+        "invalid": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "reason"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^AC[1-9][0-9]*$" },
+              "reason": { "type": "string", "pattern": "\\S" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
