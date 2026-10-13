@@ -1059,7 +1059,7 @@ async function ticketExtras(key) {
 }
 
 // ---------- settings ----------
-const GROUP_TITLES = { executor: 'Executor (codex)', review: 'Review', repro: 'Reproduction tests' };
+const GROUP_TITLES = { executor: 'Executor (codex)', review: 'Review', static: 'Machine evidence (linters)', repro: 'Reproduction tests' };
 
 // One input per setting; returns { row, read } where read() yields the
 // change to send (undefined = unchanged, null = reset to default).
@@ -1383,7 +1383,7 @@ async function renderSettings() {
     h('h1', {}, 'Settings'),
     h('p', { class: 'muted small' }, 'Saved to .env and config/*.json. New jobs use the new values right away; secrets are never shown again after saving.'),
     h('datalist', { id: 'model-list' }, s.models.map((m) => h('option', { value: m }))),
-    ['executor', 'review', 'repro'].map((g) => settingsSection(GROUP_TITLES[g], by(g), s.models)),
+    ['executor', 'review', 'static', 'repro'].map((g) => settingsSection(GROUP_TITLES[g], by(g), s.models)),
     h('section', { class: 'panel' },
       h('h2', {}, 'Ticket source'),
       h('p', {}, 'Active: ', h('strong', {}, active), h('span', { class: 'small muted' }, ' — an MCP server wins, then Jira REST, then files.')),

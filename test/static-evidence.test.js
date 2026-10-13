@@ -82,3 +82,32 @@ test('collectStatic: CI, an opt-in linter on changed files, and test impact', ()
   assert.match(broken.ci.error, /HTTP 404/);
   assert.match(broken.markdown, /unavailable: gh: HTTP 404/);
 });
+
+// Real ruff when this machine has it (ARW_RUFF_BIN or on PATH); skipped otherwise.
+const ruffBin = process.env.ARW_RUFF_BIN || 'ruff';
+let hasRuff = false;
+try {
+  require('node:child_process').execFileSync(ruffBin, ['--version'], { stdio: 'ignore' });
+  hasRuff = true;
+} catch {
+  hasRuff = false;
+}
+
+test('real ruff: hits on changed files, added lines marked, paths relative', { skip: !hasRuff && 'ruff not installed' }, () => {
+  const dir = tmpDir('arw-ruff-');
+  sh(dir, ['init', '-q', '-b', 'main']);
+  write(dir, 'billing/fees.py', 'import os\n\n\ndef late_fee(days):\n    return days * 2\n');
+  sh(dir, ['add', '-A']);
+  sh(dir, ['commit', '-q', '-m', 'base']);
+  const base = sh(dir, ['rev-parse', 'HEAD']);
+  write(dir, 'billing/fees.py', 'import os\nimport sys\n\n\ndef late_fee(days):\n    try:\n        rate = RATES[days]\n    except:\n        rate = 2\n    return days * rate\n');
+  sh(dir, ['commit', '-q', '-am', 'fees']);
+  const head = sh(dir, ['rev-parse', 'HEAD']);
+  const s = collectStatic({ repo: 'local/x', checkout: dir, base, head, changed: git.changedFiles(dir, base, head), reviewable: [FEES], parsed: parsePatch(git.diffPatch(dir, base, head)), local: { mode: 'range' } });
+  const ruff = s.linters.find((l) => l.tool === 'ruff');
+  const byRule = Object.fromEntries(ruff.hits.map((h) => [`${h.rule}@${h.line}`, h.on_added_line]));
+  assert.equal(byRule['F821@7'], true, 'undefined name on an added line');
+  assert.equal(byRule['F401@2'], true);
+  assert.equal(byRule['F401@1'], false, 'the old unused import is not on an added line');
+  assert.ok(ruff.hits.every((h) => h.path === FEES));
+});

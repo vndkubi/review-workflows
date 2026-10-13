@@ -28,6 +28,11 @@ function run(cmd, args, cwd, timeoutMs) {
   }
 }
 
+// ARW_RUFF_BIN, ARW_SEMGREP_BIN, ARW_PMD_BIN: a tool that is not on PATH.
+function binOf(name) {
+  return process.env[`ARW_${name.toUpperCase()}_BIN`] || name;
+}
+
 function available(cmd) {
   return !run(cmd, ['--version'], process.cwd(), 15000).missing;
 }
@@ -44,7 +49,7 @@ const LINTERS = [
   {
     name: 'ruff',
     applies: (f) => f.endsWith('.py'),
-    enabled: () => available('ruff'),
+    enabled: () => available(binOf('ruff')),
     args: (files) => ['check', '--output-format=json', '--no-cache', '--exit-zero', ...files.map(arg)],
     parse: (out, checkout) => JSON.parse(out || '[]').map((h) => ({ path: rel(checkout, h.filename), line: h.location && h.location.row, rule: h.code, message: h.message })),
   },
@@ -53,7 +58,7 @@ const LINTERS = [
     applies: () => true,
     config: (checkout) => process.env.ARW_SEMGREP_CONFIG || ['.semgrep.yml', '.semgrep.yaml', '.semgrep'].map((c) => path.join(checkout, c)).find((c) => require('node:fs').existsSync(c)),
     enabled() {
-      return available('semgrep');
+      return available(binOf('semgrep'));
     },
     args(files, checkout) {
       return ['scan', '--json', '--quiet', '--metrics=off', '--disable-version-check', '--config', this.config(checkout), ...files.map(arg)];
@@ -63,7 +68,7 @@ const LINTERS = [
   {
     name: 'pmd',
     applies: (f) => f.endsWith('.java'),
-    enabled: () => available('pmd'),
+    enabled: () => available(binOf('pmd')),
     args: (files) => ['check', '--no-progress', '--no-cache', '-f', 'json', '-R', process.env.ARW_PMD_RULESETS || 'rulesets/java/quickstart.xml', '-d', files.map(arg).join(',')],
     parse: (out, checkout) => (JSON.parse(out || '{}').files || []).flatMap((f) => (f.violations || []).map((v) => ({ path: rel(checkout, f.filename), line: v.beginline, rule: v.rule, message: v.description }))),
   },
@@ -103,7 +108,7 @@ function runLinters({ checkout, files, repoCfg, parsed, log }) {
     if (!mine.length) continue;
     if (tool.config && !tool.config(checkout)) continue;
     if (!tool.enabled()) continue;
-    const res = run(tool.cmd || tool.name, tool.args(mine, checkout), checkout, timeout);
+    const res = run(tool.cmd || binOf(tool.name), tool.args(mine, checkout), checkout, timeout);
     if (!res.ok) {
       results.push({ tool: tool.name, error: res.error || 'not runnable', hits: [] });
       continue;
