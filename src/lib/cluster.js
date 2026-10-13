@@ -45,28 +45,51 @@ function sameAsis(a, b) {
   return a.fix.kind === 'code_change' && b.fix.kind === 'code_change' && x.length >= 10 && x === collapse(b.fix.asis);
 }
 
-function isDuplicate(a, b) {
+const SAME_TITLE = 0.6;
+
+// 0 when not duplicates, otherwise how strongly they look alike.
+function duplicateStrength(a, b) {
   const sim = jaccard(words(a.title), words(b.title));
-  return sim >= 0.6 || (spansOverlap(a, b) && sim >= 0.2) || (sameAsis(a, b) && sim >= 0.1);
+  const overlap = spansOverlap(a, b);
+  const asis = sameAsis(a, b);
+  if (!(sim >= SAME_TITLE || (overlap && sim >= 0.2) || (asis && sim >= 0.1))) return 0;
+  return sim + (overlap ? 0.3 : 0) + (asis ? 0.3 : 0);
+}
+
+function isDuplicate(a, b) {
+  return duplicateStrength(a, b) > 0;
 }
 
 // entries: [{ finding, voter }] -> [{ id, canonical_id, members, voters, votes, severity }]
 // Members are sorted most severe first; the canonical member leads.
+//
+// Pairs merge strongest first. A voter that reported two findings with
+// different titles saw two defects, so no merge may put both in one cluster
+// (otherwise a chain of look-alike pairs - easy in a small file where every
+// span overlaps - folds distinct defects together and hides one of them).
 function findingClusters(entries) {
-  const parent = entries.map((_, i) => i);
-  const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const pairs = [];
   for (let i = 0; i < entries.length; i += 1) {
     for (let j = i + 1; j < entries.length; j += 1) {
       if (entries[i].voter === entries[j].voter) continue;
-      if (isDuplicate(entries[i].finding, entries[j].finding)) parent[find(i)] = find(j);
+      const s = duplicateStrength(entries[i].finding, entries[j].finding);
+      if (s > 0) pairs.push([s, i, j]);
     }
   }
-  const groups = new Map();
-  entries.forEach((e, i) => {
-    const root = find(i);
-    if (!groups.has(root)) groups.set(root, []);
-    groups.get(root).push(e);
-  });
+  pairs.sort((x, y) => y[0] - x[0] || x[1] - y[1] || x[2] - y[2]);
+  const distinct = (i, j) => entries[i].voter === entries[j].voter && jaccard(words(entries[i].finding.title), words(entries[j].finding.title)) < SAME_TITLE;
+  const clusterOf = entries.map((_, i) => i);
+  const members = new Map(entries.map((_, i) => [i, [i]]));
+  for (const [, i, j] of pairs) {
+    const a = clusterOf[i];
+    const b = clusterOf[j];
+    if (a === b) continue;
+    if (members.get(a).some((x) => members.get(b).some((y) => distinct(x, y)))) continue;
+    for (const x of members.get(b)) clusterOf[x] = a;
+    members.get(a).push(...members.get(b));
+    members.delete(b);
+  }
+  const groups = new Map([...members.entries()].map(([k, list]) => [k, list.map((i) => entries[i])]));
   const clusters = [...groups.values()].map((members) => {
     members.sort((x, y) => SEVERITY_RANK[x.finding.severity] - SEVERITY_RANK[y.finding.severity] || x.finding.id.localeCompare(y.finding.id));
     const voters = [...new Set(members.map((m) => m.voter))].sort();

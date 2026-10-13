@@ -56,6 +56,32 @@ test('clusters: same defect from different voters merges; same voter never does'
   assert.ok(clusters.find((c) => c.members.includes('T1-technical-F1')).votes === 1);
 });
 
+// Incident (smoke PR vndkubi/review-workflows#1): in a 10-line file every
+// span overlaps, single-linkage chained two different defects into one
+// cluster and the second (a P2) was left out of the published draft.
+test('clusters: two different defects a voter reported separately never share a cluster', () => {
+  const f = (id, title, start, end) => ({ id, title, severity: 'P2', evidence: [{ kind: 'code', path: 'late_fee.py', start_line: start, end_line: end, quote: 'x' }], fix: { kind: 'code_change', asis: `line ${id}`, tobe: 'y', reason: 'r' } });
+  const crash = 'Late fee calculation crashes at or before the grace period boundary';
+  const money = 'Decimal monetary amounts are multiplied by binary floats in the late fee';
+  const entries = [];
+  for (const voter of ['B1/business', 'B1/technical', 'B2/business', 'B2/technical', 'V0/technical']) {
+    const [unit, role] = voter.split('/');
+    entries.push({ finding: f(`${unit}-${role}-F1`, crash, 8, 10), voter });
+    entries.push({ finding: f(`${unit}-${role}-F2`, money, 9, 10), voter });
+  }
+  entries.push({ finding: f('V1-business-F1', 'Late fee raises errors at the grace boundary and with Decimal amounts', 8, 10), voter: 'V1/business' });
+  const clusters = findingClusters(entries);
+  const of = (id) => clusters.find((c) => c.members.includes(id));
+  assert.notEqual(of('B1-business-F1').id, of('B1-business-F2').id);
+  // Five voters each; V1's finding that names both defects joins one of them.
+  assert.ok(of('B1-business-F1').votes >= 5 && of('B1-business-F2').votes >= 5);
+  assert.equal(of('B1-business-F1').votes + of('B1-business-F2').votes, 11);
+  for (const c of clusters) {
+    const voters = c.members.map((m) => entries.find((e) => e.finding.id === m).voter);
+    assert.equal(new Set(voters).size, voters.length, `${c.id} holds two findings of one voter: ${c.members.join(', ')}`);
+  }
+});
+
 test('plan: orphans, seams and viewpoints are added by code; review item coverage enforced', () => {
   const files = ['a/A.java', 'a/B.java', 'b/c.py', 'b/d.py'];
   const items = [{ id: 'I1', kind: 'rule' }, { id: 'I2', kind: 'boundary' }, { id: 'I3', kind: 'gap' }];
