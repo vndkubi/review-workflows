@@ -175,7 +175,19 @@ function indexJava(rel, raw) {
     const hasType = (/[\w$>\]]/.test(prevChar)) && !/^(new|return|else|throw|case|yield|await)$/.test(prevWord || '') && prevChar !== '.';
     if (!isCtor && !hasType) continue;
     const bodyOpen = close + 1 + after[0].length - 1;
-    methods.push({ name, owner: type ? type.name : null, start: line, end: lineAt(text, closeBrace(text, bodyOpen)) });
+    // Parameter count (top-level commas), to tell overloads apart with javac.
+    let params = 0;
+    let level = 0;
+    const inner = text.slice(open + 1, close);
+    if (inner.trim()) {
+      params = 1;
+      for (const ch of inner) {
+        if (ch === '<' || ch === '(') level += 1;
+        else if (ch === '>' || ch === ')') level -= 1;
+        else if (ch === ',' && level === 0) params += 1;
+      }
+    }
+    methods.push({ name, owner: type ? type.name : null, start: line, end: lineAt(text, closeBrace(text, bodyOpen)), params });
   }
   return { lang: 'java', path: rel, text, pkg, imports, types, methods, vars };
 }
@@ -291,9 +303,11 @@ function receiverTypes(idx, prev) {
 // Confidence: typed (receiver's declared type is the owner), interface (it
 // is a supertype of the owner: dispatch, as with injected interfaces),
 // resolved (import/package/module or same class), name-only.
-function callSites(target, indexes, hierarchy = hierarchyOf(indexes)) {
+function callSites(target, indexes, hierarchy = hierarchyOf(indexes), ast = null) {
   const out = [];
   const re = new RegExp(`(^|[^\\w$])(${target.name})\\s*\\(`, 'g');
+  const javaAst = require('./java-ast');
+  const targetFqn = ast && target.index.lang === 'java' && target.owner ? javaAst.fqnOf(ast, target.path, target.owner) : null;
   for (const idx of indexes) {
     if (idx.lang !== target.index.lang) continue;
     for (const m of idx.text.matchAll(re)) {
@@ -311,6 +325,20 @@ function callSites(target, indexes, hierarchy = hierarchyOf(indexes)) {
       if (receiver && /^[A-Z]/.test(receiver) && receiver !== target.owner && !/^[A-Z0-9_]+$/.test(receiver)) continue;
       const caller = enclosing(idx, line);
       const site = { file: idx.path, line, caller: caller ? { name: caller.name, owner: caller.owner, start: caller.start, end: caller.end } : null };
+      // javac resolved the calls on this line: it decides. The changed method
+      // itself (same owner and parameter count), or a supertype's method the
+      // changed one overrides (dispatch), or another method: dropped.
+      if (targetFqn) {
+        const resolved = (ast.calls.get(`${idx.path}:${line}`) || []).filter((c) => c.name === target.name);
+        if (resolved.length) {
+          const same = (c) => target.params === undefined || c.params === target.params;
+          const exact = resolved.find((c) => c.owner === targetFqn && same(c));
+          const dispatch = !exact && resolved.find((c) => c.owner !== targetFqn && javaAst.isSubtypeFqn(ast, targetFqn, c.owner) && same(c));
+          if (exact) out.push({ ...site, confidence: 'ast' });
+          else if (dispatch) out.push({ ...site, confidence: 'ast-dispatch', via: dispatch.owner.split('.').pop() });
+          continue;
+        }
+      }
       const types = target.owner ? receiverTypes(idx, prev) : null;
       if (types) {
         if (types.has(target.owner)) out.push({ ...site, confidence: 'typed' });
@@ -324,7 +352,9 @@ function callSites(target, indexes, hierarchy = hierarchyOf(indexes)) {
       out.push({ ...site, confidence: ok ? 'resolved' : 'name-only' });
     }
   }
-  return out;
+  // One site per line and confidence (javac resolves by line).
+  const seen = new Set();
+  return out.filter((s) => { const k = `${s.file}:${s.line}:${s.confidence}`; return !seen.has(k) && seen.add(k); });
 }
 
 // Declarations named in configuration (Spring XML, MyBatis mappers, YAML,
@@ -419,7 +449,7 @@ function readIndex(cwd, rel) {
 
 const label = (m) => `${m.owner ? `${m.owner}.` : ''}${m.name}`;
 
-const FOLLOW = new Set(['typed', 'resolved', 'interface']);
+const FOLLOW = new Set(['ast', 'ast-dispatch', 'typed', 'resolved', 'interface']);
 
 // { changed: [...], edges: [...], truncated, scanned, related }
 // related: [{ name, dir }] other repositories (local checkouts) to search for
@@ -428,6 +458,20 @@ function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
   const files = sourceFiles(cwd);
   const indexes = files.map((f) => readIndex(cwd, f)).filter(Boolean);
   const hierarchy = hierarchyOf(indexes);
+  // javac's call graph for the Java files, when a JDK 11+ is available.
+  const javaAst = require('./java-ast');
+  let ast = null;
+  let engine = 'structural';
+  let astError = null;
+  const javaFiles = indexes.filter((i) => i.lang === 'java').map((i) => i.path);
+  if (javaFiles.length && javaAst.enabled()) {
+    const g = javaAst.javaCallGraph(cwd, javaFiles);
+    if (g.error) astError = g.error;
+    else {
+      ast = g;
+      engine = `javac (JDK ${javaAst.javaVersion()}, ${g.ms} ms) + structural`;
+    }
+  }
   const baseIndexes = new Map();
   for (const f of parsed) {
     const rel = f.old_path || f.path;
@@ -444,7 +488,7 @@ function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
     const next = [];
     let count = 0;
     for (const target of frontier) {
-      const sites = callSites(target, indexes, hierarchy).filter((s) => !(COMMON_NAMES.has(target.name) && s.confidence === 'name-only'));
+      const sites = callSites(target, indexes, hierarchy, ast).filter((s) => !(COMMON_NAMES.has(target.name) && s.confidence === 'name-only'));
       for (const s of sites) {
         if (count >= MAX_EDGES_PER_LEVEL) {
           truncated = true;
@@ -509,6 +553,8 @@ function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
   }
   return {
     scanned: indexes.length,
+    engine,
+    ...(astError ? { ast_error: astError } : {}),
     related: scannedRepos,
     changed: changed.map((m) => ({ path: m.path, symbol: label(m), lines: [m.start, m.end] })),
     edges,
@@ -517,7 +563,8 @@ function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
 }
 
 function renderImpact(r) {
-  const lines = ['', `## Impact: call sites of changed declarations (structural index of ${r.scanned} Java/Python files; comments and strings ignored)`];
+  const lines = ['', `## Impact: call sites of changed declarations (${r.engine || 'structural'} index of ${r.scanned} Java/Python files; comments and strings ignored)`];
+  if (r.ast_error) lines.push(`(javac call graph unavailable: ${r.ast_error}; structural matching only)`);
   if (!r.changed.length) {
     lines.push('(no changed method or function found)');
     return `${lines.join('\n')}\n`;
@@ -539,7 +586,7 @@ function renderImpact(r) {
   else if (r.related && r.related.length) lines.push(`Other repositories searched (${r.related.map((x) => x.name).join(', ')}): no callers or clients found.`);
   if (!r.edges.length) lines.push('No call sites found (callers may live in repositories not configured as related).');
   if (r.truncated) lines.push(`(truncated at ${MAX_EDGES_PER_LEVEL} call sites per level)`);
-  lines.push('Confidence: typed = the receiver is declared as the changed type; interface = declared as its supertype (dispatch, e.g. an injected interface); resolved = import/package/module or same class; name-only = only the name matches. config/reflection/http = referenced by name, not by a call.');
+  lines.push('Confidence: ast = javac resolved the call to the changed method itself; ast-dispatch = javac resolved it to a supertype method the changed one overrides (interface or base class, e.g. injected); typed = the receiver is declared as the changed type; interface = declared as its supertype (dispatch, e.g. an injected interface); resolved = import/package/module or same class; name-only = only the name matches. config/reflection/http = referenced by name, not by a call.');
   return `${lines.join('\n')}\n`;
 }
 

@@ -29,7 +29,7 @@ function toolDigest() {
   const parts = [];
   for (const sub of ['lib', 'cli']) {
     const dir = path.join(ROOT, 'src', sub);
-    for (const n of fs.readdirSync(dir).filter((x) => x.endsWith('.js')).sort()) parts.push(`${sub}/${n}\0${sha256(fs.readFileSync(path.join(dir, n)))}`);
+    for (const n of fs.readdirSync(dir).filter((x) => x.endsWith('.js') || x.endsWith('.java')).sort()) parts.push(`${sub}/${n}\0${sha256(fs.readFileSync(path.join(dir, n)))}`);
   }
   return sha256(parts.join('\n'));
 }

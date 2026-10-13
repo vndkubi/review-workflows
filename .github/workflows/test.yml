@@ -21,6 +21,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+      # A JDK so the javac call-graph tests run instead of being skipped.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
       # No dependencies to install. Tests make no network or model calls; the
       # fixture repositories need a git identity for their commits.
       - run: git config --global user.name ci && git config --global user.email ci@example.com && git config --global init.defaultBranch main

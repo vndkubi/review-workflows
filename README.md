@@ -197,8 +197,20 @@ Beyond calls, the analysis lists references **by name**: configuration files nam
 Flask/FastAPI decorators) found by path in non-handler files. Other repositories are searched when a
 repository lists them under `"related"` in `config/repos.json` (configured names or absolute paths): callers
 that import the changed type or module, and clients of changed endpoints, read-only at their checkout's HEAD.
-Still unknown: types that only inference across methods would give, generated code, and repositories that
-are not configured. `ARW_IMPACT=off` skips the analysis.
+**With a JDK (11+) on PATH, Java calls are resolved by javac itself.** `src/lib/JavaIndex.java` runs through
+the JDK's source launcher (no build step) and uses the Compiler Tree API to parse and attribute the
+repository's Java files: annotation processing is off and nothing is executed. Every call it resolves to a
+type of the repository decides that call site: **ast** (the changed method itself — same owner and parameter
+count, so another overload is not counted) or **ast-dispatch** (a supertype's method the changed one overrides:
+interface calls, injected beans, base classes). This covers what text cannot: the type behind `var`, chained
+and multi-line calls, method references, any expression as receiver. Calls javac cannot resolve (a library
+missing from `ARW_JAVA_CLASSPATH`) keep the structural result; if javac fails or the repository has more than
+`ARW_JAVA_AST_MAX_FILES` (8,000) Java files, the structural index is used and the pack says so. Measured on
+the synthetic 3,000-file repository: about 26 s with javac against 5 s structural, same 20 callers.
+`ARW_JAVA_AST=off` turns it off.
+
+Still unknown: generated code, reflection beyond the patterns above, and repositories that are not
+configured. `ARW_IMPACT=off` skips the analysis.
 
 **Machine evidence.** Before planning, the runtime collects cheap facts and freezes them in the evidence pack
 (also `runs/prs/<id>/static.json`, and the Overview tab): GitHub check runs, commit statuses and failing-check

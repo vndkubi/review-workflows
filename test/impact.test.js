@@ -5,6 +5,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { tmpDir, sh, write } = require('./helpers');
 
+// The structural index is tested on its own; javac is tested below when a JDK 11+ exists.
+process.env.ARW_JAVA_AST = 'off';
+
 const git = require('../src/lib/git');
 const { parsePatch } = require('../src/lib/patch');
 const { analyzeImpact, renderImpact, stripPython } = require('../src/lib/impact');
@@ -114,4 +117,80 @@ test('python: imports resolve module functions and methods; docstrings are not c
   assert.equal(stripPython('x = "a#b"  # c\ny = \'\'\'q\nw\'\'\'\n').split('\n').length, 4, 'newlines kept');
   const ti = testImpact({ checkout: r.dir, head: r.head, changed: r.changed, impact: out });
   assert.deepEqual(ti.sources[0].tests.map((t) => [t.path, t.how]), [['tests/test_invoice.py', 'call']]);
+});
+
+// ---------- javac call graph ----------
+const javaAst = require('../src/lib/java-ast');
+const hasJdk = javaAst.javaVersion() != null;
+
+test('javac: overloads, var, chained calls and interface dispatch, where text cannot tell', { skip: !hasJdk && 'no JDK 11+ on PATH' }, () => {
+  const IMPL = (v) => `package com.acme;\n\npublic class Impl implements Pricing {\n    public int price(int a) {\n        return a * ${v};\n    }\n\n    public int price(int a, int b) {\n        return a + b;\n    }\n}\n`;
+  const r = repo({
+    'src/main/java/com/acme/Pricing.java': 'package com.acme;\n\npublic interface Pricing {\n    int price(int a);\n}\n',
+    'src/main/java/com/acme/Impl.java': IMPL(1),
+    'src/main/java/com/acme/Use.java': [
+      'package com.acme;',
+      '',
+      'import org.missing.Lib;',
+      '',
+      'public class Use {',
+      '    private Pricing pricing;',
+      '',
+      '    Impl make() {',
+      '        return new Impl();',
+      '    }',
+      '',
+      '    int viaInterface() {',
+      '        return pricing.price(1);',
+      '    }',
+      '',
+      '    int viaVar() {',
+      '        var x = make();',
+      '        return x',
+      '            .price(2);',
+      '    }',
+      '',
+      '    int otherOverload() {',
+      '        return make().price(1, 2);',
+      '    }',
+      '',
+      '    int unresolved() {',
+      '        return Lib.thing().price(3);',
+      '    }',
+      '}',
+      '',
+    ].join('\n'),
+  }, { 'src/main/java/com/acme/Impl.java': IMPL(2) });
+  process.env.ARW_JAVA_AST = 'on';
+  try {
+    const out = analyzeImpact({ cwd: r.dir, base: r.base, parsed: r.parsed });
+    assert.match(out.engine, /^javac \(JDK \d+, \d+ ms\) \+ structural$/);
+    assert.deepEqual(out.changed.map((c) => c.symbol), ['Impl.price']);
+    const edges = out.edges.map((e) => `${e.from.symbol}:${e.from.line} ${e.confidence}${e.via ? ` via ${e.via}` : ''}`).sort();
+    assert.deepEqual(edges, [
+      'Use.unresolved:27 resolved', // a missing library: javac cannot say, so the structural match (same package, names Impl) stands
+      'Use.viaInterface:13 ast-dispatch via Pricing', // Pricing.price, which Impl.price(int) overrides
+      'Use.viaVar:19 ast', // var x = make() is an Impl; the call spans two lines
+    ], 'otherOverload calls price(int, int), a different method: not listed');
+    assert.match(renderImpact(out), /\[ast-dispatch via Pricing\]/);
+  } finally {
+    process.env.ARW_JAVA_AST = 'off';
+  }
+});
+
+test('javac: a failing indexer falls back to the structural index and says so', { skip: !hasJdk && 'no JDK 11+ on PATH' }, () => {
+  const A = (v) => `class A {\n    int f() {\n        return ${v};\n    }\n\n    int g() {\n        return f();\n    }\n}\n`;
+  const r = repo({ 'src/main/java/A.java': A(1) }, { 'src/main/java/A.java': A(2) });
+  process.env.ARW_JAVA_AST = 'on';
+  process.env.ARW_JAVA_AST_MAX_FILES = '0';
+  try {
+    const out = analyzeImpact({ cwd: r.dir, base: r.base, parsed: r.parsed });
+    assert.equal(out.engine, 'structural');
+    assert.match(out.ast_error, /above ARW_JAVA_AST_MAX_FILES/);
+    assert.match(renderImpact(out), /javac call graph unavailable/);
+    assert.ok(out.edges.some((e) => e.from.symbol === 'A.g'), 'the structural index still finds the caller');
+  } finally {
+    process.env.ARW_JAVA_AST = 'off';
+    delete process.env.ARW_JAVA_AST_MAX_FILES;
+  }
 });

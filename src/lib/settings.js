@@ -31,6 +31,8 @@ const ENV_SETTINGS = [
   ['ARW_LARGE_PR_FILES', 'review', 'number', '60', 'A PR with more reviewable files is flagged as large (split proposal).', null, [1, 10000]],
   ['ARW_LARGE_PR_LINES', 'review', 'number', '2000', 'A PR with more changed lines is flagged as large.', null, [1, 1000000]],
   ['ARW_VIEWPOINT_FILES', 'review', 'number', '25', 'Most files per whole-diff viewpoint part (V0_1, V0_2, ...).', null, [5, 500]],
+  ['ARW_JAVA_AST', 'static', 'enum', 'on', 'Resolve Java calls with javac (needs a JDK 11+ on PATH; nothing from the repository is executed).', ['on', 'off']],
+  ['ARW_JAVA_CLASSPATH', 'static', 'string', '', 'Extra classpath for javac (library jars), so more calls resolve.'],
   ['ARW_STATIC', 'static', 'enum', 'on', 'Run linters on the changed files before planning.', ['on', 'off']],
   ['ARW_RUN_IMPACTED_TESTS', 'static', 'enum', 'off', 'Run the existing tests that cover changed files at base and head (executes PR code, like repro).', ['off', 'on']],
   ['ARW_IMPACTED_TESTS_MAX', 'static', 'number', '10', 'Most impacted test files to run.', null, [1, 100]],
