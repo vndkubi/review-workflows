@@ -24,13 +24,19 @@ function policyFiles() {
 
 // Hash of the trusted runtime. Upgrading the tool changes what "valid" means,
 // so a context frozen by an older tool must be refreshed.
-// The code that runs a review: the runtime library and the CLI that drives it.
+// The code that runs a review: the runtime library and the CLI that drives
+// it, subdirectories included.
 function toolDigest() {
   const parts = [];
-  for (const sub of ['lib', 'cli']) {
-    const dir = path.join(ROOT, 'src', sub);
-    for (const n of fs.readdirSync(dir).filter((x) => x.endsWith('.js') || x.endsWith('.java')).sort()) parts.push(`${sub}/${n}\0${sha256(fs.readFileSync(path.join(dir, n)))}`);
-  }
+  const walk = (rel) => {
+    const dir = path.join(ROOT, 'src', rel);
+    for (const n of fs.readdirSync(dir).sort()) {
+      const child = `${rel}/${n}`;
+      if (fs.statSync(path.join(dir, n)).isDirectory()) walk(child);
+      else if (n.endsWith('.js') || n.endsWith('.java')) parts.push(`${child}\0${sha256(fs.readFileSync(path.join(dir, n)))}`);
+    }
+  };
+  for (const sub of ['lib', 'cli']) walk(sub);
   return sha256(parts.join('\n'));
 }
 

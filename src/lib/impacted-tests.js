@@ -65,12 +65,13 @@ function planRuns(root, testPaths) {
   return [...groups.values()];
 }
 
-function commandFor(group, junitFile) {
+// The program and its arguments (run without a shell in the sandbox).
+function argvFor(group, junitFile) {
   const sel = group.tests.map((t) => t.selector);
-  const offline = process.env.REPRO_MAVEN_OFFLINE === '1' ? ' -o' : '';
-  if (group.toolchain === 'maven') return `mvn -B -q${offline} test -Dtest=${sel.join(',')} -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false`;
-  if (group.toolchain === 'gradle') return `${gradleWrapper()} test ${sel.map((s) => `--tests ${s}`).join(' ')}`;
-  return `${sandboxPython()} -m pytest -q -p no:cacheprovider ${sel.join(' ')} --junitxml=${junitFile}`;
+  const offline = process.env.REPRO_MAVEN_OFFLINE === '1' ? ['-o'] : [];
+  if (group.toolchain === 'maven') return ['mvn', '-B', '-q', ...offline, 'test', `-Dtest=${sel.join(',')}`, '-DfailIfNoTests=false', '-Dsurefire.failIfNoSpecifiedTests=false'];
+  if (group.toolchain === 'gradle') return [gradleWrapper(), 'test', ...sel.flatMap((s) => ['--tests', s])];
+  return [sandboxPython(), '-m', 'pytest', '-q', '-p', 'no:cacheprovider', ...sel, `--junitxml=${junitFile}`];
 }
 
 // Report files the build wrote, reached without links (the build is PR
@@ -122,8 +123,9 @@ async function runGroup({ wt, group, rev, runner, logDir, label, timeoutMs }) {
   if (!present.length) return { ran: false, why: 'no test exists at this revision', byTest: {} };
   const junit = path.join(wt, '.arw-impacted-junit.xml');
   for (const f of reportFiles(wt, cwd, group, junit)) confine.removeConfined(wt, f);
-  const command = commandFor({ ...group, tests: present }, junit);
-  const res = await runner({ command, cwd, logFile: path.join(logDir, `${label}.log`), timeoutMs, toolchain: group.toolchain });
+  const argv = argvFor({ ...group, tests: present }, junit);
+  const command = argv.join(' ');
+  const res = await runner({ command, argv, cwd, logFile: path.join(logDir, `${label}.log`), timeoutMs, toolchain: group.toolchain });
   const cases = reportFiles(wt, cwd, group, junit).flatMap((f) => parseCases(confine.readConfined(wt, f) || ''));
   // A case's result and the run's: passing cases count only when the run
   // completed and either succeeded or has a failing case explaining its
@@ -180,7 +182,9 @@ async function runImpactedTests({ runDir, checkout, base, head, impact, repoCfg,
     results.push({ test: t, base: at('base'), head: at('head'), verdict: verdict(at('base'), at('head')) });
   }
   git.git(checkout, ['worktree', 'remove', '--force', wt], { allowFail: true });
-  return { ran: ran.map(({ byTest, ...r }) => r), results };
+  // Impacted tests run before the context is frozen: the record says where
+  // they ran, and that record is frozen with the rest of the machine evidence.
+  return { ran: ran.map(({ byTest, ...r }) => r), results, execution: require('./sandbox').manifest() };
 }
 
 function renderImpacted(r) {

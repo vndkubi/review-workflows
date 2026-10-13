@@ -96,13 +96,16 @@ function commandFor(toolchain, test, wt, override) {
       junit: override.includes('{junit}') ? junitPytest : junit,
     };
   }
-  const offline = process.env.REPRO_MAVEN_OFFLINE === '1' ? ' -o' : '';
-  const commands = {
-    maven: `mvn -B -q${offline} test -Dtest=${test.selector} -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false`,
-    gradle: `${gradleWrapper()} test --tests ${cls}`,
-    pytest: `${sandboxPython()} -m pytest -q -p no:cacheprovider ${test.selector} --junitxml=${junitPytest}`,
+  // A program and its arguments: the sandbox runs it without a shell; the
+  // host shell gets the same words joined (each one is shell-safe).
+  const offline = process.env.REPRO_MAVEN_OFFLINE === '1' ? ['-o'] : [];
+  const argvs = {
+    maven: ['mvn', '-B', '-q', ...offline, 'test', `-Dtest=${test.selector}`, '-DfailIfNoTests=false', '-Dsurefire.failIfNoSpecifiedTests=false'],
+    gradle: [gradleWrapper(), 'test', '--tests', cls],
+    pytest: [sandboxPython(), '-m', 'pytest', '-q', '-p', 'no:cacheprovider', test.selector, `--junitxml=${junitPytest}`],
   };
-  return { command: commands[toolchain], junit };
+  const argv = argvs[toolchain];
+  return { command: argv && argv.join(' '), argv, junit };
 }
 
 // ---------- JUnit XML ----------
@@ -513,13 +516,13 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
     // Host-side file access in the worktree goes through confine: PR code
     // (a tracked symlink, or one a build made) can point a path out of it.
     const target = path.join(wt, test.path);
-    const { command, junit } = commandFor(toolchain, test, wt, testCommand);
+    const { command, argv, junit } = commandFor(toolchain, test, wt, testCommand);
     const runs = [];
     const runPhase = async (phase) => {
       confine.removeConfined(wt, junit);
       const logRel = `repro/${finding.id}/${phase}.log`;
       const logFile = path.join(rdir, logRel);
-      const res = await execRun({ command, cwd: wt, logFile, timeoutMs, test, phase, toolchain: toolchain || 'custom' });
+      const res = await execRun({ command, argv, cwd: wt, logFile, timeoutMs, test, phase, toolchain: toolchain || 'custom' });
       // Raw evidence, hash-bound: the log ends with the process outcome and
       // the JUnit XML is kept as written. Validation re-derives the status
       // from these, never from the record's own fields.

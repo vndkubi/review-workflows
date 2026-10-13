@@ -24,12 +24,15 @@ function isPlainRel(rel) {
 
 class ConfinementError extends Error {}
 
+// An entry that cannot be inspected counts as a link: on Docker Desktop for
+// Windows a symlink made inside the container shows up on the host as an
+// entry whose lstat fails with EACCES.
 function lstatOrNull(p) {
   try {
     return fs.lstatSync(p);
   } catch (err) {
     if (err.code === 'ENOENT') return null;
-    throw err;
+    throw new ConfinementError(`${p} cannot be inspected (${err.code}); treating it as a link`);
   }
 }
 
@@ -141,7 +144,13 @@ function removeConfined(root, abs) {
     if (err instanceof ConfinementError) return false;
     throw err;
   }
-  const st = lstatOrNull(abs);
+  let st;
+  try {
+    st = lstatOrNull(abs);
+  } catch (err) {
+    if (!(err instanceof ConfinementError)) throw err;
+    st = { isDirectory: () => false }; // uninspectable: unlink removes the entry, never a target
+  }
   if (!st || st.isDirectory()) return false;
   fs.unlinkSync(abs);
   return true;

@@ -68,7 +68,11 @@ and impacted tests in a throwaway container instead: only the worktree is mounte
 (`ARW_SANDBOX_NETWORK`), memory/CPU/process limits, killed on timeout. Images per toolchain
 (`ARW_SANDBOX_IMAGE_MAVEN` / `_GRADLE` / `_PYTEST`); `ARW_SANDBOX_M2` mounts a local Maven repository read-only
 so builds work offline. Checked with `maven:3.9-eclipse-temurin-17`: a test passing on base and failing on head,
-no network, about 20 s per run. The sandbox settings are part of the frozen context: switching between host and
+no network, about 20 s per run. Built-in commands (Maven, Gradle, pytest) start in the container as a program with
+arguments, no shell; a configured `test_command` runs through `sh -c`. If docker or its daemon is unavailable
+(`ARW_DOCKER` names another CLI), the run is ENVIRONMENT_BLOCKED; it never falls back to the host. Impacted-test
+results record where they ran. `ARW_DOCKER_TESTS=1 npm test` also runs the isolation tests in real containers
+(network, host environment, links made inside the container, a rewritten `.git` file, timeout). The sandbox settings are part of the frozen context: switching between host and
 docker, or changing image, network, limits or mounts, is drift. Image tags can move; pin `name@sha256:<digest>`
 to make the image exact.
 

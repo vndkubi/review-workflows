@@ -17,6 +17,11 @@ const { spawn, execFileSync } = require('node:child_process');
 
 const DEFAULT_IMAGES = { maven: 'maven:3.9-eclipse-temurin-17', gradle: 'gradle:8-jdk17' };
 
+// The docker CLI (ARW_DOCKER: another path, or a compatible CLI).
+function dockerBin() {
+  return process.env.ARW_DOCKER || 'docker';
+}
+
 function enabled() {
   return process.env.ARW_SANDBOX === 'docker';
 }
@@ -34,8 +39,10 @@ function toContainer(command, hostDir) {
   return out.replace(/\/work\\/g, '/work/');
 }
 
-// docker run arguments for one run (exported for tests).
-function dockerArgs({ command, cwd, toolchain, name }) {
+// docker run arguments for one run (exported for tests). With argv the
+// image runs that program directly, no shell; a configured test_command
+// (a string) still runs through sh -c.
+function dockerArgs({ command, argv = null, cwd, toolchain, name }) {
   const image = imageFor(toolchain);
   if (!image) throw new Error(`no sandbox image for ${toolchain}: set ARW_SANDBOX_IMAGE_${String(toolchain).toUpperCase()} (for pytest, an image with pytest installed)`);
   const args = ['run', '--rm', '--name', name, '--network', process.env.ARW_SANDBOX_NETWORK || 'none', '--memory', process.env.ARW_SANDBOX_MEMORY || '4g', '--cpus', process.env.ARW_SANDBOX_CPUS || '2', '--pids-limit', '512', '--security-opt', 'no-new-privileges', '-v', `${cwd}:/work`, '-w', '/work'];
@@ -43,18 +50,40 @@ function dockerArgs({ command, cwd, toolchain, name }) {
   // ARW_SANDBOX_M2_RW=1; Maven may need to write tracking files).
   if (process.env.ARW_SANDBOX_M2) args.push('-v', `${process.env.ARW_SANDBOX_M2}:/m2${process.env.ARW_SANDBOX_M2_RW === '1' ? '' : ':ro'}`, '-e', 'MAVEN_OPTS=-Dmaven.repo.local=/m2');
   if (typeof process.getuid === 'function') args.push('--user', `${process.getuid()}:${process.getgid()}`, '-e', 'HOME=/tmp');
-  args.push(image, 'sh', '-c', toContainer(command, cwd));
+  if (argv) args.push(image, ...argv.map((a) => toContainer(String(a), cwd)));
+  else args.push(image, 'sh', '-c', toContainer(command, cwd));
   return args;
 }
 
+// Whether the docker daemon answers; a failure is remembered for a minute,
+// success for the process. Without it a run would fail like a build does
+// (exit 1) and be misread as the PR's failure.
+let daemon = { ok: false, at: 0, error: null };
+function daemonError() {
+  if (daemon.ok) return null;
+  if (daemon.error && Date.now() - daemon.at < 60000) return daemon.error;
+  try {
+    execFileSync(dockerBin(), ['version', '--format', '{{.Server.Version}}'], { stdio: 'pipe', timeout: 30000, windowsHide: true });
+    daemon = { ok: true, at: Date.now(), error: null };
+    return null;
+  } catch (err) {
+    const why = err.code === 'ENOENT' ? `${dockerBin()} not found` : String((err.stderr && err.stderr.toString().trim()) || err.message).split('\n')[0];
+    daemon = { ok: false, at: Date.now(), error: `docker is not available: ${why}` };
+    return daemon.error;
+  }
+}
+
 // Same contract as repro's shellRunner: { exit_code, timed_out, spawn_error, elapsed_ms }.
-function dockerRunner({ command, cwd, logFile, timeoutMs, toolchain }) {
+// No docker means ENVIRONMENT_BLOCKED, never a run on the host.
+function dockerRunner({ command, argv = null, cwd, logFile, timeoutMs, toolchain }) {
   return new Promise((resolve) => {
     const started = Date.now();
     const name = `arw-${crypto.randomBytes(6).toString('hex')}`;
     let args;
     try {
-      args = dockerArgs({ command, cwd, toolchain, name });
+      const unavailable = daemonError();
+      if (unavailable) throw new Error(unavailable);
+      args = dockerArgs({ command, argv, cwd, toolchain, name });
     } catch (err) {
       fs.writeFileSync(logFile, `${err.message}\n`);
       resolve({ exit_code: null, spawn_error: err.message, elapsed_ms: 0 });
@@ -63,18 +92,22 @@ function dockerRunner({ command, cwd, logFile, timeoutMs, toolchain }) {
     const out = fs.openSync(logFile, 'w');
     fs.writeSync(out, `$ docker ${args.join(' ')}\n`);
     let timedOut = false;
-    const child = spawn('docker', args, { stdio: ['ignore', out, out], windowsHide: true });
+    const child = spawn(dockerBin(), args, { stdio: ['ignore', out, out], windowsHide: true });
     const timer = setTimeout(() => {
       timedOut = true;
       try {
-        execFileSync('docker', ['kill', name], { stdio: 'ignore' });
+        execFileSync(dockerBin(), ['kill', name], { stdio: 'ignore' });
       } catch {
         /* already gone */
       }
     }, timeoutMs);
     child.on('error', (err) => {
       clearTimeout(timer);
-      fs.closeSync(out);
+      try {
+        fs.closeSync(out);
+      } catch {
+        /* closed */
+      }
       resolve({ exit_code: null, spawn_error: `docker: ${err.message}`, elapsed_ms: Date.now() - started });
     });
     child.on('close', (code) => {
@@ -98,6 +131,7 @@ function manifest() {
   if (!enabled()) return { mode: 'host' };
   return {
     mode: 'docker',
+    docker: dockerBin(),
     images: Object.fromEntries(['maven', 'gradle', 'pytest'].map((t) => [t, imageFor(t)])),
     network: process.env.ARW_SANDBOX_NETWORK || 'none',
     memory: process.env.ARW_SANDBOX_MEMORY || '4g',
@@ -107,4 +141,4 @@ function manifest() {
   };
 }
 
-module.exports = { enabled, imageFor, dockerArgs, dockerRunner, toContainer, manifest, DEFAULT_IMAGES };
+module.exports = { enabled, imageFor, dockerArgs, dockerRunner, toContainer, manifest, daemonError, DEFAULT_IMAGES, _resetDaemon: () => { daemon = { ok: false, at: 0, error: null }; } };
