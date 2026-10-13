@@ -158,6 +158,14 @@ file paths appended where `{files}` appears). Commands run without a shell, with
 environment, and file names are passed as `./path` so a PR cannot turn one into an option. `ARW_STATIC=off`
 disables linters.
 
+**Large PRs.** The whole-diff viewpoints (V0 technical, V1 business) answer one coverage row per file, so on
+more than `ARW_VIEWPOINT_FILES` (25) files they are split into parts of neighbouring files (`V0_1`, `V0_2`, …).
+Every unit gets a deterministic risk score (changed lines, boundary signals, money/auth/data paths up,
+docs/tests down) and units run riskiest first inside each wave, so a budget stop (`ARW_MAX_CALLS`,
+`ARW_MAX_INPUT_TOKENS`) leaves the least risky part undone and reported as a gap. Above `ARW_LARGE_PR_FILES`
+(60) files or `ARW_LARGE_PR_LINES` (2000) changed lines the report and the dashboard say the PR is too large to
+review well and propose a split along the planned units (units sharing files stay together).
+
 **New pushes are reviewed incrementally.** When the PR head moves, the previous plan is kept if the PR still
 changes the same files, and a packet from the previous context is carried over when the tool, review items,
 spec and policies are byte-identical, the unit is the same, none of its files changed on either side of the

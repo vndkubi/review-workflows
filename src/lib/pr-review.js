@@ -19,6 +19,7 @@ const { runBatch, finish, runModelJob } = require('./driver');
 const { runRepro } = require('./repro');
 const { carryOver } = require('./carry-over');
 const { collectStatic } = require('./static-evidence');
+const { prSize, fileRisks, scoreUnits, suggestSplit } = require('./pr-size');
 const { makeSources } = require('./validate');
 const { writeReport } = require('./report');
 const { extractTicketKey } = require('./jira');
@@ -155,7 +156,11 @@ async function planPhase({ runDir, run, info, executor, models, log, singleRole,
     built = buildUnits(plan, reviewable, items, { singleRole });
     writeJsonAtomic(planFile, { head_sha: head, items_sha: JSON.stringify(items), reviewable, plan });
   }
-  run.review = { plan_path: 'pr-review-plan.md', required_coverage: built.required_coverage, units: built.units, single_role: Boolean(singleRole) };
+  // Size and risk: riskiest units run first; a large PR gets a split proposal.
+  const size = prSize(parsed, reviewable);
+  scoreUnits(built.units, fileRisks(parsed, reviewable, pack.signals));
+  if (size.large) log(`large PR: ${size.files} files, ${size.lines} changed lines (limits ${size.limits.files} files / ${size.limits.lines} lines); reviewing riskiest units first`);
+  run.review = { plan_path: 'pr-review-plan.md', required_coverage: built.required_coverage, units: built.units, single_role: Boolean(singleRole), size, split: size.large ? suggestSplit(built.units, parsed) : null };
   const planMd = renderPlanMarkdown({ identity: run.identity, plan, units: built.units, items, reviewable, skipped: pack.skipped.map((f) => f.path) });
   writeFileAtomic(path.join(runDir, 'pr-review-plan.md'), planMd);
   phase(run, runDir, 'plan', 'EXECUTED_PASS', { units: built.units.length });

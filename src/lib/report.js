@@ -101,6 +101,11 @@ function renderReport(runDir, validation, identity) {
     out.push('', `## ⚠ Instruction-like text aimed at AI reviewers (${validation.warnings.length})`, '', 'The PR content contains text that tries to steer an automated reviewer. It was treated as data; check whether it is intentional.', '');
     out.push(...validation.warnings.map((w) => `- \`${w.where}\` [${w.kind}] ${w.text}`));
   }
+  const size = validation.size;
+  if (size && size.large) {
+    out.push('', `## Large PR: ${size.files} files, ${size.lines} changed lines`, '', `Above the review limits (${size.limits.files} files / ${size.limits.lines} lines): the review is spread thin and a person cannot check it well. Units ran riskiest first. Consider splitting along the planned units (riskiest first; units that share files stay together):`, '');
+    for (const p of validation.split || []) out.push(`- **${p.units.join(' + ')}** (${p.files.length} file(s), ${p.lines} lines, risk ${p.risk}) — ${p.desc}`);
+  }
   if (validation.gaps.length) out.push('', '## Not verified', '', ...validation.gaps.map((g) => `- ${g}`));
   if (validation.items && validation.items.length) {
     const texts = new Map(JSON.parse(readInput(runDir, loadContext(runDir), 'review-items') || '[]').map((i) => [i.id, i]));

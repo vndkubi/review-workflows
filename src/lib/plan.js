@@ -5,6 +5,29 @@
 
 const ORPHAN_CHUNK = 8;
 
+function viewpointChunkSize() {
+  const n = Number(process.env.ARW_VIEWPOINT_FILES);
+  return Number.isInteger(n) && n > 0 ? n : 25;
+}
+
+// Files sorted by path, cut into near-equal parts of at most the chunk size,
+// so each part holds neighbouring directories.
+function viewpointChunks(files) {
+  const size = viewpointChunkSize();
+  if (files.length <= size) return [files];
+  const sorted = [...files].sort();
+  const parts = Math.ceil(sorted.length / size);
+  const per = Math.ceil(sorted.length / parts);
+  const out = [];
+  for (let i = 0; i < sorted.length; i += per) out.push(sorted.slice(i, i + per));
+  return out;
+}
+
+function dirSummary(files) {
+  const dirs = [...new Set(files.map((f) => (f.includes('/') ? f.slice(0, f.lastIndexOf('/')) : '.')))];
+  return dirs.length <= 3 ? dirs.join(', ') : `${dirs.slice(0, 3).join(', ')} and ${dirs.length - 3} more director${dirs.length - 3 === 1 ? 'y' : 'ies'}`;
+}
+
 const VIEWPOINTS = [
   { id: 'V0', roles: ['technical'], desc: 'Whole-diff technical sweep: checklist viewpoints, error handling, transactions, concurrency, compatibility, tests.' },
   { id: 'V1', roles: ['business'], desc: 'Whole-diff business sweep: business invariants, data consistency, behaviour changes the requirements do not mention.' },
@@ -98,16 +121,23 @@ function buildUnits(plan, reviewableFiles, items, { singleRole = false } = {}) {
     });
   }
 
+  // A viewpoint answers one coverage row per file. On a large PR one sweep
+  // over everything produces an answer too long to stay accurate, so the
+  // sweep is split into parts of related files (sorted by path).
+  const chunks = viewpointChunks(reviewableFiles);
   for (const v of VIEWPOINTS) {
-    units.push({
-      id: v.id,
-      kind: 'viewpoint',
-      desc: v.desc,
-      covers: [`viewpoint:${v.id}`, ...reviewableFiles.map((f) => `file:${f}`)],
-      depends_on: [],
-      required: true,
-      roles: v.roles,
-      status: 'NOT_RUN',
+    chunks.forEach((files, i) => {
+      const id = chunks.length === 1 ? v.id : `${v.id}_${i + 1}`;
+      units.push({
+        id,
+        kind: 'viewpoint',
+        desc: chunks.length === 1 ? v.desc : `${v.desc} Part ${i + 1}/${chunks.length}: ${dirSummary(files)}.`,
+        covers: [`viewpoint:${id}`, ...files.map((f) => `file:${f}`)],
+        depends_on: [],
+        required: true,
+        roles: v.roles,
+        status: 'NOT_RUN',
+      });
     });
   }
 

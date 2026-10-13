@@ -296,6 +296,10 @@ function prSummary(d) {
     h('div', { class: 'stats' }, stat(c.P1, 'P1'), stat(c.P2, 'P2'), stat(c.P3, 'P3'), stat(c.P4, 'P4'), stat(c.withdrawn, 'withdrawn')),
     v.drift && v.drift.length ? h('div', { class: 'notice bad' }, `Context drift: ${v.drift.join('; ')}. Re-run the review with “Refresh”.`) : null,
     v.warnings && v.warnings.length ? h('div', { class: 'notice bad' }, h('strong', {}, `Instruction-like text aimed at AI reviewers (${v.warnings.length}): `), v.warnings.map((w) => h('div', { class: 'small' }, h('code', {}, w.where), ` ${w.text}`))) : null,
+    v.size && v.size.large ? h('div', { class: 'notice' },
+      h('strong', {}, `Large PR: ${v.size.files} files, ${v.size.lines} changed lines. `),
+      `Above the limits (${v.size.limits.files} files / ${v.size.limits.lines} lines); units ran riskiest first. Possible split:`,
+      h('ul', {}, (v.split || []).map((p) => h('li', { class: 'small' }, h('strong', {}, p.units.join(' + ')), ` — ${p.files.length} file(s), ${p.lines} lines, risk ${p.risk}: ${p.desc}`)))) : null,
     v.gaps.length ? h('div', { class: 'notice' }, h('strong', {}, 'Not verified: '), v.gaps.join(' · ')) : null,
     v.opt_outs && v.opt_outs.length ? h('div', { class: 'notice' }, `Opt-outs recorded: ${v.opt_outs.join(', ')}`) : null,
     v.carried_over ? h('p', { class: 'small muted' }, v.carried_over.skipped

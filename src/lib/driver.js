@@ -324,7 +324,8 @@ async function runBatch({ runDir, executor, workers = envInt('ARW_WORKERS', 4), 
     const order = { viewpoint: 0, business: 1, technical: 1, orphan: 2 };
     const w1 = jobsFor(review)
       .filter(({ unit, role }) => unit.kind !== 'seam' && !passed.has(`${unit.id}/${role}`))
-      .sort((a, b) => order[a.unit.kind] - order[b.unit.kind]);
+      // Riskiest first inside each kind: a budget stop leaves the least risky undone.
+      .sort((a, b) => order[a.unit.kind] - order[b.unit.kind] || (b.unit.risk || 0) - (a.unit.risk || 0));
     log(`W1 ${w1.length} job(s) (${passed.size} already valid)`);
     await runPool(w1, workers, async ({ unit, role }) => {
       const spec = packetJob(unit, role);
@@ -480,6 +481,8 @@ function finish(runDir, optOuts = {}) {
     synthesis: synth,
     opt_outs: Object.entries(optOuts).filter(([, v]) => v).map(([k]) => k),
     carried_over: carriedOver(dir, state),
+    size: run.review.size || null,
+    split: run.review.split || null,
     usage,
     human_gate: {
       gate: 'REVIEW',
