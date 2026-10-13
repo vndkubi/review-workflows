@@ -37,6 +37,12 @@ const ENV_SETTINGS = [
   ['ARW_SEMGREP_CONFIG', 'static', 'string', '', 'semgrep rules (file or directory) when the repository has no .semgrep.yml.'],
   ['ARW_PMD_BIN', 'static', 'string', '', 'Path to the pmd executable when it is not on PATH (a .bat cannot be run without a shell).'],
   ['ARW_PMD_RULESETS', 'static', 'string', '', 'PMD rulesets. Empty = rulesets/java/quickstart.xml.'],
+  ['ARW_WATCH', 'automation', 'enum', 'off', 'Dashboard polls repositories marked Watch and reviews new PRs and new pushes.', ['off', 'on']],
+  ['ARW_WATCH_INTERVAL', 'automation', 'number', '300', 'Seconds between polls (at least 60).', null, [60, 86400]],
+  ['ARW_SLACK_WEBHOOK', 'automation', 'secret', '', 'Slack incoming webhook: a summary when a review finishes (finding titles leave this machine).'],
+  ['ARW_NOTIFY_WEBHOOK', 'automation', 'secret', '', 'Any URL that accepts a JSON POST when a review finishes.'],
+  ['ARW_NOTIFY_ON', 'automation', 'enum', 'findings', 'Notify for every review, only with findings, or only with P1/P2 (or a failed review).', ['all', 'findings', 'blocking']],
+  ['ARW_DASHBOARD_URL', 'automation', 'url', '', 'Base URL of this dashboard, for links in notifications.'],
   ['REPRO_TIMEOUT_MS', 'repro', 'number', '900000', 'Timeout per repro test run (ms).', null, [30000, 3600000]],
   ['REPRO_MAVEN_OFFLINE', 'repro', 'bool', '0', 'Run Maven with -o (local repository only).'],
   ['JIRA_URL', 'jira', 'url', '', 'Jira base URL (REST source).'],
@@ -182,7 +188,7 @@ function writeRepos(list) {
   const repos = {};
   // Fields the editor does not show (static_commands, ...) are kept as they are.
   const previous = readJsonIfExists(REPOS_FILE(), { repos: {} }).repos || {};
-  const MANAGED = ['checkout', 'remote', 'test_command'];
+  const MANAGED = ['checkout', 'remote', 'test_command', 'watch'];
   list.forEach((r, i) => {
     const at = `repo ${i + 1}`;
     const name = String((r && r.name) || '').trim();
@@ -202,6 +208,9 @@ function writeRepos(list) {
     if (cmd) {
       if (/[\r\n]/.test(cmd)) return errors.push(`${name}: test command must be one line`);
       entry.test_command = cmd;
+    }
+    if (r.watch === true) {
+      entry.watch = true;
     }
     repos[name] = entry;
   });

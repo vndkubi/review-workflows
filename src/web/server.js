@@ -115,6 +115,8 @@ function prNumber(v) {
 function createServer({ port, token = crypto.randomBytes(24).toString('hex'), queue = new JobQueue(), githubApi = github.apiGet } = {}) {
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   const who = `${os.userInfo().username} (dashboard)`;
+  // A PR the watcher found becomes an ordinary review job.
+  const watchEnqueue = (j) => queue.enqueue({ kind: 'review', title: `${j.repo}#${j.pr} (watch)`, args: ['review', '--repo', j.repo, '--pr', String(j.pr)], target: { type: 'pr', id: `${j.repo.replace('/', '__')}__${j.pr}` } });
 
   const routes = [
     ['GET', /^\/api\/config$/, () => {
@@ -237,6 +239,11 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
       }
     }],
     ['GET', /^\/api\/acceptance$/, () => feedback.acceptanceStats()],
+    ['GET', /^\/api\/watch$/, () => {
+      const w = require('../lib/watch');
+      return { enabled: process.env.ARW_WATCH === 'on', interval_s: Number(process.env.ARW_WATCH_INTERVAL) || 300, repos: w.watchedRepos(), state: w.loadState() };
+    }],
+    ['POST', /^\/api\/watch\/poll$/, () => require('../lib/watch').pollOnce({ enqueue: watchEnqueue })],
     ['GET', /^\/api\/checklist\/proposals$/, () => require('../lib/checklist-mining').mineChecklist()],
     ['POST', /^\/api\/checklist\/accept$/, (m, q, body) => {
       try {
@@ -354,7 +361,7 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
     return undefined;
   }
 
-  return http.createServer(async (req, res) => {
+  const server = http.createServer(async (req, res) => {
     try {
       if (!allowedHosts.has(req.headers.host || '')) return send(res, 421, { error: 'unexpected Host header' });
       const url = new URL(req.url, `http://${req.headers.host}`);
@@ -386,10 +393,28 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
       return send(res, status, { error: status === 500 ? `internal error: ${err.message}` : err.message });
     }
   });
+  server.queue = queue;
+  server.watchEnqueue = watchEnqueue;
+  return server;
 }
 
 function startDashboard({ port = 8787, open = true } = {}) {
   const server = createServer({ port });
+  // Watcher: checked every minute so Settings changes apply without a
+  // restart; polls only when ARW_WATCH=on and the interval has passed.
+  let lastPoll = 0;
+  const watchTimer = setInterval(() => {
+    if (process.env.ARW_WATCH !== 'on') return;
+    const every = Math.max(60, Number(process.env.ARW_WATCH_INTERVAL) || 300) * 1000;
+    if (Date.now() - lastPoll < every) return;
+    lastPoll = Date.now();
+    try {
+      require('../lib/watch').pollOnce({ enqueue: server.watchEnqueue, log: (m) => process.stderr.write(`${m}\n`) });
+    } catch (err) {
+      process.stderr.write(`watch: ${err.message}\n`);
+    }
+  }, 60000);
+  watchTimer.unref();
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, '127.0.0.1', () => {

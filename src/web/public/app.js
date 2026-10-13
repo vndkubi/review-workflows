@@ -1060,7 +1060,7 @@ async function ticketExtras(key) {
 }
 
 // ---------- settings ----------
-const GROUP_TITLES = { executor: 'Executor (codex)', review: 'Review', static: 'Machine evidence (linters)', repro: 'Reproduction tests' };
+const GROUP_TITLES = { executor: 'Executor (codex)', review: 'Review', static: 'Machine evidence (linters)', repro: 'Reproduction tests', automation: 'Automation (watch and notifications)' };
 
 // One input per setting; returns { row, read } where read() yields the
 // change to send (undefined = unchanged, null = reset to default).
@@ -1214,16 +1214,17 @@ function mcpEditor(saved, mcpSecret) {
 }
 
 function reposEditor(repos) {
-  const rows = Object.entries(repos).map(([name, r]) => ({ name, checkout: r.checkout, remote: r.remote || '', test_command: r.test_command || '' }));
+  const rows = Object.entries(repos).map(([name, r]) => ({ name, checkout: r.checkout, remote: r.remote || '', test_command: r.test_command || '', watch: Boolean(r.watch) }));
   const body = h('tbody', {});
   const msg = h('div', {});
   const draw = () => put(body, rows.map((r, i) => h('tr', {},
     ...['name', 'checkout', 'remote', 'test_command'].map((k) => h('td', {}, h('input', { type: 'text', class: 'wide', value: r[k], placeholder: { name: 'owner/repository', checkout: 'D:/src/repo', remote: 'origin', test_command: 'auto (Maven/Gradle/pytest)' }[k], oninput: (e) => { r[k] = e.target.value; } }))),
+    h('td', {}, h('input', { type: 'checkbox', checked: r.watch, 'aria-label': `watch ${r.name}`, onchange: (e) => { r.watch = e.target.checked; } })),
     h('td', {}, h('button', { type: 'button', class: 'linkbtn', onclick: () => { rows.splice(i, 1); draw(); } }, 'remove')))));
   draw();
   return h('div', {},
-    h('table', {}, h('thead', {}, h('tr', {}, ['Repository', 'Local checkout', 'Remote', 'Test command', ''].map((c) => h('th', {}, c)))), body),
-    h('p', { class: 'small muted' }, 'Test command placeholders: {selector} {class} {path} {junit}. Leave empty to detect Maven, Gradle or pytest.'),
+    h('table', {}, h('thead', {}, h('tr', {}, ['Repository', 'Local checkout', 'Remote', 'Test command', 'Watch', ''].map((c) => h('th', {}, c)))), body),
+    h('p', { class: 'small muted' }, 'Test command placeholders: {selector} {class} {path} {junit}. Leave empty to detect Maven, Gradle or pytest. Watch: with ARW_WATCH on (Automation below), new PRs and new pushes are reviewed automatically; drafts and PRs labelled arw:skip are left alone.'),
     h('div', { class: 'row' },
       h('button', { type: 'button', class: 'btn', onclick: () => { rows.push({ name: '', checkout: '', remote: '', test_command: '' }); draw(); } }, 'Add repository'),
       h('button', { class: 'btn primary', onclick: async () => {
@@ -1399,6 +1400,27 @@ async function renderEvalCompare(a, b) {
   );
 }
 
+async function watchPanel() {
+  const w = await api('GET', '/api/watch').catch(() => null);
+  if (!w) return null;
+  const pollNow = async () => {
+    try {
+      const r = await api('POST', '/api/watch/poll', {});
+      toast(`${r.queued.length} review(s) queued${r.errors.length ? `, ${r.errors.length} error(s)` : ''}`);
+      render();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  const prs = Object.entries(w.state.prs || {}).sort((a, b) => String(b[1].queued_at).localeCompare(String(a[1].queued_at))).slice(0, 10);
+  return h('section', { class: 'panel' },
+    h('h2', {}, 'Watcher'),
+    h('p', { class: 'small' }, w.enabled ? `On: every ${w.interval_s}s` : 'Off (set ARW_WATCH to on under Automation)', ' · watching ', w.repos.length ? w.repos.map((r) => r.name).join(', ') : 'no repository (tick Watch above)'),
+    h('div', { class: 'row' }, h('button', { class: 'btn', disabled: !w.repos.length, onclick: pollNow }, 'Poll now'),
+      (w.state.polls || [])[0] ? h('span', { class: 'small muted' }, `last poll ${fmtTime(w.state.polls[0].at)}: ${w.state.polls[0].queued} queued${w.state.polls[0].errors.length ? ` · ${w.state.polls[0].errors.join('; ')}` : ''}`) : null),
+    prs.length ? table(['PR', 'Head', 'Why', 'Queued'], prs.map(([k, v]) => [k, h('span', { class: 'mono small' }, String(v.head).slice(0, 12)), v.reason, fmtTime(v.queued_at)])) : null);
+}
+
 async function memoryPanel() {
   const entries = await api('GET', '/api/memory').catch(() => []);
   const forget = (id) => async () => {
@@ -1441,7 +1463,7 @@ async function renderSettings() {
     h('h1', {}, 'Settings'),
     h('p', { class: 'muted small' }, 'Saved to .env and config/*.json. New jobs use the new values right away; secrets are never shown again after saving.'),
     h('datalist', { id: 'model-list' }, s.models.map((m) => h('option', { value: m }))),
-    ['executor', 'review', 'static', 'repro'].map((g) => settingsSection(GROUP_TITLES[g], by(g), s.models)),
+    ['executor', 'review', 'static', 'repro', 'automation'].map((g) => settingsSection(GROUP_TITLES[g], by(g), s.models)),
     h('section', { class: 'panel' },
       h('h2', {}, 'Ticket source'),
       h('p', {}, 'Active: ', h('strong', {}, active), h('span', { class: 'small muted' }, ' — an MCP server wins, then Jira REST, then files.')),
@@ -1449,6 +1471,7 @@ async function renderSettings() {
       mcpEditor(s.mcp, mcpSecret)),
     settingsSection('Jira / Confluence REST', jira, s.models),
     h('section', { class: 'panel' }, h('h2', {}, 'Repositories'), reposEditor(s.repos)),
+    await watchPanel(),
     await memoryPanel(),
     await diskPanel(),
     h('section', { class: 'panel' },

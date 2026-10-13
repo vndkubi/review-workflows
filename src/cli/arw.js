@@ -42,6 +42,10 @@ Measuring the reviewer:
 Human gates (the runtime never approves):
   arw gate approve|reject|status (--ticket KEY | --repo owner/name --pr <n>) --gate ${Object.keys(GATES).join('|')} [--note "..."]
 
+Automation:
+  arw watch [--once] [--interval 300]   review new PRs and new pushes of repos with "watch": true
+  (notifications: ARW_SLACK_WEBHOOK / ARW_NOTIFY_WEBHOOK, sent when a review finishes)
+
 Other:
   arw ui [--port 8787] [--no-open]   local dashboard (loopback only)
   arw clean [--older-than 14] [--runs] [--no-worktrees] [--no-attempts] [--apply]
@@ -125,6 +129,9 @@ async function cmdReview(argv) {
     log,
   });
   const v = res.validation;
+  const identity = readJsonIfExists(path.join(res.runDir, 'run.json'), {}).identity || {};
+  const base = (process.env.ARW_DASHBOARD_URL || '').replace(/\/+$/, '');
+  await require('../lib/notify').notifyReview({ identity, validation: v, link: base ? `${base}/#/pr/${path.basename(res.runDir)}` : null, log });
   console.log(`${v.status} · recommendation ${v.recommendation}${v.complete ? '' : ' (incomplete)'} · ${v.findings.length} finding(s) · ${v.usage.calls} model calls`);
   console.log(`report: ${res.report}`);
   return v.status === 'EXECUTED_PASS' ? 0 : 1;
@@ -193,6 +200,29 @@ function cmdAcceptance() {
   }
   console.log(`\n${s.runs.length} run(s) with feedback (arw feedback --repo ... --pr ... after submitting a review)`);
   return 0;
+}
+
+// Polls watched repositories and reviews new PRs and new pushes, one at a
+// time, each in its own process (like a dashboard job).
+async function cmdWatch(argv) {
+  const args = parseArgs(argv, ['once']);
+  const { pollOnce, watchedRepos } = require('../lib/watch');
+  const { spawnSync } = require('node:child_process');
+  const intervalMs = Math.max(60, Number(args.interval) || envInt('ARW_WATCH_INTERVAL', 300)) * 1000;
+  const repos = watchedRepos();
+  if (!repos.length) throw new Error('no watched repositories: set "watch": true on entries in config/repos.json (or tick Watch in Settings)');
+  console.error(`watching ${repos.map((r) => r.name).join(', ')} every ${intervalMs / 1000}s`);
+  for (;;) {
+    const queued = [];
+    const res = pollOnce({ enqueue: (j) => queued.push(j), log });
+    for (const e of res.errors) log(`watch: ${e}`);
+    for (const j of queued) {
+      log(`review ${j.repo}#${j.pr}`);
+      spawnSync(process.execPath, [__filename, 'review', '--repo', j.repo, '--pr', String(j.pr)], { stdio: 'inherit', env: process.env });
+    }
+    if (args.once) return 0;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
 }
 
 function cmdChecklist(argv) {
@@ -408,6 +438,8 @@ async function main(argv) {
       return cmdRetro(rest);
     case 'checklist':
       return cmdChecklist(rest);
+    case 'watch':
+      return cmdWatch(rest);
     case 'status':
       return cmdStatus();
     case 'doctor':

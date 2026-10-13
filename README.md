@@ -186,6 +186,21 @@ Useful flags: `--workers N`, `--single-role` (business units get only the busine
 `--skip-seams`, `--skip-rebuttals`, `--skip-synthesis` (opt-outs are recorded in `validation.json`),
 `--refresh` (re-plan and re-freeze). `arw validate` re-checks everything on disk with no model calls.
 
+### Automation: watch PRs, notify when a review finishes
+
+Tick **Watch** for a repository in Settings (or set `"watch": true` in `config/repos.json`) and turn
+`ARW_WATCH` on: the dashboard polls GitHub every `ARW_WATCH_INTERVAL` seconds (default 300) and queues a
+review for every new PR and every new push (reviews of new pushes are incremental). Drafts (unless
+`"watch_drafts": true`) and PRs labelled `arw:skip` are left alone; `runs/watch/state.json` remembers what was
+queued. Without the dashboard, `arw watch [--once]` does the same in a terminal or from a scheduler (cron,
+Task Scheduler). Nothing is published automatically: a person still opens and submits the review.
+
+When a review finishes, `ARW_SLACK_WEBHOOK` (Slack incoming webhook) and/or `ARW_NOTIFY_WEBHOOK` (JSON POST)
+receive a summary: recommendation, counts and the top findings' titles, with a link if `ARW_DASHBOARD_URL` is
+set. `ARW_NOTIFY_ON` = `findings` (default), `blocking` (P1/P2 or a failed review) or `all`. Webhooks must be
+https (http only for localhost); a failed notification is logged and never fails the review. Finding titles
+leave this machine, so point them at a channel where the reviewed code may be discussed.
+
 ### Feedback: acceptance rate and rejected findings
 
 ```bash
