@@ -16,6 +16,8 @@ const { runImpactedTests, renderImpacted, planRuns, parseCases, verdict } = requ
 test('junit cases, verdicts, and grouping by module', () => {
   const cases = parseCases('<testsuite><testcase classname="com.acme.ATest" name="ok"/><testcase classname="com.acme.ATest" name="bad"><failure message="expected &lt;1&gt;">x</failure></testcase><testcase classname="t.test_x" name="s"><skipped/></testcase></testsuite>');
   assert.deepEqual(cases.map((c) => [c.name, c.status, c.message]), [['ok', 'pass', null], ['bad', 'fail', 'expected <1>'], ['s', 'skipped', null]]);
+  // Seen with real pytest: newlines in messages arrive as &#10;.
+  assert.equal(parseCases('<testcase classname="t.test_x" name="late"><failure message="assert 112 == 110&#10; + where 112 = total(100, 35)"/></testcase>')[0].message, 'assert 112 == 110\n + where 112 = total(100, 35)');
   assert.equal(verdict({ status: 'pass' }, { status: 'fail' }), 'newly_failing');
   assert.equal(verdict({ status: 'fail' }, { status: 'fail' }), 'still_failing');
   assert.equal(verdict(null, { status: 'fail' }), 'new_test_failing');

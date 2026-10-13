@@ -31,6 +31,26 @@ function javaClass(selector) {
   return selector.split('#')[0];
 }
 
+// The Python that has pytest: ARW_PYTHON, else the first of python, python3,
+// py (Windows launcher) that can import it. On some machines `python` is
+// another tool's virtualenv without pytest.
+let pythonCache = null;
+function pythonCommand() {
+  if (process.env.ARW_PYTHON) return process.env.ARW_PYTHON;
+  if (pythonCache) return pythonCache;
+  for (const cand of ['python', 'python3', 'py']) {
+    try {
+      execFileSync(cand, ['-c', 'import pytest'], { stdio: 'ignore', timeout: 20000, windowsHide: true });
+      pythonCache = cand;
+      return cand;
+    } catch {
+      /* next */
+    }
+  }
+  pythonCache = 'python';
+  return pythonCache;
+}
+
 // Returns { command, junit: absolute JUnit XML path }.
 function commandFor(toolchain, test, wt, override) {
   const cls = test.language === 'java' ? javaClass(test.selector) : null;
@@ -48,14 +68,16 @@ function commandFor(toolchain, test, wt, override) {
   const commands = {
     maven: `mvn -B -q${offline} test -Dtest=${test.selector} -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false`,
     gradle: `${process.platform === 'win32' ? 'gradlew.bat' : './gradlew'} test --tests ${cls}`,
-    pytest: `python -m pytest -q -p no:cacheprovider ${test.selector} --junitxml=${junitPytest}`,
+    pytest: `${pythonCommand()} -m pytest -q -p no:cacheprovider ${test.selector} --junitxml=${junitPytest}`,
   };
   return { command: commands[toolchain], junit };
 }
 
 // ---------- JUnit XML ----------
 function decodeXml(s) {
-  return String(s).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+  // Numeric references too: pytest writes newlines in messages as &#10;.
+  return String(s).replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
 }
 
 function parseJunit(xml) {
@@ -404,4 +426,4 @@ async function runRepro({ runDir, executor, models = {}, runner = shellRunner, l
   return results;
 }
 
-module.exports = { runRepro, loadReproRecords, validateReproTest, applyFix, parseJunit, classify, statusFromRuns, detectToolchain, commandFor, shellRunner, scrubbedEnv, reproTargets };
+module.exports = { runRepro, loadReproRecords, validateReproTest, applyFix, parseJunit, classify, statusFromRuns, detectToolchain, commandFor, shellRunner, scrubbedEnv, reproTargets, pythonCommand };

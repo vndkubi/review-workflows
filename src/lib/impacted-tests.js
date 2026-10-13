@@ -11,7 +11,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { envInt, ensureDir } = require('./util');
 const git = require('./git');
-const { shellRunner } = require('./repro');
+const { shellRunner, pythonCommand } = require('./repro');
 
 function enabled(repoCfg) {
   return process.env.ARW_RUN_IMPACTED_TESTS === 'on' || Boolean(repoCfg && repoCfg.run_impacted_tests);
@@ -67,7 +67,7 @@ function commandFor(group, junitFile) {
   const offline = process.env.REPRO_MAVEN_OFFLINE === '1' ? ' -o' : '';
   if (group.toolchain === 'maven') return `mvn -B -q${offline} test -Dtest=${sel.join(',')} -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false`;
   if (group.toolchain === 'gradle') return `${process.platform === 'win32' ? 'gradlew.bat' : './gradlew'} test ${sel.map((s) => `--tests ${s}`).join(' ')}`;
-  return `python -m pytest -q -p no:cacheprovider ${sel.join(' ')} --junitxml=${junitFile}`;
+  return `${pythonCommand()} -m pytest -q -p no:cacheprovider ${sel.join(' ')} --junitxml=${junitFile}`;
 }
 
 function reportFiles(cwd, group, junitFile) {
@@ -77,7 +77,9 @@ function reportFiles(cwd, group, junitFile) {
 }
 
 function decode(s) {
-  return String(s).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+  // Numeric references too: pytest writes newlines in messages as &#10;.
+  return String(s).replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
 }
 
 // Per test case: { classname, name, status: pass|fail|error|skipped, message }.

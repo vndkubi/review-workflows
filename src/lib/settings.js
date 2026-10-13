@@ -46,6 +46,7 @@ const ENV_SETTINGS = [
   ['ARW_NOTIFY_ON', 'automation', 'enum', 'findings', 'Notify for every review, only with findings, or only with P1/P2 (or a failed review).', ['all', 'findings', 'blocking']],
   ['ARW_DASHBOARD_URL', 'automation', 'url', '', 'Base URL of this dashboard, for links in notifications.'],
   ['REPRO_TIMEOUT_MS', 'repro', 'number', '900000', 'Timeout per repro test run (ms).', null, [30000, 3600000]],
+  ['ARW_PYTHON', 'repro', 'string', '', 'Python with pytest for repro and impacted tests. Empty = first of python, python3, py that can import pytest.'],
   ['REPRO_MAVEN_OFFLINE', 'repro', 'bool', '0', 'Run Maven with -o (local repository only).'],
   ['JIRA_URL', 'jira', 'url', '', 'Jira base URL (REST source).'],
   ['JIRA_PAT', 'jira', 'secret', '', 'Jira personal access token (Server/DC).'],
