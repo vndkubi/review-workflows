@@ -26,20 +26,43 @@ const STATUS = {
 
 class ContextDrift extends Error {}
 
+// One driver per run. The lock file is created exclusively ('wx'), so two
+// processes starting together cannot both pass a check and then write. A
+// lock left by a process that is gone is reclaimed (once).
 function acquireLock(runDir) {
   const lock = path.join(ensureDir(reviewDir(runDir)), 'driver.lock');
-  if (fs.existsSync(lock)) {
-    const held = readJsonIfExists(lock, {});
-    let alive = false;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      process.kill(held.pid, 0);
-      alive = true;
-    } catch {
-      alive = false;
+      const fd = fs.openSync(lock, 'wx');
+      fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: nowIso() }));
+      fs.closeSync(fd);
+      break;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      const held = readJsonIfExists(lock, {});
+      if (held.pid === process.pid) throw new Error(`this process already holds ${lock}`);
+      let alive = false;
+      if (!Number.isInteger(held.pid)) {
+        // Being written right now by its creator, unless it has been like that for a while.
+        let age = Infinity;
+        try {
+          age = Date.now() - fs.statSync(lock).mtimeMs;
+        } catch {
+          /* gone already */
+        }
+        alive = age < 60000;
+      } else {
+        try {
+          process.kill(held.pid, 0);
+          alive = true;
+        } catch (e) {
+          alive = e.code === 'EPERM'; // exists, owned by someone else
+        }
+      }
+      if (alive || attempt === 1) throw new Error(`another driver (pid ${held.pid}) holds ${lock}`);
+      fs.rmSync(lock, { force: true }); // stale: its process is gone
     }
-    if (alive && held.pid !== process.pid) throw new Error(`another driver (pid ${held.pid}) holds ${lock}`);
   }
-  writeJsonAtomic(lock, { pid: process.pid, at: nowIso() });
   return () => {
     try {
       fs.unlinkSync(lock);
@@ -87,17 +110,35 @@ function fillKnown(known) {
 // One ceiling per run for planning, review and repro calls together
 // (ARW_MAX_CALLS, ARW_MAX_INPUT_TOKENS; 0 = no limit). A job that would start
 // beyond it stops as BUDGET_EXCEEDED, which leaves the review incomplete.
-function budgetExceeded(env) {
+//
+// Admission is a reservation: calls already started but not yet receipted
+// (env.inflight) count, and the slot is taken synchronously before the
+// executor is awaited, so parallel workers cannot all pass the same check.
+// Input tokens are reserved from a conservative estimate of the prompt and
+// replaced by the real count when the receipt is written.
+function budgetExceeded(env, estimate = 0) {
   const maxCalls = envInt('ARW_MAX_CALLS', 0);
   const maxInput = envInt('ARW_MAX_INPUT_TOKENS', 0);
   if (!maxCalls && !maxInput) return null;
   const plan = sumUsage(readJsonIfExists(path.join(env.runDir, 'plan-work', 'receipts.json'), {}));
   const run = sumUsage(env.receipts);
-  const calls = plan.calls + run.calls;
-  const input = plan.input_tokens + run.input_tokens;
+  const calls = plan.calls + run.calls + (env.inflight || 0);
+  const input = plan.input_tokens + run.input_tokens + (env.inflightTokens || 0);
   if (maxCalls && calls >= maxCalls) return `budget exceeded: ${calls} model calls (limit ${maxCalls})`;
-  if (maxInput && input >= maxInput) return `budget exceeded: ${input} input tokens (limit ${maxInput})`;
+  if (maxInput && input + estimate > maxInput) return `budget exceeded: ${input} input tokens${estimate ? ` + ~${estimate} for this call` : ''} (limit ${maxInput})`;
   return null;
+}
+
+function reserve(env, estimate) {
+  env.inflight = (env.inflight || 0) + 1;
+  env.inflightTokens = (env.inflightTokens || 0) + estimate;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    env.inflight -= 1;
+    env.inflightTokens -= estimate;
+  };
 }
 
 // One model job with the repair loop: full -> repair x N -> one fresh full.
@@ -118,26 +159,43 @@ async function runModelJob(env, spec) {
     const prompt = spec.buildPrompt(repair);
     const attemptDir = ensureDir(path.join(dir, 'attempts', `${spec.label.replace(/[^A-Za-z0-9_-]/g, '_')}-${attempt + 1}`));
     let res;
-    const over = budgetExceeded(env);
-    if (over) {
-      log(`stopped ${spec.label}: ${over}`);
-      return { status: STATUS.BUDGET, errors: [over] };
-    }
+    let release = () => {};
+    const estimate = Math.ceil(prompt.length / 3); // tokens, on the high side
     for (let tries = 0; ; tries += 1) {
+      // Every call, rate-limit retries included, takes a budget slot first.
+      const over = budgetExceeded(env, estimate);
+      if (over) {
+        log(`stopped ${spec.label}: ${over}`);
+        return { status: STATUS.BUDGET, errors: [over] };
+      }
+      release = reserve(env, estimate);
       const before = verify(runDir, context);
-      if (before.length) throw new ContextDrift(`before ${spec.label}: ${before.join('; ')}`);
+      if (before.length) {
+        release();
+        throw new ContextDrift(`before ${spec.label}: ${before.join('; ')}`);
+      }
       log(`start ${spec.label} attempt=${attempt + 1} mode=${mode}`);
-      res = await executor({ prompt, cwd: context.source.checkout, attemptDir, model: spec.model, effort: spec.effort, sandbox: 'read-only', outputSchema: useSchema ? spec.outputSchema : undefined });
+      try {
+        res = await executor({ prompt, cwd: context.source.checkout, attemptDir, model: spec.model, effort: spec.effort, sandbox: 'read-only', outputSchema: useSchema ? spec.outputSchema : undefined, images: spec.images });
+      } catch (err) {
+        release();
+        throw err;
+      }
       if (res.error_class === 'degenerate') {
         useSchema = false;
         log(`${spec.label}: degenerate structured output; retrying without --output-schema`);
       }
       const after = verify(runDir, context);
       if (after.length) {
+        release();
         writeJsonAtomic(path.join(dir, 'invalidated.json'), { at: nowIso(), job: spec.label, errors: after });
         throw new ContextDrift(`after ${spec.label}: ${after.join('; ')}`);
       }
       if (res.error_class === 'rate_limit' && tries < max429) {
+        // A rate-limited call is still a call: receipted, then the slot is freed.
+        (receipts[spec.outRel] = receipts[spec.outRel] || []).push({ label: spec.label, attempt: attempt + 1, mode: 'rate_limited', model: res.model, exit_code: res.exit_code, elapsed_ms: res.elapsed_ms, usage: res.usage, error_class: res.error_class, error_message: res.error_message, at: nowIso() });
+        flushReceipts();
+        release();
         const wait = backoffBase * (tries + 1);
         log(`rate limited on ${spec.label}; sleeping ${wait} ms`);
         await sleep(wait);
@@ -163,6 +221,7 @@ async function runModelJob(env, spec) {
     };
     (receipts[spec.outRel] = receipts[spec.outRel] || []).push(receipt);
     flushReceipts();
+    release(); // the receipt now counts this call; same synchronous step, no gap
     if (['auth', 'billing', 'rate_limit', 'config'].includes(res.error_class)) {
       log(`blocked ${spec.label}: ${res.error_class} ${res.error_message}`);
       return { status: STATUS.BLOCKED, errors: [`${res.error_class}: ${res.error_message}`] };

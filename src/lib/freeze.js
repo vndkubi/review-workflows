@@ -24,14 +24,31 @@ function policyFiles() {
 
 // Hash of the trusted runtime. Upgrading the tool changes what "valid" means,
 // so a context frozen by an older tool must be refreshed.
+// The code that runs a review: the runtime library and the CLI that drives it.
 function toolDigest() {
-  const dir = path.join(ROOT, 'src', 'lib');
-  const parts = fs
-    .readdirSync(dir)
-    .filter((n) => n.endsWith('.js'))
-    .sort()
-    .map((n) => `${n}\0${sha256(fs.readFileSync(path.join(dir, n)))}`);
+  const parts = [];
+  for (const sub of ['lib', 'cli']) {
+    const dir = path.join(ROOT, 'src', sub);
+    for (const n of fs.readdirSync(dir).filter((x) => x.endsWith('.js')).sort()) parts.push(`${sub}/${n}\0${sha256(fs.readFileSync(path.join(dir, n)))}`);
+  }
   return sha256(parts.join('\n'));
+}
+
+// What else decides how the frozen review executes: the executor and its
+// settings, and the Node major version. A change means packets from before
+// and after would not be comparable, so it counts as drift.
+function executionManifest() {
+  const { executorConfig } = require('./codex');
+  const cfg = executorConfig();
+  return {
+    node: process.versions.node.split('.')[0],
+    executor: process.env.ARW_EXECUTOR_MODULE ? `module:${path.basename(process.env.ARW_EXECUTOR_MODULE)}` : 'codex',
+    model: cfg.model,
+    judge_model: cfg.judgeModel,
+    effort: cfg.effort,
+    output_schema: process.env.CODEX_OUTPUT_SCHEMA !== '0',
+    user_config: process.env.CODEX_USE_USER_CONFIG === '1' ? process.env.CODEX_PROFILE || 'default' : null,
+  };
 }
 
 function planDigest(review) {
@@ -79,6 +96,7 @@ function freezeContext({ runDir, checkout, base, head, changed, reviewable, patc
     },
     plan_sha256: planDigest(review),
     tool_sha256: toolDigest(),
+    execution: executionManifest(),
     inputs: allInputs.map((input) => ({
       id: input.id,
       kind: input.kind,
@@ -139,8 +157,16 @@ function verifyContext(runDir, context, { checkTool = true } = {}) {
   if (!fs.existsSync(patchFile) || sha256(fs.readFileSync(patchFile, 'utf8')) !== patch_sha256) errors.push('review.patch changed');
   const run = readJsonIfExists(path.join(runDir, 'run.json'));
   if (!run || !run.review || planDigest(run.review) !== context.plan_sha256) errors.push('run.json review plan changed since freeze');
-  if (checkTool && toolDigest() !== context.tool_sha256) errors.push('tool source (src/lib) changed since freeze; refresh the context');
+  if (checkTool && toolDigest() !== context.tool_sha256) errors.push('tool source (src/lib, src/cli) changed since freeze; refresh the context');
+  if (checkTool) {
+    const now = executionManifest();
+    if (!context.execution) errors.push('context frozen without an execution manifest; refresh the context');
+    else {
+      const changed = Object.keys(now).filter((k) => JSON.stringify(now[k]) !== JSON.stringify(context.execution[k]));
+      if (changed.length) errors.push(`execution settings changed since freeze: ${changed.map((k) => `${k} ${JSON.stringify(context.execution[k])} -> ${JSON.stringify(now[k])}`).join(', ')}`);
+    }
+  }
   return errors;
 }
 
-module.exports = { freezeContext, loadContext, verifyContext, readInput, revisionDir, reviewDir, planDigest, toolDigest, policyFiles };
+module.exports = { freezeContext, loadContext, verifyContext, readInput, revisionDir, reviewDir, planDigest, toolDigest, executionManifest, policyFiles };

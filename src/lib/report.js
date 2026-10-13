@@ -67,7 +67,8 @@ function renderFinding(f, meta, rebuttal) {
   }
   if (meta.repro) {
     const rr = meta.repro;
-    const fixText = rr.fix_verified === true ? ' · the suggested fix makes it pass' : rr.fix_verified === false ? ' · the suggested fix does NOT make it pass' : '';
+    const fixText = (rr.fix_verified === true ? ' · the suggested fix makes it pass' : rr.fix_verified === false ? ' · the suggested fix does NOT make it pass' : '')
+      + (rr.status === 'RED_PROVEN' ? (rr.control === 'base' ? ' · passes on the base commit (regression)' : !rr.control ? ' · no control: REPRODUCED, not CONFIRMED' : '') : '');
     out.push('', `**Reproduction** \`${rr.status}\`${rr.test ? ` — \`${rr.test}\`` : ''}${rr.from && rr.from !== f.id ? ` (from ${rr.from})` : ''}${fixText}${rr.reason ? ` — ${rr.reason}` : ''}`);
   }
   if (rebuttal) {

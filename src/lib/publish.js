@@ -30,7 +30,8 @@ function commentBody(f, meta, contextId, rejected) {
     `**Authority:** ${f.authority.kind} \`${f.authority.id}\``,
   ];
   if (meta.repro && meta.repro.status === 'RED_PROVEN') {
-    lines.push('', `**Reproduced** by a test that fails twice on this commit${meta.repro.test ? ` (\`${meta.repro.test}\`)` : ''}${meta.repro.fix_verified ? '; the suggested fix makes it pass' : ''}.`);
+    const control = meta.repro.control === 'fix' ? '; the suggested fix makes it pass' : meta.repro.control === 'base' ? '; it passes on the base commit, so this change broke it' : '; nothing yet shows it fails because of this defect (reproduced, not confirmed)';
+    lines.push('', `**Reproduced** by a test that fails twice on this commit${meta.repro.test ? ` (\`${meta.repro.test}\`)` : ''}${control}.`);
   }
   if (rejected) lines.push('', `_A similar finding was rejected earlier (${rejected.reason}); it is kept because of its severity._`);
   if (f.fix.kind === 'code_change') lines.push('', `**Suggested fix** — ${f.fix.reason}`, '', diffBlock(f.fix.asis, f.fix.tobe));

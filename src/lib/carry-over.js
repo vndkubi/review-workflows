@@ -67,6 +67,7 @@ function carryOver({ runDir, from, to, units, grading, log = () => {} }) {
   };
   if (from.context_id === to.context_id) return done('same context');
   if (from.tool_sha256 !== to.tool_sha256) return done('the review tool changed');
+  if (JSON.stringify(from.execution || null) !== JSON.stringify(to.execution || null)) return done('the executor or its settings (model, effort, Node) changed');
   if (JSON.stringify(stableInputs(from)) !== JSON.stringify(stableInputs(to))) return done('review items, spec or policies changed');
   const oldDir = revisionDir(runDir, from.context_id);
   const oldReview = readJsonIfExists(path.join(oldDir, 'units.json'));

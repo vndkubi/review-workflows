@@ -95,18 +95,29 @@ function reproFields(id, cluster, repro, state) {
   const rec = from ? repro.get(from) : null;
   const out = { evidence_level: 'L1', label: state === 'withdrawn' ? 'NOT_A_BUG' : 'SUSPECTED', repro: null };
   if (!rec) return out;
+  // Recomputed from the runs when the record is loaded; a record without the
+  // field (built by hand, or before controls existed) has none.
+  const control = rec.control !== undefined ? rec.control : rec.fix && rec.fix.verified === true ? 'fix' : (rec.runs || []).some((r) => r.phase === 'base' && r.status === 'green') ? 'base' : null;
   out.repro = {
     status: rec.status,
     from,
     test: rec.test ? rec.test.selector : null,
     fix_verified: rec.fix ? rec.fix.verified : null,
+    control,
     reason: rec.reason || null,
   };
+  // A test that fails twice shows a stable failure, not its cause. CONFIRMED
+  // needs a control: the finding's fix makes it pass, or the base passes it.
   if (rec.status === 'RED_PROVEN' && state !== 'withdrawn') {
-    out.label = 'CONFIRMED';
-    out.evidence_level = 'L3';
+    if (control) {
+      out.label = 'CONFIRMED';
+      out.evidence_level = 'L3';
+    } else {
+      out.label = 'REPRODUCED';
+      out.evidence_level = 'L2';
+    }
   }
   return out;
 }
 
-module.exports = { computeOutcome, BLOCKING };
+module.exports = { computeOutcome, reproFields, BLOCKING };

@@ -388,7 +388,7 @@ function findingCard(d, meta, dupes) {
       h('span', { class: 'title' }, meta.title),
       h('span', { class: `badge ${meta.state === 'stands' ? 'bad' : meta.state === 'withdrawn' ? 'ok' : 'warn'}` }, STATE_TEXT[meta.state] || meta.state),
       h('span', { class: 'badge' }, `votes ${meta.votes}`),
-      h('span', { class: 'badge', title: 'SUSPECTED = static evidence validated; CONFIRMED needs an executed reproduction' }, `${meta.label} ${meta.evidence_level}`),
+      h('span', { class: 'badge', title: 'SUSPECTED = static evidence validated (L1); REPRODUCED = a test fails twice (L2); CONFIRMED = it fails and a control (the fix, or the base commit) passes it (L3)' }, `${meta.label} ${meta.evidence_level}`),
       meta.rejected ? h('span', { class: 'badge warn', title: meta.rejected.reason }, meta.rejected.same ? 'rejected' : 'rejected before') : null,
       threadBadge(d.feedback && d.feedback.findings.find((x) => x.id === meta.id)),
       h('span', { class: 'muted small mono' }, meta.id)));

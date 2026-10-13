@@ -59,9 +59,11 @@ function commandFor(toolchain, test, wt, override) {
   // A custom command without a known toolchain must write JUnit XML to {junit}.
   const junit = { maven: path.join(wt, 'target', 'surefire-reports', `TEST-${cls}.xml`), gradle: path.join(wt, 'build', 'test-results', 'test', `TEST-${cls}.xml`), pytest: junitPytest }[toolchain] || junitPytest;
   if (override) {
+    // The report is read where the command was told to write it ({junit});
+    // without {junit}, from the toolchain's usual place.
     return {
       command: override.replace(/\{selector\}/g, test.selector).replace(/\{class\}/g, cls || '').replace(/\{simple\}/g, simple || '').replace(/\{path\}/g, test.path).replace(/\{junit\}/g, junitPytest),
-      junit,
+      junit: override.includes('{junit}') ? junitPytest : junit,
     };
   }
   const offline = process.env.REPRO_MAVEN_OFFLINE === '1' ? ' -o' : '';
@@ -107,6 +109,9 @@ function classify(run) {
   if (run.junit.failures > 0) return 'red';
   if (run.junit.errors > 0) return 'error';
   if (run.junit.skipped >= run.junit.tests) return 'skipped';
+  // GREEN needs the test to pass AND the command to succeed: a passing report
+  // next to a failed build step (another task, a plugin) is not a clean pass.
+  if (run.exit_code !== 0 && run.exit_code != null) return 'command_failed';
   return 'green';
 }
 
@@ -226,9 +231,38 @@ function applyFix(wt, finding) {
 }
 
 // ---------- test validation ----------
-function validateReproTest(candidate, { context }) {
+// Names a reproduction test must call: functions/methods named in the
+// finding's code evidence and fix, and the declaration enclosing that code.
+const NOT_TARGETS = new Set(['if', 'for', 'while', 'switch', 'return', 'print', 'assert', 'len', 'int', 'str', 'float', 'range', 'def', 'new', 'catch', 'super', 'this', 'self', 'list', 'dict', 'set', 'min', 'max', 'sum', 'abs', 'round', 'isinstance', 'Exception', 'BigDecimal', 'String', 'Integer', 'Decimal', 'equals', 'valueOf', 'compareTo', 'add', 'get']);
+function reproTargetNames(finding, context) {
+  const names = new Set();
+  const code = (finding.evidence || []).filter((e) => e.kind === 'code');
+  const texts = [...code.map((e) => e.quote), finding.fix && finding.fix.kind === 'code_change' ? finding.fix.asis : ''];
+  for (const t of texts) for (const m of String(t || '').matchAll(/([A-Za-z_$][\w$]*)\s*\(/g)) if (m[1].length >= 3 && !NOT_TARGETS.has(m[1])) names.add(m[1]);
+  if (context && context.source) {
+    const { indexFile, enclosing } = require('./impact');
+    for (const e of code) {
+      const text = git.showFile(context.source.checkout, e.revision === 'base' ? context.source.base_sha : context.source.head_sha, e.path);
+      const idx = text == null ? null : indexFile(e.path, text);
+      const m = idx && enclosing(idx, e.start_line);
+      if (m && !NOT_TARGETS.has(m.name)) names.add(m.name);
+    }
+  }
+  return [...names];
+}
+
+const ALWAYS_FAILS = /^\s*assert\s+(False|0|None)\s*(,|$)|\bassert(True|That)\s*\(\s*false\s*\)|\bfail\s*\(\s*(["'][^"']*["'])?\s*\)\s*;|\bpytest\.fail\s*\(|^\s*raise\s+AssertionError\b/m;
+
+function validateReproTest(candidate, { context, finding = null }) {
   const errors = validateAgainst('repro', candidate, 'reproTest');
   if (errors.length) return errors;
+  // A test that fails whatever the code does proves nothing about the defect.
+  if (ALWAYS_FAILS.test(candidate.content)) errors.push('$.content: the test always fails (assert False, fail(), raise AssertionError): it must assert the expected result of the code under test');
+  if (finding) {
+    const targets = reproTargetNames(finding, context);
+    const calls = (n) => new RegExp(`(^|[^\\w$])${n.replace(/\$/g, '\\$')}\\s*\\(`).test(candidate.content);
+    if (targets.length && !targets.some(calls)) errors.push(`$.content: the test does not call the code the finding is about (one of: ${targets.join(', ')})`);
+  }
   const p = candidate.path.replace(/\\/g, '/');
   if (p !== candidate.path || path.isAbsolute(p) || p.split('/').includes('..')) return ['$.path: repository-relative, forward slashes, no ".."'];
   if (git.showFile(context.source.checkout, context.source.head_sha, p) != null) errors.push(`$.path: ${p} already exists; write a NEW test file`);
@@ -256,6 +290,32 @@ function reproDir(runDir, context) {
 }
 
 // Status from the runs, recomputed by the validator, never trusted from disk.
+// The process outcome, written as the last line of a run's log.
+function trailer(res) {
+  return `[arw] exit_code=${res.exit_code == null ? 'null' : res.exit_code} timed_out=${Boolean(res.timed_out)} spawn_error=${JSON.stringify(res.spawn_error || null)}`;
+}
+
+function parseTrailer(text) {
+  const m = /\[arw\] exit_code=(-?\d+|null) timed_out=(true|false) spawn_error=(.*)\s*$/.exec(String(text));
+  if (!m) return null;
+  let spawnError = null;
+  try {
+    spawnError = JSON.parse(m[3]);
+  } catch {
+    return null;
+  }
+  return { exit_code: m[1] === 'null' ? null : Number(m[1]), timed_out: m[2] === 'true', spawn_error: spawnError };
+}
+
+// What shows the test fails because of THIS defect: the finding's fix makes
+// it pass ('fix'), or it passes on the base commit ('base', a regression).
+// Without either, a stable failure is only REPRODUCED.
+function controlOf(runs, fix) {
+  if (fix && fix.verified === true && (runs || []).some((r) => r.phase === 'fix' && r.status === 'green')) return 'fix';
+  if ((runs || []).some((r) => r.phase === 'base' && r.status === 'green')) return 'base';
+  return null;
+}
+
 function statusFromRuns(runs) {
   const head = runs.filter((r) => r.phase.startsWith('head'));
   if (!head.length) return 'INCONCLUSIVE';
@@ -283,7 +343,7 @@ function loadReproRecords(runDir, context) {
       bad('bound to another context');
       continue;
     }
-    const artifacts = [rec.test && rec.test.artifact, ...(rec.runs || []).map((r) => r.log)].filter(Boolean);
+    const artifacts = [rec.test && rec.test.artifact, ...(rec.runs || []).flatMap((r) => [r.log, r.junit_xml])].filter(Boolean);
     const broken = artifacts.find((a) => {
       const f = path.join(revisionDir(runDir, context.context_id), a.path);
       return !fs.existsSync(f) || sha256(fs.readFileSync(f)) !== a.sha256;
@@ -292,12 +352,46 @@ function loadReproRecords(runDir, context) {
       bad(`artifact ${broken.path} is missing or changed`);
       continue;
     }
-    const expected = rec.status === 'ENVIRONMENT_BLOCKED' && !(rec.runs || []).length ? 'ENVIRONMENT_BLOCKED' : statusFromRuns(rec.runs || []);
+    // Re-derive every run's status from the raw evidence (log trailer and
+    // JUnit XML), then the record's verdict and control from those.
+    const rdir = revisionDir(runDir, context.context_id);
+    let raw = true;
+    const derived = (rec.runs || []).map((r) => {
+      const outcome = parseTrailer(fs.readFileSync(path.join(rdir, r.log.path), 'utf8'));
+      if (!outcome) {
+        raw = false;
+        return r;
+      }
+      if (r.junit_xml) {
+        const f = path.join(rdir, r.junit_xml.path);
+        if (!fs.existsSync(f) || sha256(fs.readFileSync(f)) !== r.junit_xml.sha256) {
+          raw = false;
+          return r;
+        }
+      }
+      const junit = r.junit_xml ? parseJunit(fs.readFileSync(path.join(rdir, r.junit_xml.path), 'utf8')) : null;
+      return { ...r, status: classify({ ...outcome, junit }) };
+    });
+    if (!raw) {
+      bad('a run has no raw evidence (log trailer or JUnit XML); run the reproduction again');
+      continue;
+    }
+    const mismatch = derived.find((d, i) => d.status !== rec.runs[i].status);
+    if (mismatch) {
+      bad(`run ${mismatch.phase} does not follow from its raw evidence (${rec.runs.find((r) => r.phase === mismatch.phase).status} recorded, ${mismatch.status} in the artifacts)`);
+      continue;
+    }
+    const expected = rec.status === 'ENVIRONMENT_BLOCKED' && !(rec.runs || []).length ? 'ENVIRONMENT_BLOCKED' : statusFromRuns(derived);
     if (rec.status !== expected) {
       bad(`status ${rec.status} does not follow from its runs (${expected})`);
       continue;
     }
-    records.set(rec.finding_id, rec);
+    const fixRun = derived.find((r) => r.phase === 'fix');
+    if (rec.fix && rec.fix.verified !== null && rec.fix.verified !== Boolean(fixRun && fixRun.status === 'green')) {
+      bad('fix.verified does not follow from the fix run');
+      continue;
+    }
+    records.set(rec.finding_id, { ...rec, control: controlOf(derived, rec.fix) });
   }
   return { records, errors };
 }
@@ -360,7 +454,7 @@ async function runRepro({ runDir, executor, models = {}, runner = shellRunner, l
       effort: models.effort,
       outputSchema: outputSchema('repro', 'reproTest'),
       buildPrompt: (repair) => prompts.reproPrompt(runDir, context, { finding, items, repair }),
-      validate: (c) => validateReproTest(c, { context }),
+      validate: (c) => validateReproTest(c, { context, finding }),
     });
     if (gen.status !== 'EXECUTED_PASS') {
       const rec = { ...base, status: gen.status === 'ENVIRONMENT_BLOCKED' ? 'ENVIRONMENT_BLOCKED' : 'INCONCLUSIVE', reason: `no valid test: ${(gen.errors || [])[0] || gen.status}`, runs: [] };
@@ -389,11 +483,22 @@ async function runRepro({ runDir, executor, models = {}, runner = shellRunner, l
     const runPhase = async (phase) => {
       if (fs.existsSync(junit)) fs.rmSync(junit);
       const logRel = `repro/${finding.id}/${phase}.log`;
-      const res = await runner({ command, cwd: wt, logFile: path.join(rdir, logRel), timeoutMs, test, phase });
-      const junitData = fs.existsSync(junit) ? parseJunit(fs.readFileSync(junit, 'utf8')) : null;
+      const logFile = path.join(rdir, logRel);
+      const res = await runner({ command, cwd: wt, logFile, timeoutMs, test, phase });
+      // Raw evidence, hash-bound: the log ends with the process outcome and
+      // the JUnit XML is kept as written. Validation re-derives the status
+      // from these, never from the record's own fields.
+      fs.appendFileSync(logFile, `\n${trailer(res)}\n`);
+      const xml = fs.existsSync(junit) ? fs.readFileSync(junit, 'utf8') : null;
+      const junitData = xml ? parseJunit(xml) : null;
       const run = { phase, command, exit_code: res.exit_code, elapsed_ms: res.elapsed_ms, timed_out: Boolean(res.timed_out), spawn_error: res.spawn_error || null, junit: junitData };
       run.status = classify(run);
-      run.log = { path: logRel, sha256: sha256(fs.readFileSync(path.join(rdir, logRel))) };
+      run.log = { path: logRel, sha256: sha256(fs.readFileSync(logFile)) };
+      if (xml) {
+        const xmlRel = `repro/${finding.id}/${phase}.junit.xml`;
+        fs.writeFileSync(path.join(rdir, xmlRel), xml);
+        run.junit_xml = { path: xmlRel, sha256: sha256(xml) };
+      }
       runs.push(run);
       log(`repro ${finding.id}: ${phase} -> ${run.status}${junitData && junitData.message ? ` (${junitData.message.slice(0, 120)})` : ''}`);
       return run;
@@ -407,6 +512,7 @@ async function runRepro({ runDir, executor, models = {}, runner = shellRunner, l
       if (first.status === 'red') await runPhase('head-2');
       const status = statusFromRuns(runs);
       if (status === 'RED_PROVEN') {
+        // Control 1, broken/fixed: the finding's own fix makes the test pass.
         const applied = applyFix(wt, finding);
         fix = { ...applied, status: null, verified: null };
         if (applied.applied) {
@@ -414,16 +520,26 @@ async function runRepro({ runDir, executor, models = {}, runner = shellRunner, l
           fix.status = fixed.status;
           fix.verified = fixed.status === 'green';
         }
+        // Control 2, regression: the same test passes on the base commit.
+        if (!fix.verified) {
+          git.git(wt, ['checkout', '--', '.'], { allowFail: true });
+          fs.rmSync(target, { force: true });
+          git.git(wt, ['checkout', '--detach', '--force', context.source.base_sha]);
+          ensureDir(path.dirname(target));
+          fs.writeFileSync(target, test.content);
+          await runPhase('base');
+        }
       }
     } finally {
       fs.rmSync(target, { force: true });
       git.git(wt, ['checkout', '--', '.'], { allowFail: true });
+      git.git(wt, ['checkout', '--detach', '--force', context.source.head_sha], { allowFail: true });
     }
-    const rec = { ...base, test: testInfo, toolchain: toolchain || 'custom', runs, status: statusFromRuns(runs), fix };
+    const rec = { ...base, test: testInfo, toolchain: toolchain || 'custom', runs, status: statusFromRuns(runs), fix, control: controlOf(runs, fix) };
     writeJsonAtomic(recordFile, rec);
     results.push(rec);
   }
   return results;
 }
 
-module.exports = { runRepro, loadReproRecords, validateReproTest, applyFix, parseJunit, classify, statusFromRuns, detectToolchain, commandFor, shellRunner, scrubbedEnv, reproTargets, pythonCommand };
+module.exports = { runRepro, loadReproRecords, validateReproTest, reproTargetNames, applyFix, parseJunit, classify, statusFromRuns, controlOf, trailer, parseTrailer, detectToolchain, commandFor, shellRunner, scrubbedEnv, reproTargets, pythonCommand };
