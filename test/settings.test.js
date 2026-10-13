@@ -57,6 +57,14 @@ test('repositories: owner/name, existing git checkout, one line test command', (
   assert.throws(() => settings.writeRepos([{ name: 'a/b', checkout: path.join(dir, 'nope') }]), /does not exist/);
   assert.throws(() => settings.writeRepos([{ name: 'a/b', checkout: dir }]), /not a git repository/);
   assert.throws(() => settings.writeRepos([{ name: 'a/b', checkout: repo.dir }, { name: 'a/b', checkout: repo.dir }]), /listed twice/);
+  // Fields the editor does not manage survive a save from the dashboard.
+  const file = process.env.ARW_REPOS_FILE;
+  const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+  cfg.repos['acme/shop'].static_commands = [{ name: 'lint', command: ['mylint', '{files}'] }];
+  fs.writeFileSync(file, JSON.stringify(cfg));
+  settings.writeRepos([{ name: 'acme/shop', checkout: repo.dir }]);
+  assert.deepEqual(reposConfig().repos['acme/shop'].static_commands, [{ name: 'lint', command: ['mylint', '{files}'] }]);
+  assert.equal(reposConfig().repos['acme/shop'].test_command, undefined, 'a cleared test command is removed');
 });
 
 test('MCP config: stdio or http, secrets only as ${NAME}, tool mapping validated', () => {

@@ -479,6 +479,34 @@ function overviewView(d) {
   } else {
     out.push(h('p', { class: 'muted' }, 'No valid synthesis for this context.'));
   }
+  if (d.static) out.push(...staticView(d.static));
+  return out;
+}
+
+// CI results, linter hits and test impact collected before planning. They
+// were given to the reviewers as leads; they are not findings.
+function staticView(s) {
+  const out = [];
+  const ciCls = { success: 'ok', failure: 'bad', timed_out: 'bad', action_required: 'warn', neutral: '', skipped: '' };
+  if (s.ci) {
+    out.push(...section(`CI at ${String(s.head).slice(0, 12)}`,
+      s.ci.error ? h('div', { class: 'notice' }, `Unavailable: ${s.ci.error}`) : null,
+      !s.ci.error && !s.ci.checks.length && !s.ci.statuses.length ? h('p', { class: 'muted small' }, 'No check runs or statuses reported.') : null,
+      s.ci.checks.length || s.ci.statuses.length ? table(['Check', 'Result', 'Detail'], [
+        ...s.ci.checks.map((c) => [c.url ? h('a', { href: c.url, target: '_blank', rel: 'noopener noreferrer' }, c.name) : c.name, h('span', { class: `badge ${ciCls[c.conclusion] || 'warn'}` }, c.conclusion || c.status), c.title || '']),
+        ...s.ci.statuses.map((st) => [st.context, h('span', { class: `badge ${st.state === 'success' ? 'ok' : st.state === 'pending' ? 'warn' : 'bad'}` }, st.state), st.description || '']),
+      ]) : null,
+      s.ci.annotations.length ? h('ul', {}, s.ci.annotations.map((a) => h('li', { class: 'small' }, h('span', { class: 'mono' }, `${a.path}:${a.line}`), ` ${a.check} [${a.level}] ${a.message}`))) : null));
+  }
+  if (s.linters.length) {
+    out.push(...section('Linters on changed files', s.linters.map((l) => h('div', {},
+      h('p', {}, h('strong', {}, l.tool), l.error ? h('span', { class: 'muted small' }, ` not run: ${l.error}`) : ` ${l.total} hit(s), ${l.hits.filter((x) => x.on_added_line).length} on added lines`),
+      l.hits.length ? h('ul', {}, l.hits.map((x) => h('li', { class: 'small' }, h('span', { class: 'mono' }, `${x.path}:${x.line}`), x.rule ? ` [${x.rule}]` : '', ` ${x.message}`, x.on_added_line ? h('span', { class: 'badge warn' }, 'added line') : null))) : null))));
+  }
+  out.push(...section('Test impact', table(['Changed source', 'Tests found'], s.tests.sources.map((t) => [
+    h('span', { class: 'mono small' }, t.source),
+    t.tests.length ? h('div', {}, t.tests.map((x) => h('div', { class: 'small' }, h('span', { class: 'mono' }, x.path), ` (${x.how})`, x.changed_in_pr ? h('span', { class: 'badge ok' }, 'changed in PR') : h('span', { class: 'badge' }, 'not changed')))) : h('span', { class: 'badge warn' }, 'no test found'),
+  ]))));
   return out;
 }
 

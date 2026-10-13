@@ -145,6 +145,19 @@ only shows whether they are set, and MCP headers must reference them as `${NAME}
 It binds to 127.0.0.1 only, rejects unexpected `Host`/`Origin` headers, requires a per-start token for every
 write, and sends a strict CSP. There is no login, so do not expose it beyond your machine.
 
+**Machine evidence.** Before planning, the runtime collects cheap facts and freezes them in the evidence pack
+(also `runs/prs/<id>/static.json`, and the Overview tab): GitHub check runs, commit statuses and failing-check
+annotations on changed files for the head commit; linter hits on the changed files, marked when they fall on an
+added line; and test impact (for each changed Java/Python source, the tests found by naming convention or by a
+reference to it, and whether the PR changed them). Reviewers are told these are leads to verify, not findings.
+Built-in linters are tools that read source without executing it — `ruff`, `semgrep` (only with a local
+`.semgrep.yml` or `ARW_SEMGREP_CONFIG`), `pmd` (rulesets from `ARW_PMD_RULESETS`) — and run when they are on
+`PATH`. Anything else, such as `mypy` (whose plugins execute code) or SpotBugs (needs a build), is opt-in per
+repository via `static_commands` in `config/repos.json` (see the example; output lines `path:line: message`,
+file paths appended where `{files}` appears). Commands run without a shell, with secrets removed from the
+environment, and file names are passed as `./path` so a PR cannot turn one into an option. `ARW_STATIC=off`
+disables linters.
+
 **New pushes are reviewed incrementally.** When the PR head moves, the previous plan is kept if the PR still
 changes the same files, and a packet from the previous context is carried over when the tool, review items,
 spec and policies are byte-identical, the unit is the same, none of its files changed on either side of the

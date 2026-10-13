@@ -154,6 +154,7 @@ function prDetail(id) {
     units: (run.review && run.review.units) || [],
     plan: fs.existsSync(path.join(dir, 'pr-review-plan.md')) ? fs.readFileSync(path.join(dir, 'pr-review-plan.md'), 'utf8') : null,
     published: readJsonIfExists(path.join(dir, 'published.json')),
+    static: readJsonIfExists(path.join(dir, 'static.json')),
     validation: null,
     findings: [],
     overview: null,

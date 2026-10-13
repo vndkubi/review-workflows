@@ -381,6 +381,8 @@ test('ticket pipeline -> PR review, end to end', async (t) => {
     assert.match(planPrompt, /APPROVED SPEC TABLES/);
     const workerPrompts = rexec.calls.filter((c) => c.prompt.includes('JOB: first-pass packet'));
     assert.ok(workerPrompts[0].prompt.includes('INPUT review-items:') && workerPrompts[0].prompt.includes('INPUT spec:'));
+    assert.match(workerPrompts[0].prompt, /## Machine evidence[\s\S]*### Test impact[\s\S]*billing\/fees\.py: no test found/, 'reviewers get CI, linter and test-impact leads');
+    assert.ok(fs.existsSync(path.join(runDir, 'static.json')));
     const prefix = (p) => p.slice(0, p.indexOf('ROLE CHARTER'));
     assert.ok(workerPrompts.every((c) => prefix(c.prompt) === prefix(workerPrompts[0].prompt)), 'shared cacheable prefix');
 

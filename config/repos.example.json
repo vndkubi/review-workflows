@@ -6,7 +6,10 @@
     },
     "your-org/billing-py": {
       "checkout": "D:/src/billing-py",
-      "test_command": "python -m pytest -q -p no:cacheprovider {selector} --junitxml={junit}"
+      "test_command": "python -m pytest -q -p no:cacheprovider {selector} --junitxml={junit}",
+      "static_commands": [
+        { "name": "mypy", "command": ["mypy", "--no-error-summary", "--show-column-numbers", "{files}"], "extensions": [".py"] }
+      ]
     }
   }
 }

@@ -171,6 +171,9 @@ function writeRepos(list) {
   if (!Array.isArray(list)) throw Object.assign(new Error('repos must be a list'), { status: 422 });
   const errors = [];
   const repos = {};
+  // Fields the editor does not show (static_commands, ...) are kept as they are.
+  const previous = readJsonIfExists(REPOS_FILE(), { repos: {} }).repos || {};
+  const MANAGED = ['checkout', 'remote', 'test_command'];
   list.forEach((r, i) => {
     const at = `repo ${i + 1}`;
     const name = String((r && r.name) || '').trim();
@@ -179,7 +182,8 @@ function writeRepos(list) {
     if (repos[name]) return errors.push(`${at}: ${name} is listed twice`);
     if (!checkout || !fs.existsSync(checkout)) return errors.push(`${name}: checkout ${checkout || '(empty)'} does not exist`);
     if (!git.git(checkout, ['rev-parse', '--git-dir'], { allowFail: true })) return errors.push(`${name}: ${checkout} is not a git repository`);
-    const entry = { checkout: checkout.replace(/\\/g, '/') };
+    const kept = Object.fromEntries(Object.entries(previous[name] || {}).filter(([k]) => !MANAGED.includes(k)));
+    const entry = { checkout: checkout.replace(/\\/g, '/'), ...kept };
     const remote = String(r.remote || '').trim();
     if (remote && remote !== 'origin') {
       if (!/^[A-Za-z0-9._-]+$/.test(remote)) return errors.push(`${name}: bad remote name`);
