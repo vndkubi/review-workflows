@@ -11,7 +11,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { envInt, ensureDir } = require('./util');
 const git = require('./git');
-const { shellRunner, pythonCommand } = require('./repro');
+const { sandboxPython, gradleWrapper, defaultRunner } = require('./repro');
 
 function enabled(repoCfg) {
   return process.env.ARW_RUN_IMPACTED_TESTS === 'on' || Boolean(repoCfg && repoCfg.run_impacted_tests);
@@ -66,8 +66,8 @@ function commandFor(group, junitFile) {
   const sel = group.tests.map((t) => t.selector);
   const offline = process.env.REPRO_MAVEN_OFFLINE === '1' ? ' -o' : '';
   if (group.toolchain === 'maven') return `mvn -B -q${offline} test -Dtest=${sel.join(',')} -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false`;
-  if (group.toolchain === 'gradle') return `${process.platform === 'win32' ? 'gradlew.bat' : './gradlew'} test ${sel.map((s) => `--tests ${s}`).join(' ')}`;
-  return `${pythonCommand()} -m pytest -q -p no:cacheprovider ${sel.join(' ')} --junitxml=${junitFile}`;
+  if (group.toolchain === 'gradle') return `${gradleWrapper()} test ${sel.map((s) => `--tests ${s}`).join(' ')}`;
+  return `${sandboxPython()} -m pytest -q -p no:cacheprovider ${sel.join(' ')} --junitxml=${junitFile}`;
 }
 
 function reportFiles(cwd, group, junitFile) {
@@ -118,7 +118,7 @@ async function runGroup({ wt, group, rev, runner, logDir, label, timeoutMs }) {
   const junit = path.join(wt, '.arw-impacted-junit.xml');
   for (const f of reportFiles(cwd, group, junit)) fs.rmSync(f, { force: true });
   const command = commandFor({ ...group, tests: present }, junit);
-  const res = await runner({ command, cwd, logFile: path.join(logDir, `${label}.log`), timeoutMs });
+  const res = await runner({ command, cwd, logFile: path.join(logDir, `${label}.log`), timeoutMs, toolchain: group.toolchain });
   const cases = reportFiles(cwd, group, junit).flatMap((f) => parseCases(fs.readFileSync(f, 'utf8')));
   const byTest = {};
   for (const t of present) {
@@ -140,7 +140,8 @@ function verdict(base, head) {
   return h;
 }
 
-async function runImpactedTests({ runDir, checkout, base, head, impact, repoCfg, runner = shellRunner, log = () => {} }) {
+async function runImpactedTests({ runDir, checkout, base, head, impact, repoCfg, runner = null, log = () => {} }) {
+  runner = runner || defaultRunner();
   if (!enabled(repoCfg)) return null;
   const tests = [...new Set([...impact.sources.flatMap((s) => s.tests.map((t) => t.path)), ...impact.tests_changed])].slice(0, envInt('ARW_IMPACTED_TESTS_MAX', 10));
   if (!tests.length) return { ran: [], results: [], note: 'no impacted tests found' };

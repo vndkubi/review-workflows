@@ -47,6 +47,29 @@ at the SPEC gate.
 
 ## Reproduction: from SUSPECTED to CONFIRMED
 
+A failing test is not yet proof: it may fail for a reason that has nothing to do with the defect. The labels:
+
+| Label | Evidence level | What the harness saw |
+|---|---|---|
+| SUSPECTED | L1 | quotes and evidence validated, no execution |
+| REPRODUCED | L2 | a new test calling the cited code failed twice on the reviewed head |
+| CONFIRMED | L3 | that, **and a control**: the finding's own fix makes the test pass, or (when the fix does not) the base commit passes it — a regression |
+
+Tests that always fail (`assert False`, `fail()`) or do not call the code the finding cites are rejected.
+Every run keeps raw evidence, hash-bound: the log ends with the process outcome (exit code, timeout) and the
+JUnit XML is stored as written. `arw validate` recomputes each run's status, the verdict, `fix.verified` and
+the control from those artifacts and rejects a record that disagrees with them. GREEN needs a zero exit code
+as well as passing tests. (A person with write access to the run directory could still rewrite artifacts and
+record together; the hashes protect against accidents and partial edits, not against that.)
+
+**Isolation.** By default tests run on this machine in a separate worktree with secrets removed from the
+environment — a build can still read what you can read and reach the network. `ARW_SANDBOX=docker` runs repro
+and impacted tests in a throwaway container instead: only the worktree is mounted, no network
+(`ARW_SANDBOX_NETWORK`), memory/CPU/process limits, killed on timeout. Images per toolchain
+(`ARW_SANDBOX_IMAGE_MAVEN` / `_GRADLE` / `_PYTEST`); `ARW_SANDBOX_M2` mounts a local Maven repository read-only
+so builds work offline. Checked with `maven:3.9-eclipse-temurin-17`: a test passing on base and failing on head,
+no network, about 20 s per run.
+
 After the review, every blocking (P1/P2) finding that was not withdrawn gets one reproduction attempt per
 duplicate cluster:
 

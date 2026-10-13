@@ -51,6 +51,21 @@ function pythonCommand() {
   return pythonCache;
 }
 
+// Inside the sandbox the command runs in a Linux image: its python and the
+// POSIX Gradle wrapper, whatever the host is.
+function sandboxPython() {
+  return require('./sandbox').enabled() ? process.env.ARW_PYTHON || 'python' : pythonCommand();
+}
+
+function gradleWrapper() {
+  return process.platform === 'win32' && !require('./sandbox').enabled() ? 'gradlew.bat' : './gradlew';
+}
+
+// The runner for PR code: a container with ARW_SANDBOX=docker, else the host shell.
+function defaultRunner() {
+  return require('./sandbox').enabled() ? require('./sandbox').dockerRunner : shellRunner;
+}
+
 // Returns { command, junit: absolute JUnit XML path }.
 function commandFor(toolchain, test, wt, override) {
   const cls = test.language === 'java' ? javaClass(test.selector) : null;
@@ -69,8 +84,8 @@ function commandFor(toolchain, test, wt, override) {
   const offline = process.env.REPRO_MAVEN_OFFLINE === '1' ? ' -o' : '';
   const commands = {
     maven: `mvn -B -q${offline} test -Dtest=${test.selector} -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false`,
-    gradle: `${process.platform === 'win32' ? 'gradlew.bat' : './gradlew'} test --tests ${cls}`,
-    pytest: `${pythonCommand()} -m pytest -q -p no:cacheprovider ${test.selector} --junitxml=${junitPytest}`,
+    gradle: `${gradleWrapper()} test --tests ${cls}`,
+    pytest: `${sandboxPython()} -m pytest -q -p no:cacheprovider ${test.selector} --junitxml=${junitPytest}`,
   };
   return { command: commands[toolchain], junit };
 }
@@ -413,7 +428,8 @@ function reproTargets(validation, findingsById) {
   return targets;
 }
 
-async function runRepro({ runDir, executor, models = {}, runner = shellRunner, log = () => {}, testCommand, prompts, runModelJob, makeSources }) {
+async function runRepro({ runDir, executor, models = {}, runner = null, log = () => {}, testCommand, prompts, runModelJob, makeSources }) {
+  const execRun = runner || defaultRunner();
   const context = loadContext(runDir);
   const drift = verifyContext(runDir, context);
   if (drift.length) throw new Error(`context no longer holds: ${drift.join('; ')}`);
@@ -484,7 +500,7 @@ async function runRepro({ runDir, executor, models = {}, runner = shellRunner, l
       if (fs.existsSync(junit)) fs.rmSync(junit);
       const logRel = `repro/${finding.id}/${phase}.log`;
       const logFile = path.join(rdir, logRel);
-      const res = await runner({ command, cwd: wt, logFile, timeoutMs, test, phase });
+      const res = await execRun({ command, cwd: wt, logFile, timeoutMs, test, phase, toolchain: toolchain || 'custom' });
       // Raw evidence, hash-bound: the log ends with the process outcome and
       // the JUnit XML is kept as written. Validation re-derives the status
       // from these, never from the record's own fields.
@@ -542,4 +558,4 @@ async function runRepro({ runDir, executor, models = {}, runner = shellRunner, l
   return results;
 }
 
-module.exports = { runRepro, loadReproRecords, validateReproTest, reproTargetNames, applyFix, parseJunit, classify, statusFromRuns, controlOf, trailer, parseTrailer, detectToolchain, commandFor, shellRunner, scrubbedEnv, reproTargets, pythonCommand };
+module.exports = { runRepro, loadReproRecords, validateReproTest, reproTargetNames, applyFix, parseJunit, classify, statusFromRuns, controlOf, trailer, parseTrailer, detectToolchain, commandFor, shellRunner, scrubbedEnv, reproTargets, pythonCommand, sandboxPython, gradleWrapper, defaultRunner };

@@ -120,6 +120,34 @@ test('B: the frozen context covers the execution, not only the source: a model c
   }
 });
 
+test('A: PR code can run in a container: only the worktree, no network, limits, container paths', () => {
+  const { dockerArgs, toContainer, enabled } = require('../src/lib/sandbox');
+  const saved = { ...process.env };
+  try {
+    delete process.env.ARW_SANDBOX_IMAGE;
+    delete process.env.ARW_SANDBOX_NETWORK;
+    process.env.ARW_SANDBOX = 'docker';
+    process.env.ARW_SANDBOX_M2 = '/home/me/.m2/repository';
+    assert.equal(enabled(), true);
+    const wt = process.platform === 'win32' ? 'C:\\runs\\x\\repro-wt' : '/runs/x/repro-wt';
+    const args = dockerArgs({ command: `python -m pytest -q t.py --junitxml=${wt}${path.sep}.arw-junit.xml`, cwd: wt, toolchain: 'maven', name: 'arw-test' });
+    const at = (flag) => args[args.indexOf(flag) + 1];
+    assert.equal(at('--network'), 'none');
+    assert.equal(at('-w'), '/work');
+    assert.ok(args.includes(`${wt}:/work`), 'the worktree is the only checkout mounted');
+    assert.ok(args.includes('/home/me/.m2/repository:/m2:ro'), 'the Maven repository is read-only');
+    assert.ok(args.includes('--memory') && args.includes('--pids-limit') && args.includes('no-new-privileges'));
+    assert.equal(args[args.length - 1], 'python -m pytest -q t.py --junitxml=/work/.arw-junit.xml', 'host paths become container paths');
+    assert.equal(toContainer('x D:/a/wt/r.xml', 'D:\\a\\wt'), 'x /work/r.xml');
+    assert.throws(() => dockerArgs({ command: 'x', cwd: wt, toolchain: 'pytest', name: 'n' }), /ARW_SANDBOX_IMAGE_PYTEST/, 'no default image with pytest');
+    const { sandboxPython, gradleWrapper } = require('../src/lib/repro');
+    assert.deepEqual([sandboxPython(), gradleWrapper()], [process.env.ARW_PYTHON || 'python', './gradlew'], 'Linux commands inside the image');
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+  }
+});
+
 test('F6: the driver lock is taken atomically; a live holder blocks, a dead one is reclaimed', () => {
   const runDir = tmpDir('arw-audit-f6-');
   const lock = path.join(runDir, 'review', 'driver.lock');
