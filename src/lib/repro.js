@@ -11,6 +11,7 @@ const git = require('./git');
 const { loadContext, verifyContext, revisionDir, readInput } = require('./freeze');
 const { validateAgainst, outputSchema } = require('./schema');
 const { collapse } = require('./validate');
+const confine = require('./confine');
 
 const FINAL = new Set(['RED_PROVEN', 'GREEN_NOT_PROVEN', 'FLAKY', 'INCONCLUSIVE', 'ENVIRONMENT_BLOCKED']);
 const BLOCKING = new Set(['P1', 'P2']);
@@ -66,10 +67,24 @@ function defaultRunner() {
   return require('./sandbox').enabled() ? require('./sandbox').dockerRunner : shellRunner;
 }
 
+// What may be put into a shell command line from a test: a path or a
+// selector, never shell syntax (; & | $ ` quotes spaces < > globs), never
+// an option (leading -). Commands run through a shell (sh -c, cmd.exe).
+const SHELL_SAFE = /^[A-Za-z0-9_][A-Za-z0-9_./#:-]*$/;
+
+function assertShellSafe(values) {
+  for (const [name, v] of Object.entries(values)) {
+    if (v != null && v !== '' && !SHELL_SAFE.test(String(v))) throw new Error(`unsafe ${name} for a shell command: ${JSON.stringify(v)}`);
+  }
+}
+
 // Returns { command, junit: absolute JUnit XML path }.
 function commandFor(toolchain, test, wt, override) {
   const cls = test.language === 'java' ? javaClass(test.selector) : null;
   const simple = cls ? cls.split('.').pop() : null;
+  // Validation already allows only plain values; checked again here, where
+  // model text meets the shell.
+  assertShellSafe({ selector: test.selector, path: test.path, class: cls });
   const junitPytest = path.join(wt, '.arw-junit.xml');
   // A custom command without a known toolchain must write JUnit XML to {junit}.
   const junit = { maven: path.join(wt, 'target', 'surefire-reports', `TEST-${cls}.xml`), gradle: path.join(wt, 'build', 'test-results', 'test', `TEST-${cls}.xml`), pytest: junitPytest }[toolchain] || junitPytest;
@@ -216,13 +231,14 @@ function applyFix(wt, finding) {
   const files = [...new Set(finding.evidence.filter((e) => e.kind === 'code' && e.revision !== 'base').map((e) => e.path))];
   for (const rel of files) {
     const file = path.join(wt, rel);
-    if (!fs.existsSync(file)) continue;
-    const text = fs.readFileSync(file, 'utf8');
+    // PR code has run in this worktree: the file may now be a link out of it.
+    if (!confine.isConfinedFile(wt, file)) continue;
+    const text = confine.readConfined(wt, file);
     const asis = finding.fix.asis.replace(/\r\n/g, '\n');
     const tobe = finding.fix.tobe.replace(/\r\n/g, '\n');
     const at = text.indexOf(asis);
     if (at >= 0 && text.indexOf(asis, at + 1) < 0) {
-      fs.writeFileSync(file, text.slice(0, at) + tobe + text.slice(at + asis.length));
+      confine.rewriteFile(wt, file, text.slice(0, at) + tobe + text.slice(at + asis.length));
       return { applied: true, file: rel, how: 'exact' };
     }
     const lines = text.split('\n');
@@ -238,7 +254,7 @@ function applyFix(wt, finding) {
       const minIndent = Math.min(...tl.filter((l) => l.trim()).map((l) => l.match(/^\s*/)[0].length));
       const replaced = tl.map((l) => (l.trim() ? indent + l.slice(minIndent) : l));
       lines.splice(i, want.length, ...replaced);
-      fs.writeFileSync(file, lines.join('\n'));
+      confine.rewriteFile(wt, file, lines.join('\n'));
       return { applied: true, file: rel, how: 'lines' };
     }
   }
@@ -279,7 +295,9 @@ function validateReproTest(candidate, { context, finding = null }) {
     if (targets.length && !targets.some(calls)) errors.push(`$.content: the test does not call the code the finding is about (one of: ${targets.join(', ')})`);
   }
   const p = candidate.path.replace(/\\/g, '/');
-  if (p !== candidate.path || path.isAbsolute(p) || p.split('/').includes('..')) return ['$.path: repository-relative, forward slashes, no ".."'];
+  // The path and selector reach a shell command line and the host
+  // filesystem: plain characters only.
+  if (p !== candidate.path || path.isAbsolute(p) || !confine.isPlainRel(p)) return ['$.path: repository-relative, forward slashes, no "..", each part only letters, digits, _ . - (not starting with . or -)'];
   if (git.showFile(context.source.checkout, context.source.head_sha, p) != null) errors.push(`$.path: ${p} already exists; write a NEW test file`);
   if (candidate.language === 'java') {
     const m = p.match(/(^|\/)src\/test\/java\/(.+)\/([A-Za-z_]\w*)\.java$/);
@@ -287,13 +305,13 @@ function validateReproTest(candidate, { context, finding = null }) {
     else {
       const pkg = m[2].replace(/\//g, '.');
       const cls = `${pkg}.${m[3]}`;
-      if (javaClass(candidate.selector) !== cls) errors.push(`$.selector: must be "${cls}" (optionally "#method")`);
+      if (javaClass(candidate.selector) !== cls || !/^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*(#[A-Za-z_]\w*)?$/.test(candidate.selector)) errors.push(`$.selector: must be "${cls}" (optionally "#method")`);
       if (!new RegExp(`^\\s*package\\s+${pkg.replace(/\./g, '\\.')}\\s*;`, 'm').test(candidate.content)) errors.push(`$.content: must declare "package ${pkg};"`);
       if (!new RegExp(`\\bclass\\s+${m[3]}\\b`).test(candidate.content)) errors.push(`$.content: must declare class ${m[3]}`);
     }
   } else {
     if (!/(^|\/)(test_\w+|\w+_test)\.py$/.test(p)) errors.push('$.path: a pytest file is named test_<name>.py or <name>_test.py');
-    if (!candidate.selector.startsWith(p)) errors.push(`$.selector: must start with the path, e.g. "${p}::test_name"`);
+    if (!(candidate.selector === p || /^(::[A-Za-z_]\w*)+$/.test(candidate.selector.startsWith(p) ? candidate.selector.slice(p.length) : '!'))) errors.push(`$.selector: the path, optionally with ::names, e.g. "${p}::test_name"`);
   }
   if (!/assert/i.test(candidate.content)) errors.push('$.content: the test must assert the expected behaviour');
   return errors;
@@ -492,12 +510,13 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
     const artifactRel = `repro/${finding.id}/${path.basename(test.path)}`;
     fs.writeFileSync(path.join(rdir, artifactRel), test.content);
     const testInfo = { language: test.language, path: test.path, selector: test.selector, fails_because: test.fails_because, artifact: { path: artifactRel, sha256: sha256(test.content) } };
+    // Host-side file access in the worktree goes through confine: PR code
+    // (a tracked symlink, or one a build made) can point a path out of it.
     const target = path.join(wt, test.path);
-    ensureDir(path.dirname(target));
     const { command, junit } = commandFor(toolchain, test, wt, testCommand);
     const runs = [];
     const runPhase = async (phase) => {
-      if (fs.existsSync(junit)) fs.rmSync(junit);
+      confine.removeConfined(wt, junit);
       const logRel = `repro/${finding.id}/${phase}.log`;
       const logFile = path.join(rdir, logRel);
       const res = await execRun({ command, cwd: wt, logFile, timeoutMs, test, phase, toolchain: toolchain || 'custom' });
@@ -505,7 +524,7 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
       // the JUnit XML is kept as written. Validation re-derives the status
       // from these, never from the record's own fields.
       fs.appendFileSync(logFile, `\n${trailer(res)}\n`);
-      const xml = fs.existsSync(junit) ? fs.readFileSync(junit, 'utf8') : null;
+      const xml = confine.readConfined(wt, junit);
       const junitData = xml ? parseJunit(xml) : null;
       const run = { phase, command, exit_code: res.exit_code, elapsed_ms: res.elapsed_ms, timed_out: Boolean(res.timed_out), spawn_error: res.spawn_error || null, junit: junitData };
       run.status = classify(run);
@@ -520,9 +539,18 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
       return run;
     };
     let fix = null;
+    const notes = [];
     try {
       if (!trackedClean(wt)) throw new Error('repro worktree has modified tracked files');
-      fs.writeFileSync(target, test.content);
+      try {
+        confine.writeNewFile(wt, test.path, test.content);
+      } catch (err) {
+        if (!(err instanceof confine.ConfinementError)) throw err;
+        const rec = { ...base, test: testInfo, status: 'ENVIRONMENT_BLOCKED', reason: `cannot place the test in the worktree: ${err.message}`, runs: [] };
+        writeJsonAtomic(recordFile, rec);
+        results.push(rec);
+        continue;
+      }
       const first = await runPhase('head-1');
       // An assertion failure must repeat before it counts; one run proves little.
       if (first.status === 'red') await runPhase('head-2');
@@ -539,19 +567,26 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
         // Control 2, regression: the same test passes on the base commit.
         if (!fix.verified) {
           git.git(wt, ['checkout', '--', '.'], { allowFail: true });
-          fs.rmSync(target, { force: true });
+          confine.removeConfined(wt, target);
           git.git(wt, ['checkout', '--detach', '--force', context.source.base_sha]);
-          ensureDir(path.dirname(target));
-          fs.writeFileSync(target, test.content);
-          await runPhase('base');
+          let placed = true;
+          try {
+            confine.writeNewFile(wt, test.path, test.content);
+          } catch (err) {
+            if (!(err instanceof confine.ConfinementError)) throw err;
+            placed = false;
+            notes.push(`base control not run: ${err.message}`);
+            log(`repro ${finding.id}: base control not run: ${err.message}`);
+          }
+          if (placed) await runPhase('base');
         }
       }
     } finally {
-      fs.rmSync(target, { force: true });
+      confine.removeConfined(wt, target);
       git.git(wt, ['checkout', '--', '.'], { allowFail: true });
       git.git(wt, ['checkout', '--detach', '--force', context.source.head_sha], { allowFail: true });
     }
-    const rec = { ...base, test: testInfo, toolchain: toolchain || 'custom', runs, status: statusFromRuns(runs), fix, control: controlOf(runs, fix) };
+    const rec = { ...base, test: testInfo, toolchain: toolchain || 'custom', runs, status: statusFromRuns(runs), fix, control: controlOf(runs, fix), ...(notes.length ? { notes } : {}) };
     writeJsonAtomic(recordFile, rec);
     results.push(rec);
   }

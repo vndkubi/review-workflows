@@ -12,6 +12,7 @@ const path = require('node:path');
 const { envInt, ensureDir } = require('./util');
 const git = require('./git');
 const { sandboxPython, gradleWrapper, defaultRunner } = require('./repro');
+const confine = require('./confine');
 
 function enabled(repoCfg) {
   return process.env.ARW_RUN_IMPACTED_TESTS === 'on' || Boolean(repoCfg && repoCfg.run_impacted_tests);
@@ -37,6 +38,8 @@ function javaFqn(rel) {
 function planRuns(root, testPaths) {
   const groups = new Map();
   for (const rel of testPaths) {
+    // File names come from the PR and become part of a shell command.
+    if (!confine.isPlainRel(rel)) continue;
     let toolchain;
     let module;
     let selector;
@@ -70,10 +73,12 @@ function commandFor(group, junitFile) {
   return `${sandboxPython()} -m pytest -q -p no:cacheprovider ${sel.join(' ')} --junitxml=${junitFile}`;
 }
 
-function reportFiles(cwd, group, junitFile) {
+// Report files the build wrote, reached without links (the build is PR
+// code: a report that is a link would make the host read another file).
+function reportFiles(wt, cwd, group, junitFile) {
   const dir = { maven: path.join(cwd, 'target', 'surefire-reports'), gradle: path.join(cwd, 'build', 'test-results', 'test') }[group.toolchain];
-  if (!dir) return fs.existsSync(junitFile) ? [junitFile] : [];
-  return fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => /^TEST-.*\.xml$/.test(f)).map((f) => path.join(dir, f)) : [];
+  const files = dir ? confine.listConfined(wt, dir).filter((f) => /^TEST-.*\.xml$/.test(f)).map((f) => path.join(dir, f)) : [junitFile];
+  return files.filter((f) => confine.isConfinedFile(wt, f));
 }
 
 function decode(s) {
@@ -116,18 +121,26 @@ async function runGroup({ wt, group, rev, runner, logDir, label, timeoutMs }) {
   const present = group.tests.filter((t) => fs.existsSync(path.join(wt, t.path)));
   if (!present.length) return { ran: false, why: 'no test exists at this revision', byTest: {} };
   const junit = path.join(wt, '.arw-impacted-junit.xml');
-  for (const f of reportFiles(cwd, group, junit)) fs.rmSync(f, { force: true });
+  for (const f of reportFiles(wt, cwd, group, junit)) confine.removeConfined(wt, f);
   const command = commandFor({ ...group, tests: present }, junit);
   const res = await runner({ command, cwd, logFile: path.join(logDir, `${label}.log`), timeoutMs, toolchain: group.toolchain });
-  const cases = reportFiles(cwd, group, junit).flatMap((f) => parseCases(fs.readFileSync(f, 'utf8')));
+  const cases = reportFiles(wt, cwd, group, junit).flatMap((f) => parseCases(confine.readConfined(wt, f) || ''));
+  // A case's result and the run's: passing cases count only when the run
+  // completed and either succeeded or has a failing case explaining its
+  // exit code. A timeout or a failed build step leaves passes unproven.
+  const groupFailed = cases.some((c) => c.status === 'fail' || c.status === 'error');
+  const runProblem = res.timed_out ? 'timeout' : res.spawn_error ? 'not_run' : res.exit_code !== 0 && !groupFailed ? 'command_failed' : null;
   const byTest = {};
   for (const t of present) {
     // pytest: classname is the dotted module (plus a class); JUnit: the class (nested ones add $Name).
     const id = group.toolchain === 'pytest' ? t.path.replace(/\.py$/, '').replace(/\//g, '.') : t.selector;
     const mine = cases.filter((c) => c.classname === id || c.classname.startsWith(`${id}.`) || c.classname.startsWith(`${id}$`));
-    byTest[t.path] = mine.length
-      ? { status: mine.some((c) => c.status === 'fail' || c.status === 'error') ? 'fail' : mine.every((c) => c.status === 'skipped') ? 'skipped' : 'pass', cases: mine.length, failing: mine.filter((c) => c.status === 'fail' || c.status === 'error').map((c) => ({ name: c.name, message: c.message })).slice(0, 5) }
-      : { status: res.timed_out ? 'timeout' : res.spawn_error ? 'not_run' : 'no_result', cases: 0, failing: [] };
+    if (!mine.length) {
+      byTest[t.path] = { status: runProblem || 'no_result', cases: 0, failing: [] };
+      continue;
+    }
+    const caseStatus = mine.some((c) => c.status === 'fail' || c.status === 'error') ? 'fail' : mine.every((c) => c.status === 'skipped') ? 'skipped' : 'pass';
+    byTest[t.path] = { status: caseStatus === 'pass' && runProblem ? runProblem : caseStatus, case_status: caseStatus, cases: mine.length, failing: mine.filter((c) => c.status === 'fail' || c.status === 'error').map((c) => ({ name: c.name, message: c.message })).slice(0, 5) };
   }
   return { ran: true, command, exit_code: res.exit_code, timed_out: Boolean(res.timed_out), spawn_error: res.spawn_error || null, elapsed_ms: res.elapsed_ms, byTest };
 }

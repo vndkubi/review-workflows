@@ -91,4 +91,20 @@ function dockerRunner({ command, cwd, logFile, timeoutMs, toolchain }) {
   });
 }
 
-module.exports = { enabled, imageFor, dockerArgs, dockerRunner, toContainer, DEFAULT_IMAGES };
+// Where and how PR code runs, for the frozen execution manifest: the host
+// shell, or docker with its image, network, limits and mounts. Image tags
+// can move; pin with name@sha256:<digest> to make them exact.
+function manifest() {
+  if (!enabled()) return { mode: 'host' };
+  return {
+    mode: 'docker',
+    images: Object.fromEntries(['maven', 'gradle', 'pytest'].map((t) => [t, imageFor(t)])),
+    network: process.env.ARW_SANDBOX_NETWORK || 'none',
+    memory: process.env.ARW_SANDBOX_MEMORY || '4g',
+    cpus: process.env.ARW_SANDBOX_CPUS || '2',
+    m2: process.env.ARW_SANDBOX_M2 ? (process.env.ARW_SANDBOX_M2_RW === '1' ? 'rw' : 'ro') : null,
+    python: process.env.ARW_PYTHON || 'python',
+  };
+}
+
+module.exports = { enabled, imageFor, dockerArgs, dockerRunner, toContainer, manifest, DEFAULT_IMAGES };

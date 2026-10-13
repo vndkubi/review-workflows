@@ -68,7 +68,16 @@ and impacted tests in a throwaway container instead: only the worktree is mounte
 (`ARW_SANDBOX_NETWORK`), memory/CPU/process limits, killed on timeout. Images per toolchain
 (`ARW_SANDBOX_IMAGE_MAVEN` / `_GRADLE` / `_PYTEST`); `ARW_SANDBOX_M2` mounts a local Maven repository read-only
 so builds work offline. Checked with `maven:3.9-eclipse-temurin-17`: a test passing on base and failing on head,
-no network, about 20 s per run.
+no network, about 20 s per run. The sandbox settings are part of the frozen context: switching between host and
+docker, or changing image, network, limits or mounts, is drift. Image tags can move; pin `name@sha256:<digest>`
+to make the image exact.
+
+What the container cannot protect is the harness's own file access on the host. The worktree is PR code, so
+any path in it may be a symlink (tracked, or made by a build). Writing the model's test, applying the fix, and
+reading or deleting JUnit reports all refuse paths that go through a link (`src/lib/confine.js`). A test path or
+PR test file name with anything other than letters, digits and `_ . - /` never reaches a shell command.
+The check and the write are separate calls, so a process left running in the background (a build daemon)
+could still swap a directory in between.
 
 After the review, every blocking (P1/P2) finding that was not withdrawn gets one reproduction attempt per
 duplicate cluster:

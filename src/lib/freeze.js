@@ -34,15 +34,27 @@ function toolDigest() {
   return sha256(parts.join('\n'));
 }
 
-// What else decides how the frozen review executes: the executor and its
-// settings, and the Node major version. A change means packets from before
-// and after would not be comparable, so it counts as drift.
+// What else decides how the frozen review executes: the executor (a custom
+// module by its content) and its settings, the Node major version, and where
+// PR code runs (host shell or sandbox, with its settings). A change means
+// results from before and after would not be comparable, so it counts as
+// drift.
 function executionManifest() {
   const { executorConfig } = require('./codex');
   const cfg = executorConfig();
+  const mod = process.env.ARW_EXECUTOR_MODULE;
+  let modHash = 'unreadable';
+  if (mod) {
+    try {
+      modHash = sha256(fs.readFileSync(path.resolve(mod))).slice(0, 16);
+    } catch {
+      /* stays unreadable */
+    }
+  }
   return {
     node: process.versions.node.split('.')[0],
-    executor: process.env.ARW_EXECUTOR_MODULE ? `module:${path.basename(process.env.ARW_EXECUTOR_MODULE)}` : 'codex',
+    executor: mod ? `module:${path.basename(mod)}@${modHash}` : 'codex',
+    sandbox: require('./sandbox').manifest(),
     model: cfg.model,
     judge_model: cfg.judgeModel,
     effort: cfg.effort,

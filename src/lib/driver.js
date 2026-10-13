@@ -6,6 +6,7 @@
 // drift aborts the batch without adopting anything.
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { sha256, sha256Value, writeJsonAtomic, readJson, readJsonIfExists, parseModelJson, envInt, nowIso, runPool, ensureDir } = require('./util');
 const { loadContext, verifyContext, revisionDir, reviewDir, readInput } = require('./freeze');
 const { makeSources, canonicalizeCandidate, validatePacket, validateRebuttal, validateSynthesis } = require('./validate');
@@ -26,20 +27,61 @@ const STATUS = {
 
 class ContextDrift extends Error {}
 
+function readOrNull(file) {
+  try {
+    return fs.readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+// Removes a lock judged stale from its content `seen`, unless it has changed
+// since: another driver may have reclaimed it and now hold a live one.
+// Deleting by path after a check would remove that live lock, so reclaimers
+// serialize on a second exclusive file and re-read under it. A reclaimer
+// that dies inside these few lines leaves driver.lock.reclaim behind; that
+// needs a manual delete (the error says so).
+function reclaimStale(lock, seen) {
+  const guard = `${lock}.reclaim`;
+  let fd;
+  try {
+    fd = fs.openSync(guard, 'wx');
+  } catch (err) {
+    if (err.code === 'EEXIST') return false;
+    throw err;
+  }
+  try {
+    if (readOrNull(lock) !== seen) return false;
+    fs.unlinkSync(lock);
+    return true;
+  } finally {
+    fs.closeSync(fd);
+    fs.unlinkSync(guard);
+  }
+}
+
 // One driver per run. The lock file is created exclusively ('wx'), so two
 // processes starting together cannot both pass a check and then write. A
-// lock left by a process that is gone is reclaimed (once).
+// lock left by a process that is gone is reclaimed (once), only if it is
+// still the lock that was judged stale (reclaimStale).
 function acquireLock(runDir) {
   const lock = path.join(ensureDir(reviewDir(runDir)), 'driver.lock');
+  const token = crypto.randomBytes(8).toString('hex');
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const fd = fs.openSync(lock, 'wx');
-      fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: nowIso() }));
+      fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: nowIso(), token }));
       fs.closeSync(fd);
       break;
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
-      const held = readJsonIfExists(lock, {});
+      const seen = readOrNull(lock);
+      let held = {};
+      try {
+        held = JSON.parse(seen) || {};
+      } catch {
+        /* being written */
+      }
       if (held.pid === process.pid) throw new Error(`this process already holds ${lock}`);
       let alive = false;
       if (!Number.isInteger(held.pid)) {
@@ -60,12 +102,14 @@ function acquireLock(runDir) {
         }
       }
       if (alive || attempt === 1) throw new Error(`another driver (pid ${held.pid}) holds ${lock}`);
-      fs.rmSync(lock, { force: true }); // stale: its process is gone
+      // Stale: its process is gone. A null `seen` means the lock vanished: just retry.
+      if (seen !== null && !reclaimStale(lock, seen)) throw new Error(`another driver is taking over ${lock} (if none is running, delete ${lock}.reclaim)`);
     }
   }
+  // Release only our own lock, recognised by its token.
   return () => {
     try {
-      fs.unlinkSync(lock);
+      if (JSON.parse(readOrNull(lock) || '{}').token === token) fs.unlinkSync(lock);
     } catch {
       /* already removed */
     }
@@ -569,4 +613,4 @@ function finish(runDir, optOuts = {}) {
   return validation;
 }
 
-module.exports = { runBatch, finish, collectState, runModelJob, acquireLock, ContextDrift, STATUS, packetRel };
+module.exports = { runBatch, finish, collectState, runModelJob, acquireLock, reclaimStale, ContextDrift, STATUS, packetRel };

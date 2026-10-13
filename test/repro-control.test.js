@@ -65,9 +65,14 @@ function executor(fixTobe) {
 }
 
 // Stands in for pytest: the test passes only on the base implementation (or,
-// with baseFails, never: a defect the base has too).
-function runner(calls, { baseFails = false } = {}) {
+// with baseFails, never: a defect the base has too). With linkTo, the PR
+// code replaces tests/ with a link to that directory during head-2.
+function runner(calls, { baseFails = false, linkTo = null } = {}) {
   return async ({ cwd, logFile, phase }) => {
+    if (linkTo && phase === 'head-2') {
+      fs.rmSync(path.join(cwd, 'tests'), { recursive: true, force: true });
+      fs.symlinkSync(linkTo, path.join(cwd, 'tests'), 'junction');
+    }
     const src = fs.readFileSync(path.join(cwd, 'billing/fees.py'), 'utf8').replace(/\r\n/g, '\n');
     const pass = !baseFails && src === BASE;
     calls.push([phase, pass]);
@@ -104,4 +109,17 @@ test('no control: the fix does not help and the base fails too, so the failure i
   const f = validation.findings.find((x) => x.id === 'T1-technical-F1');
   assert.deepEqual(calls, [['head-1', false], ['head-2', false], ['fix', false], ['base', false]]);
   assert.deepEqual([f.label, f.evidence_level, f.repro.status, f.repro.control], ['REPRODUCED', 'L2', 'RED_PROVEN', null], 'a stable failure without a control does not prove the defect');
+});
+
+test('N2: PR code that turned tests/ into a link out of the worktree cannot make the harness write or delete there', async () => {
+  const outside = tmpDir('arw-control-outside-');
+  fs.writeFileSync(path.join(outside, 'keep.txt'), 'mine');
+  const { validation, calls, runDir } = await review('if days < 31:', 3, { linkTo: outside });
+  const f = validation.findings.find((x) => x.id === 'T1-technical-F1');
+  assert.deepEqual(calls.map((c) => c[0]), ['head-1', 'head-2', 'fix'], 'the base control is not run through the link');
+  assert.deepEqual(fs.readdirSync(outside), ['keep.txt'], 'nothing written to or deleted from the link target');
+  assert.equal(fs.readFileSync(path.join(outside, 'keep.txt'), 'utf8'), 'mine');
+  assert.deepEqual([f.label, f.repro.control], ['REPRODUCED', null]);
+  const rec = JSON.parse(fs.readFileSync(path.join(revisionDir(runDir, loadContext(runDir).context_id), 'repro', 'T1-technical-F1.json'), 'utf8'));
+  assert.match(rec.notes.join(' '), /base control not run: tests is a link/);
 });
