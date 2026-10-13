@@ -96,7 +96,7 @@ class JobQueue {
     if (!next) return;
     const out = fs.openSync(next.log, 'a');
     fs.writeSync(out, `$ ${next.command}\n`);
-    const child = spawn(process.execPath, [CLI, ...next.args], { cwd: ROOT, stdio: ['ignore', out, out], windowsHide: true, env: process.env });
+    const child = spawn(process.execPath, [CLI, ...next.args], { cwd: ROOT, stdio: ['ignore', out, out], windowsHide: true, env: process.env, detached: process.platform !== 'win32' });
     fs.closeSync(out);
     Object.assign(next, { status: 'running', pid: child.pid, started_at: nowIso() });
     this.save();
@@ -142,7 +142,7 @@ class JobQueue {
 function killTree(pid) {
   try {
     if (process.platform === 'win32') require('node:child_process').execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
-    else process.kill(pid, 'SIGTERM');
+    else process.kill(-pid, 'SIGTERM'); // the job's process group: arw and the codex calls it started
   } catch {
     /* already gone */
   }

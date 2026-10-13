@@ -83,7 +83,7 @@ function killTree(child) {
   if (!child.pid) return;
   try {
     if (process.platform === 'win32') execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
-    else child.kill('SIGKILL');
+    else process.kill(-child.pid, 'SIGKILL'); // the whole process group (codex and its children)
   } catch {
     /* already gone */
   }
@@ -120,7 +120,7 @@ function runCodex({ prompt: rawPrompt, cwd, attemptDir, model, effort, sandbox =
     let stderrText = '';
     let timedOut = false;
     let degenerate = false;
-    const child = spawn(cmd, args, { cwd, env: { ...process.env, RUST_LOG: process.env.RUST_LOG || 'warn' }, windowsHide: true });
+    const child = spawn(cmd, args, { cwd, env: { ...process.env, RUST_LOG: process.env.RUST_LOG || 'warn' }, windowsHide: true, detached: process.platform !== 'win32' });
     const timer = setTimeout(() => {
       timedOut = true;
       killTree(child);
