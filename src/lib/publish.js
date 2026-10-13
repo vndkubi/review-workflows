@@ -65,7 +65,7 @@ function buildReview(runDir, { minSeverity = 'P3' } = {}) {
   for (const meta of metas) {
     const f = byId.get(meta.id);
     if (!f) continue;
-    const match = memory.matchRejected(f, { scope, run: path.basename(runDir) }, entries);
+    const match = memory.matchRejected(f, { scope, run: path.basename(runDir), source: context.source }, entries);
     const action = memory.publishAction(f, match);
     if (action === 'omit') {
       omitted.push({ finding_id: f.id, severity: f.severity, title: f.title, rejected: match });

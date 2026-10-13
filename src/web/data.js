@@ -171,12 +171,13 @@ function prDetail(id) {
   const synthesis = validation.synthesis && validation.synthesis.valid ? readJsonIfExists(path.join(rdir, 'synthesis.json')) : null;
   const aliasOf = new Map((synthesis ? synthesis.aliases : []).map((a) => [a.id, a.duplicate_of]));
   const scope = memory.memoryScope(run.identity);
+  const ctxSource = (readJsonIfExists(path.join(rdir, 'context.json')) || {}).source || null;
   const entries = memory.loadMemory().entries;
   out.findings = validation.findings.map((meta) => {
     const rebuttalId = meta.rebuttal_from || meta.id;
     const rebuttal = readJsonIfExists(path.join(rdir, 'rebuttals', `${rebuttalId}.json`));
     const detail = full.get(meta.id) || null;
-    const rejected = detail ? memory.matchRejected(detail, { scope, run: id }, entries) : null;
+    const rejected = detail ? memory.matchRejected(detail, { scope, run: id, source: ctxSource }, entries) : null;
     return { ...meta, duplicate_of: aliasOf.get(meta.id) || null, detail, rebuttal, rejected, publish_action: detail ? memory.publishAction(detail, rejected) : null };
   });
   out.feedback = readJsonIfExists(path.join(dir, 'feedback.json'));

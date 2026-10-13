@@ -15,6 +15,7 @@ const { RUNS } = require('./runs');
 const { revisionDir } = require('./freeze');
 const { packetRel } = require('./driver');
 const { words, jaccard } = require('./cluster');
+const { concepts } = require('./semantic');
 const memory = require('./memory');
 
 const GROUP_SIMILARITY = 0.35;
@@ -58,15 +59,19 @@ function decidedFindings() {
   return out;
 }
 
+// Same kind of finding: by words or by concepts (rephrasings), whichever is closer.
 function group(list) {
   const groups = [];
   for (const d of list) {
-    const w = words(`${d.finding.title} ${d.finding.asis}`);
-    const g = groups.find((x) => jaccard(x.words, w) >= GROUP_SIMILARITY);
+    const text = `${d.finding.title} ${d.finding.asis}`;
+    const w = words(text);
+    const c = concepts(text);
+    const g = groups.find((x) => Math.max(jaccard(x.words, w), jaccard(x.concepts, c)) >= GROUP_SIMILARITY);
     if (g) {
       g.members.push(d);
       for (const x of w) g.words.add(x);
-    } else groups.push({ words: new Set(w), members: [d] });
+      for (const x of c) g.concepts.add(x);
+    } else groups.push({ words: new Set(w), concepts: new Set(c), members: [d] });
   }
   return groups;
 }

@@ -372,4 +372,4 @@ function renderImpact(r) {
   return `${lines.join('\n')}\n`;
 }
 
-module.exports = { analyzeImpact, renderImpact, indexJava, indexPython, stripJava, stripPython, callSites, changedMethods };
+module.exports = { analyzeImpact, renderImpact, indexFile, enclosing, indexJava, indexPython, stripJava, stripPython, callSites, changedMethods };

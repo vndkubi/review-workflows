@@ -441,7 +441,7 @@ function rejectPanel(d, meta) {
     }
   };
   const note = r ? h('div', { class: 'notice' },
-    r.same ? 'You rejected this finding' : `Looks like a finding rejected earlier (similarity ${r.score})`,
+    r.same ? 'You rejected this finding' : `Looks like a finding rejected earlier (${r.how || 'similar'}, ${r.score})`,
     `: ${r.reason} — ${r.source || ''} ${fmtTime(r.at)}. `,
     meta.publish_action === 'omit' ? 'It is left out of the published draft. ' : 'It is still published because of its severity. ',
     h('button', { type: 'button', class: 'linkbtn', onclick: forget }, r.same ? 'Undo' : 'Forget that rejection')) : null;

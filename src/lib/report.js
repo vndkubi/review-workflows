@@ -140,8 +140,8 @@ function renderReport(runDir, validation, identity) {
     const f = findings.get(meta.id);
     if (!f) continue;
     out.push(renderFinding(f, meta, rebuttal(meta.rebuttal_from || meta.id)), '');
-    const match = memory.matchRejected(f, { scope, run: path.basename(runDir) }, entries);
-    if (match) out.push(`> ${match.same ? 'Rejected' : `Looks like a finding rejected earlier (${match.entry_id}, similarity ${match.score})`}: ${match.reason}. ${memory.publishAction(f, match) === 'omit' ? 'Left out of the published draft.' : 'Still published because of its severity.'}`, '');
+    const match = memory.matchRejected(f, { scope, run: path.basename(runDir), source: (readJsonIfExists(path.join(revisionDir(runDir, validation.context_id), 'context.json')) || {}).source }, entries);
+    if (match) out.push(`> ${match.same ? 'Rejected' : `Looks like a finding rejected earlier (${match.entry_id}, ${match.how || 'similar'}, ${match.score})`}: ${match.reason}. ${memory.publishAction(f, match) === 'omit' ? 'Left out of the published draft.' : 'Still published because of its severity.'}`, '');
     const dups = (synthesis ? synthesis.aliases : []).filter((a) => a.duplicate_of === meta.id).map((a) => a.id);
     if (dups.length) out.push(`_Duplicates: ${dups.join(', ')}_`, '');
   }

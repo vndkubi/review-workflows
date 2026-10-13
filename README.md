@@ -233,10 +233,17 @@ node src/cli/arw.js memory [--forget RJ-...]
 `<!-- arw:finding=... -->` marker: **kept** (unchanged), **edited** (reworded, or rewritten at the same line
 without the marker) or **dropped** (deleted before submitting). Dropped findings, and findings rejected in the
 dashboard or with `arw reject`, go to `runs/memory/rejected.json`. Later findings in the same repository and
-file whose title/ASIS look alike (token Jaccard ≥ 0.5) are marked in the report and the dashboard; P3/P4
+file that look alike are marked in the report and the dashboard; P3/P4
 look-alikes are left out of the published draft and P1/P2 ones are published with a note. The exact finding a
 person rejected is never published. Validation never reads this memory, so verdicts stay a function of the
 frozen context. Local reviews share memory with the configured repository whose `checkout` is that directory.
+
+"Look alike" is judged by meaning, offline and deterministically: the best of word overlap, **concept** overlap
+(stems folded into review vocabulary — threshold/limit/edge → boundary, float/rounding/decimal → precision,
+None/null/missing → missing, …) and the **code anchor**: same file, same enclosing method (from the structural
+index), and either the same code to change (`fix.asis` identifiers) or the same checklist item/requirement.
+The same method alone is not enough, since two different defects often share one. Each match says why
+(`same code`, `same concern`, `same words`).
 
 The conversation after submission is read too: replies in each comment's thread (with a hint when a reply
 disputes the finding — "by design", "won't fix" — or reports it fixed) and, through GraphQL, whether the thread

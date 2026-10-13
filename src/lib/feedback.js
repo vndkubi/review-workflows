@@ -40,7 +40,8 @@ function currentFindings(runDir) {
     const packet = readJsonIfExists(path.join(dir, packetRel(job.unit_id, job.role)));
     if (packet) for (const f of packet.findings) byId.set(f.id, f);
   }
-  return { run, validation, byId, contextId: pointer.context_id };
+  const context = readJsonIfExists(path.join(dir, 'context.json'));
+  return { run, validation, byId, contextId: pointer.context_id, source: context ? context.source : null };
 }
 
 function runId(runDir) {
@@ -48,10 +49,10 @@ function runId(runDir) {
 }
 
 function rejectFinding(runDir, findingId, { reason, source = 'dashboard' } = {}) {
-  const { run, validation, byId, contextId } = currentFindings(runDir);
+  const { run, validation, byId, contextId, source: anchorSource } = currentFindings(runDir);
   const f = byId.get(findingId);
   if (!f) throw new Error(`no finding ${findingId} in the current context`);
-  const entry = memory.addRejection(f, { scope: memory.memoryScope(run.identity), reason, source, run: runId(runDir), contextId });
+  const entry = memory.addRejection(f, { scope: memory.memoryScope(run.identity), reason, source, run: runId(runDir), contextId, anchorSource });
   require('./report').writeReport(runDir, validation, run.identity);
   return entry;
 }
@@ -104,7 +105,7 @@ function threadsFor({ api, graphql, repo, pr, commentIds }) {
 function readBack(runDir, { api, graphql = null }) {
   const published = readJsonIfExists(path.join(runDir, 'published.json'));
   if (!published || published.dry_run || !published.review_id) throw new Error('nothing was published for this run (only dry runs)');
-  const { run, byId } = currentFindings(runDir);
+  const { run, byId, source: anchorSource } = currentFindings(runDir);
   const { repo, pr } = run.identity;
   const review = api(`repos/${repo}/pulls/${pr}/reviews/${published.review_id}`);
   const comments = review.state === 'PENDING' ? [] : api(`repos/${repo}/pulls/${pr}/reviews/${published.review_id}/comments?per_page=100`);
@@ -157,7 +158,7 @@ function readBack(runDir, { api, graphql = null }) {
   const remembered = [];
   const remember = (f, reason, source) => {
     const full = byId.get(f.id);
-    if (full) remembered.push(memory.addRejection(full, { scope: memory.memoryScope(run.identity), reason, source, run: runId(runDir), contextId: published.context_id }));
+    if (full) remembered.push(memory.addRejection(full, { scope: memory.memoryScope(run.identity), reason, source, run: runId(runDir), contextId: published.context_id, anchorSource }));
   };
   // Only the reviewer's own decision (deleting the comment) is remembered. A
   // reply that disputes a finding is recorded and shown, not remembered: the
