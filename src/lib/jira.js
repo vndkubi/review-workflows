@@ -1,6 +1,7 @@
 'use strict';
 // Ticket intake: Jira REST (Server/DC with a PAT, or Cloud with email + API
 // token) or a local Markdown/text file. Output is evidence text, not truth.
+const { envInt } = require('./util');
 
 const TICKET_KEY = /\b([A-Z][A-Z0-9]+-\d+)\b/;
 
@@ -80,7 +81,35 @@ async function fetchJiraIssue(key) {
   const res = await fetch(url, { headers: { Authorization: auth, Accept: 'application/json' } });
   if (!res.ok) throw new Error(`Jira ${res.status} for ${key}: ${(await res.text()).slice(0, 300)}`);
   const issue = await res.json();
-  return renderIssue(issue);
+  return { ...renderIssue(issue), linked: linkedKeys(issue), attachments: imageAttachments(issue) };
+}
+
+// Linked tickets (and the parent), most specific relations first.
+function linkedKeys(issue) {
+  const f = issue.fields || {};
+  const out = [];
+  if (f.parent && f.parent.key) out.push({ key: f.parent.key, relation: 'parent' });
+  for (const l of f.issuelinks || []) {
+    const other = l.outwardIssue || l.inwardIssue;
+    if (other && other.key) out.push({ key: other.key, relation: (l.type && (l.outwardIssue ? l.type.outward : l.type.inward)) || 'relates to' });
+  }
+  const seen = new Set([issue.key]);
+  return out.filter((x) => !seen.has(x.key) && seen.add(x.key));
+}
+
+const IMAGE_TYPES = /^image\/(png|jpe?g|gif|webp)$/;
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+function imageAttachments(issue) {
+  return ((issue.fields || {}).attachment || [])
+    .filter((a) => IMAGE_TYPES.test(a.mimeType || '') && (a.size || 0) <= MAX_IMAGE_BYTES)
+    .map((a) => ({ filename: a.filename, mimeType: a.mimeType, size: a.size, url: a.content }));
+}
+
+// A linked ticket in brief: what it is and what it asks, no comments.
+function renderLinked(issue, relation) {
+  const f = issue.fields || {};
+  return `# Linked ${relation} ${issue.key}: ${f.summary || ''}\n\n- type: ${fieldText(f.issuetype)} · status: ${fieldText(f.status)}\n\n${String(fieldText(f.description) || '(empty)').slice(0, 8000)}\n`;
 }
 
 function renderIssue(issue) {
@@ -167,9 +196,29 @@ async function getJson(url, auth) {
 async function fetchTicketEvidence(key, { log = () => {} } = {}) {
   const ticket = await fetchJiraIssue(key);
   const pages = [];
+  const linked = [];
+  const images = [];
+  const jiraBase = (process.env.JIRA_URL || '').replace(/\/+$/, '');
+  for (const l of ticket.linked.slice(0, envInt('ARW_LINKED_ISSUES', 5))) {
+    try {
+      const issue = await getJson(`${jiraBase}/rest/api/2/issue/${encodeURIComponent(l.key)}?fields=summary,description,issuetype,status`, authHeader());
+      linked.push({ key: l.key, relation: l.relation, text: renderLinked(issue, l.relation) });
+    } catch (err) {
+      log(`jira: linked ${l.key} unavailable (${err.message})`);
+    }
+  }
+  for (const a of ticket.attachments.slice(0, envInt('ARW_TICKET_IMAGES', 5))) {
+    try {
+      const res = await fetch(a.url, { headers: { Authorization: authHeader() } });
+      if (!res.ok) throw new Error(String(res.status));
+      images.push({ name: a.filename, bytes: Buffer.from(await res.arrayBuffer()), source: 'jira' });
+    } catch (err) {
+      log(`jira: attachment ${a.filename} unavailable (${err.message})`);
+    }
+  }
   const base = (process.env.CONFLUENCE_URL || '').replace(/\/+$/, '');
   const auth = confluenceAuth();
-  if (!base || !auth) return { ticket, pages };
+  if (!base || !auth) return { ticket, pages, linked, images };
   const ids = new Set(pageIdsIn(ticket.text));
   try {
     const jiraBase = process.env.JIRA_URL.replace(/\/+$/, '');
@@ -196,7 +245,7 @@ async function fetchTicketEvidence(key, { log = () => {} } = {}) {
       log(`confluence: page ${id} unavailable (${err.message})`);
     }
   }
-  return { ticket, pages };
+  return { ticket, pages, linked, images };
 }
 
 module.exports = { extractTicketKey, fetchJiraIssue, fetchTicketEvidence, renderIssue, wikiToMarkdown, adfToText, storageToText, pageIdsIn };

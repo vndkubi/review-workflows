@@ -20,11 +20,13 @@ function resolveCodex() {
   return { cmd: 'codex', pre: [] };
 }
 
-function codexArgs({ cwd, outFile, model, effort, sandbox, schemaFile }) {
+function codexArgs({ cwd, outFile, model, effort, sandbox, schemaFile, images = [] }) {
   // project_doc_max_bytes=0: never auto-load AGENTS.md from the working
   // directory — in a PR checkout that file is author-controlled and would be
   // an instruction channel into the reviewer.
-  const args = ['exec', '--json', '--skip-git-repo-check', '--ephemeral', '-s', sandbox, '-C', cwd, '-o', outFile, '-c', 'project_doc_max_bytes=0'];
+  // --image takes several values: each one is followed by another option so
+  // the trailing '-' (prompt on stdin) is never read as an image.
+  const args = ['exec', ...images.flatMap((img) => ['--image', img]), '--json', '--skip-git-repo-check', '--ephemeral', '-s', sandbox, '-C', cwd, '-o', outFile, '-c', 'project_doc_max_bytes=0'];
   if (process.env.CODEX_USE_USER_CONFIG !== '1') {
     args.push('--ignore-user-config');
     // Since codex 0.162 Windows has no default sandbox: without one, every
@@ -93,7 +95,7 @@ function killTree(child) {
 // provider's structured outputs; it removes JSON syntax errors entirely.
 // Verified with codex 0.147 that tools stay usable with --output-schema.
 // Disable with CODEX_OUTPUT_SCHEMA=0 for providers that do not support it.
-function runCodex({ prompt: rawPrompt, cwd, attemptDir, model, effort, sandbox = 'read-only', timeoutMs, outputSchema }) {
+function runCodex({ prompt: rawPrompt, cwd, attemptDir, model, effort, sandbox = 'read-only', timeoutMs, outputSchema, images = [] }) {
   ensureDir(attemptDir);
   const { text: prompt, redactions } = redactSecrets(rawPrompt);
   const outFile = path.join(attemptDir, 'last-message.txt');
@@ -107,7 +109,7 @@ function runCodex({ prompt: rawPrompt, cwd, attemptDir, model, effort, sandbox =
     fs.writeFileSync(schemaFile, JSON.stringify(outputSchema));
   }
   const { cmd, pre } = resolveCodex();
-  const args = [...pre, ...codexArgs({ cwd, outFile, model, effort, sandbox, schemaFile })];
+  const args = [...pre, ...codexArgs({ cwd, outFile, model, effort, sandbox, schemaFile, images })];
   const limit = timeoutMs || envInt('CODEX_TIMEOUT_MS', 30 * 60 * 1000);
   const started = Date.now();
 
@@ -216,4 +218,4 @@ function executorConfig() {
   };
 }
 
-module.exports = { runCodex, preflight, summarizeEvents, classifyError, executorConfig, resolveCodex, DEFAULT_MODEL };
+module.exports = { runCodex, preflight, summarizeEvents, classifyError, executorConfig, resolveCodex, codexArgs, DEFAULT_MODEL };

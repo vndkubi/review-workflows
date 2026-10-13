@@ -1153,7 +1153,9 @@ function mcpEditor(saved, mcpSecret) {
       const args2 = h('input', { type: 'text', class: 'wide', value: t && t.args ? JSON.stringify(t.args) : '', placeholder: 'arguments JSON (default for the server)' });
       return { kind, off, name, args: args2, row: h('tr', {}, h('td', {}, kind), h('td', {}, name), h('td', {}, args2), h('td', {}, kind === 'issue' ? '' : h('label', { class: 'small' }, off, ' off'))) };
     };
-    const tools = [toolRow('issue', 'jira_get_issue'), toolRow('page', 'confluence_get_page'), toolRow('search', 'confluence_search')];
+    // attachments is off unless a tool name is given: the server must write
+    // into a directory on this machine (not inside a container).
+    const tools = [toolRow('issue', 'jira_get_issue'), toolRow('page', 'confluence_get_page'), toolRow('search', 'confluence_search'), toolRow('attachments', 'jira_download_attachments (optional, images)')];
     const stdioBox = h('div', { hidden: c.transport !== 'stdio' }, h('label', { class: 'field' }, 'Command', command), h('label', { class: 'field' }, 'Arguments', args), h('label', { class: 'field' }, 'Environment (values may use ${SETTING})', env));
     const httpBox = h('div', { hidden: c.transport !== 'http' }, h('label', { class: 'field' }, 'URL', url), h('label', { class: 'field' }, 'Headers (Name: value)', headers));
     transport.addEventListener('change', () => {

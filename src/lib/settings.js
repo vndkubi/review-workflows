@@ -249,7 +249,7 @@ function writeMcp(server) {
   if (server.tools != null) {
     out.tools = {};
     for (const [k, v] of Object.entries(server.tools)) {
-      if (!['issue', 'page', 'search'].includes(k)) errors.push(`tools.${k}: only issue, page, search`);
+      if (!['issue', 'page', 'search', 'attachments'].includes(k)) errors.push(`tools.${k}: only issue, page, search, attachments`);
       else if (v === null) out.tools[k] = null;
       else if (!v || typeof v.name !== 'string' || !v.name) errors.push(`tools.${k}.name is required`);
       else out.tools[k] = { name: v.name, ...(v.args ? { args: v.args } : {}) };

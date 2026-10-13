@@ -5,7 +5,7 @@
 // tool returns is evidence text, rendered for reading, never instructions.
 const fs = require('node:fs');
 const path = require('node:path');
-const { ROOT, readJson } = require('./util');
+const { ROOT, readJson, envInt } = require('./util');
 const { McpClient } = require('./mcp-client');
 const { pageIdsIn } = require('./jira');
 
@@ -17,6 +17,12 @@ const DEFAULT_TOOLS = {
   issue: { name: 'jira_get_issue', args: { issue_key: '{key}', comment_limit: 20 } },
   page: { name: 'confluence_get_page', args: { page_id: '{id}', convert_to_markdown: true } },
   search: { name: 'confluence_search', args: { query: 'type=page and text ~ "{key}"', limit: 5 } },
+};
+
+// Off unless mapped: the server must write into a directory of this machine
+// ({dir}), e.g. mcp-atlassian started directly (not inside a container).
+const OPTIONAL_TOOLS = {
+  attachments: { name: 'jira_download_attachments', args: { issue_key: '{key}', target_dir: '{dir}' } },
 };
 
 function configPath() {
@@ -31,13 +37,28 @@ function atlassianConfig() {
   const server = cfg.atlassian;
   if (!server || (!server.command && !server.url)) return null;
   const tools = { ...DEFAULT_TOOLS };
-  for (const [k, v] of Object.entries(server.tools || {})) tools[k] = v === null ? null : { ...DEFAULT_TOOLS[k], ...v };
+  for (const [k, v] of Object.entries(server.tools || {})) tools[k] = v === null ? null : { ...(DEFAULT_TOOLS[k] || OPTIONAL_TOOLS[k]), ...v };
   return { server: { name: 'atlassian', ...server }, tools };
 }
 
 function fillArgs(template, vars) {
-  const fill = (v) => (typeof v === 'string' ? v.replace(/\{(key|id|cql)\}/g, (_, k) => vars[k] || '') : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fill(x)])) : v);
+  const fill = (v) => (typeof v === 'string' ? v.replace(/\{(key|id|cql|dir)\}/g, (_, k) => vars[k] || '') : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fill(x)])) : v);
   return fill(template || {});
+}
+
+// Other ticket keys the issue names: link and parent fields of a JSON answer
+// first, otherwise any key in the text.
+function linkedKeysIn(key, raw) {
+  const json = tryJson(raw);
+  const scan = (v) => [...String(typeof v === 'string' ? v : JSON.stringify(v) || '').matchAll(/\b[A-Z][A-Z0-9]+-\d+\b/g)].map((m) => m[0]);
+  let keys = [];
+  if (json) {
+    const issue = json.issue || json;
+    const fields = issue.fields || issue;
+    keys = scan([fields.issuelinks, fields.parent, fields.links, issue.issuelinks, issue.parent]);
+  }
+  if (!keys.length) keys = scan(raw);
+  return [...new Set(keys)].filter((k) => k !== key);
 }
 
 function tryJson(text) {
@@ -108,7 +129,7 @@ function idsFromSearch(raw) {
   return list.map((r) => String((r && (r.id || (r.content && r.content.id))) || '')).filter((id) => /^\d+$/.test(id));
 }
 
-async function fetchTicketEvidenceMcp(key, { log = () => {}, config = atlassianConfig() } = {}) {
+async function fetchTicketEvidenceMcp(key, { log = () => {}, config = atlassianConfig(), imageDir = null } = {}) {
   if (!config) throw new Error(`no MCP server configured in ${configPath()}`);
   const client = new McpClient(config.server, { timeoutMs: Number(process.env.ARW_MCP_TIMEOUT_MS) || 60000 });
   try {
@@ -116,6 +137,32 @@ async function fetchTicketEvidenceMcp(key, { log = () => {}, config = atlassianC
     const t = config.tools;
     const raw = await client.callTool(t.issue.name, fillArgs(t.issue.args, { key }));
     const ticket = { key, text: issueText(key, raw) };
+    // Linked tickets: any other ticket key the issue mentions in its link or
+    // parent fields (or, failing those, anywhere), in brief.
+    const linked = [];
+    for (const other of linkedKeysIn(key, raw).slice(0, envInt('ARW_LINKED_ISSUES', 5))) {
+      try {
+        const lraw = await client.callTool(t.issue.name, fillArgs({ ...t.issue.args, comment_limit: 0 }, { key: other }));
+        linked.push({ key: other, relation: 'linked', text: `# Linked ${other}\n\n${issueText(other, lraw).slice(0, 8000)}` });
+      } catch (err) {
+        log(`mcp: linked ${other} unavailable (${err.message})`);
+      }
+    }
+    // Images: only with a mapped download tool that writes into a directory
+    // on this machine (mcp-atlassian: jira_download_attachments, stdio).
+    const images = [];
+    if (t.attachments && imageDir) {
+      try {
+        fs.mkdirSync(imageDir, { recursive: true });
+        await client.callTool(t.attachments.name, fillArgs(t.attachments.args, { key, dir: imageDir }));
+        for (const name of fs.readdirSync(imageDir).filter((n) => /\.(png|jpe?g|gif|webp)$/i.test(n)).slice(0, envInt('ARW_TICKET_IMAGES', 5))) {
+          const bytes = fs.readFileSync(path.join(imageDir, name));
+          if (bytes.length <= 5 * 1024 * 1024) images.push({ name, bytes, source: 'mcp' });
+        }
+      } catch (err) {
+        log(`mcp: attachments unavailable (${err.message})`);
+      }
+    }
     const ids = new Set(pageIdsIn(raw));
     if (t.search) {
       try {
@@ -135,7 +182,7 @@ async function fetchTicketEvidenceMcp(key, { log = () => {}, config = atlassianC
         }
       }
     }
-    return { ticket, pages, server: client.serverInfo };
+    return { ticket, pages, linked, images, server: client.serverInfo };
   } finally {
     await client.close();
   }
@@ -157,4 +204,4 @@ async function checkMcp(config = atlassianConfig()) {
   }
 }
 
-module.exports = { fetchTicketEvidenceMcp, checkMcp, atlassianConfig, jsonToMarkdown, issueText, pageFrom, idsFromSearch, fillArgs, DEFAULT_TOOLS };
+module.exports = { linkedKeysIn, fetchTicketEvidenceMcp, checkMcp, atlassianConfig, jsonToMarkdown, issueText, pageFrom, idsFromSearch, fillArgs, DEFAULT_TOOLS };

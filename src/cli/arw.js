@@ -16,7 +16,7 @@ const github = require('../lib/github');
 const USAGE = `arw — evidence-first ticket analysis and PR review (codex CLI workers)
 
 Ticket pipeline (understand the requirement; stops at each human gate):
-  arw ticket <KEY> [--from-file ticket.md] [--extra notes.md ...] [--repo owner/name | --repo-dir <path>] [--redo intake|requirements|spec|analysis]
+  arw ticket <KEY> [--from-file ticket.md] [--extra notes.md ...] [--image screen.png ...] [--repo owner/name | --repo-dir <path>] [--redo intake|requirements|spec|analysis]
 
 PR review (plan -> freeze -> waves -> validate -> report):
   arw review --local [<repo dir>] [--base main] [--mode branch|staged|worktree | --head <commit>]
@@ -88,7 +88,9 @@ async function cmdTicket(argv) {
   if (!key || !/^[A-Z][A-Z0-9]+-\d+$/.test(key)) throw new Error('usage: arw ticket <KEY>');
   let repoDir = args.repoDir ? path.resolve(args.repoDir) : null;
   if (!repoDir && args.repo) repoDir = github.sourceCheckoutFor(args.repo).checkout;
-  const res = await advanceTicket({ key, fromFile: args.fromFile, extras: multi(argv, 'extra'), repoDir, executor, models: models(), log, redo: args.redo });
+  const images = multi(argv, 'image').map((f) => path.resolve(f));
+  for (const f of images) if (!fs.existsSync(f) || !/\.(png|jpe?g|gif|webp)$/i.test(f)) throw new Error(`--image ${f}: not a png, jpg, gif or webp file`);
+  const res = await advanceTicket({ key, fromFile: args.fromFile, extras: multi(argv, 'extra'), images, repoDir, executor, models: models(), log, redo: args.redo });
   console.log(`${res.state}: ${res.message}\nrun: ${res.dir}`);
   return res.state === 'FAILED' ? 1 : 0;
 }

@@ -21,6 +21,7 @@
       "search": { "name": "confluence_search", "args": { "query": "type=page and text ~ \"{key}\"", "limit": 5 } }
     }
   },
+  "_attachments_note": "Images from the ticket are off by default. Add \"attachments\": { \"name\": \"jira_download_attachments\" } under tools when the server writes files on THIS machine (mcp-atlassian started with uvx/pip, not inside docker, or docker with the run directory mounted). Otherwise pass screenshots yourself: arw ticket KEY --image screen.png.",
   "_http_example": {
     "transport": "http",
     "url": "https://mcp.your-company.example/atlassian/mcp",

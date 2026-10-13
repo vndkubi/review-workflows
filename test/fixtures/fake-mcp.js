@@ -17,14 +17,25 @@ const ISSUE = {
     'Rules: https://wiki.example/spaces/PAY/pages/111/Refund+rules',
   ].join('\n'),
   comments: [{ author: { display_name: 'PO' }, body: 'Limit is inclusive? No: strictly over 500.' }],
+  issuelinks: [{ type: { outward: 'is blocked by' }, outwardIssue: { key: 'ACME-10' } }],
+  parent: { key: 'ACME-1' },
 };
+
+// Linked tickets: what the review of ACME-9 also needs to know.
+const OTHER = {
+  'ACME-10': { key: 'ACME-10', summary: 'Approval limit is configurable', description: 'The 500 limit comes from the setting refund.approval.limit.' },
+  'ACME-1': { key: 'ACME-1', summary: 'Epic: refunds', description: 'All refund work.' },
+};
+
+// 1x1 transparent PNG.
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 
 const PAGES = {
   111: { metadata: { title: 'Refund rules' }, content: { value: '| Amount | Approvers |\n|---|---|\n| <= 500 | 1 |\n| > 500 | 2 |' } },
   222: { metadata: { title: 'Refund FAQ' }, content: { value: 'Refunds are processed in VND.' } },
 };
 
-const TOOLS = ['jira_get_issue', 'confluence_get_page', 'confluence_search'].map((name) => ({ name, inputSchema: { type: 'object' } }));
+const TOOLS = ['jira_get_issue', 'confluence_get_page', 'confluence_search', 'jira_download_attachments'].map((name) => ({ name, inputSchema: { type: 'object' } }));
 
 function reply(id, result) {
   process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`);
@@ -46,7 +57,12 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   if (msg.method === 'tools/list') return reply(msg.id, { tools: TOOLS });
   if (msg.method === 'tools/call') {
     const { name, arguments: args } = msg.params;
-    if (name === 'jira_get_issue') return reply(msg.id, args.issue_key === 'ACME-9' ? text(ISSUE) : { isError: true, content: [{ type: 'text', text: 'Issue does not exist' }] });
+    if (name === 'jira_get_issue') return reply(msg.id, args.issue_key === 'ACME-9' ? text(ISSUE) : OTHER[args.issue_key] ? text(OTHER[args.issue_key]) : { isError: true, content: [{ type: 'text', text: 'Issue does not exist' }] });
+    if (name === 'jira_download_attachments') {
+      require('node:fs').writeFileSync(require('node:path').join(args.target_dir, 'refund-screen.png'), PNG);
+      require('node:fs').writeFileSync(require('node:path').join(args.target_dir, 'notes.txt'), 'not an image');
+      return reply(msg.id, text({ downloaded: ['refund-screen.png', 'notes.txt'] }));
+    }
     if (name === 'confluence_search') return reply(msg.id, text([{ id: '222', title: 'Refund FAQ' }]));
     if (name === 'confluence_get_page') return reply(msg.id, PAGES[args.page_id] ? text(PAGES[args.page_id]) : { isError: true, content: [{ type: 'text', text: 'not found' }] });
   }

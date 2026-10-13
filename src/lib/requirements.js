@@ -79,7 +79,7 @@ function normalizeItems(items, blocks, notes) {
 }
 
 // blocks: [{ name, text }] — untrusted evidence (ticket, attachments, PR body).
-async function extractRequirements({ ticket, blocks, executor, workDir, model, auditModel, effort, log }) {
+async function extractRequirements({ ticket, blocks, images = [], executor, workDir, model, auditModel, effort, log }) {
   const notes = [];
   const sources = blocks.map((b) => b.name);
   const base = { schema_version: '1.0', ticket, generated_at: nowIso(), sources };
@@ -98,6 +98,7 @@ async function extractRequirements({ ticket, blocks, executor, workDir, model, a
     const res = await runLooseJob({
       executor,
       label: 'requirements',
+      images,
       outputSchema: outputSchema('requirements', 'modelItems'),
       workDir,
       cwd: workDir,
@@ -121,6 +122,7 @@ async function extractRequirements({ ticket, blocks, executor, workDir, model, a
     const res = await runLooseJob({
       executor,
       label: 'requirements-audit',
+      images,
       outputSchema: outputSchema('requirements', 'audit'),
       workDir,
       cwd: workDir,

@@ -10,7 +10,7 @@
 // spec that is clean: no gaps, no contradictions, no inferred rules.
 const fs = require('node:fs');
 const path = require('node:path');
-const { ROOT, readJson, readJsonIfExists, writeJsonAtomic, writeFileAtomic, nowIso, ensureDir } = require('./util');
+const { ROOT, readJson, readJsonIfExists, writeJsonAtomic, writeFileAtomic, nowIso, ensureDir, sha256 } = require('./util');
 const { validateAgainst, outputSchema } = require('./schema');
 const { fetchTicketEvidence } = require('./jira');
 const { fetchTicketEvidenceMcp, atlassianConfig } = require('./ticket-mcp');
@@ -45,10 +45,48 @@ function evidenceBlocks(dir) {
   return blocks;
 }
 
-async function intake(dir, run, { key, fromFile, extras = [], log }) {
+// Images that go to the model with the ticket text (codex -i). They inform
+// the reading; what only an image shows has no quotable text, so it becomes
+// an inferred requirement that a person approves at the SPEC gate.
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
+
+function ticketImages(dir) {
+  const manifest = readJsonIfExists(path.join(dir, 'attachments', 'manifest.json'), { images: [] });
+  return manifest.images
+    .map((i) => ({ ...i, file: path.join(dir, 'attachments', i.name) }))
+    .filter((i) => fs.existsSync(i.file) && sha256(fs.readFileSync(i.file)) === i.sha256);
+}
+
+function saveImages(dir, images) {
+  const adir = path.join(dir, 'attachments');
+  fs.rmSync(adir, { recursive: true, force: true });
+  if (!images.length) return [];
+  ensureDir(adir);
+  const used = new Set();
+  const list = [];
+  for (const img of images) {
+    let name = path.basename(img.name).replace(/[^A-Za-z0-9._-]/g, '_');
+    if (!IMAGE_EXT.test(name)) continue;
+    while (used.has(name)) name = `x${name}`;
+    used.add(name);
+    fs.writeFileSync(path.join(adir, name), img.bytes);
+    list.push({ name, sha256: sha256(img.bytes), bytes: img.bytes.length, source: img.source });
+  }
+  writeJsonAtomic(path.join(adir, 'manifest.json'), { images: list });
+  return list;
+}
+
+// Everything the later stages read: a change means they are stale.
+function evidenceDigest(dir) {
+  return JSON.stringify({ blocks: evidenceBlocks(dir), images: ticketImages(dir).map((i) => i.sha256) });
+}
+
+async function intake(dir, run, { key, fromFile, extras = [], imageFiles = [], log }) {
   let text;
   let source;
   const pages = [];
+  const linked = [];
+  const images = [];
   if (fromFile) {
     text = fs.readFileSync(fromFile, 'utf8');
     source = `file:${path.resolve(fromFile)}`;
@@ -56,11 +94,14 @@ async function intake(dir, run, { key, fromFile, extras = [], log }) {
     // An MCP server wins when configured: it works where Jira/Confluence are
     // not reachable from this machine. Otherwise call the REST APIs directly.
     const viaMcp = Boolean(atlassianConfig());
-    const fetched = viaMcp ? await fetchTicketEvidenceMcp(key, { log }) : await fetchTicketEvidence(key, { log });
+    const fetched = viaMcp ? await fetchTicketEvidenceMcp(key, { log, imageDir: path.join(dir, 'work', 'mcp-attachments') }) : await fetchTicketEvidence(key, { log });
     text = fetched.ticket.text;
     source = viaMcp ? `mcp${fetched.server && fetched.server.name ? `:${fetched.server.name}` : ''}` : 'jira';
     pages.push(...fetched.pages);
+    linked.push(...(fetched.linked || []));
+    images.push(...(fetched.images || []));
   }
+  for (const file of imageFiles) images.push({ name: path.basename(file), bytes: fs.readFileSync(file), source: 'file' });
   // Credentials in tickets or pages never reach a model or the run files.
   const redactions = [];
   const clean = (s) => {
@@ -69,11 +110,14 @@ async function intake(dir, run, { key, fromFile, extras = [], log }) {
     return r.text;
   };
   writeFileAtomic(path.join(dir, 'ticket-evidence.md'), clean(text));
+  for (const stale of fs.existsSync(path.join(dir, 'evidence')) ? fs.readdirSync(path.join(dir, 'evidence')).filter((n) => n.startsWith('linked-')) : []) fs.rmSync(path.join(dir, 'evidence', stale));
   for (const page of pages) writeFileAtomic(path.join(dir, 'evidence', `confluence-${page.id}.md`), clean(page.text));
+  for (const l of linked) writeFileAtomic(path.join(dir, 'evidence', `linked-${l.key}.md`), clean(l.text));
+  const savedImages = saveImages(dir, images);
   for (const file of extras) {
     writeFileAtomic(path.join(dir, 'evidence', path.basename(file).replace(/[^A-Za-z0-9._-]/g, '_')), clean(fs.readFileSync(file, 'utf8')));
   }
-  setStage(dir, run, 'intake', 'EXECUTED_PASS', { source, confluence_pages: pages.map((p) => ({ id: p.id, title: p.title })), extras: extras.map((f) => path.basename(f)), redactions: redactions.reduce((n, r) => n + r.count, 0) });
+  setStage(dir, run, 'intake', 'EXECUTED_PASS', { source, confluence_pages: pages.map((p) => ({ id: p.id, title: p.title })), linked: linked.map((l) => ({ key: l.key, relation: l.relation })), images: savedImages.map((i) => ({ name: i.name, bytes: i.bytes, source: i.source })), extras: extras.map((f) => path.basename(f)), redactions: redactions.reduce((n, r) => n + r.count, 0) });
 }
 
 function validateAnalysis(candidate, { key, items, repoDir }) {
@@ -128,7 +172,7 @@ function rejectionFeedback(dir) {
 }
 
 // Advance the pipeline; returns { dir, state, message }.
-async function advanceTicket({ key, fromFile, extras, repoDir, executor, models = {}, log = () => {}, redo }) {
+async function advanceTicket({ key, fromFile, extras, images: imageFiles = [], repoDir, executor, models = {}, log = () => {}, redo }) {
   const dir = ensureDir(ticketDir(key));
   const run = loadRun(dir, key);
   if (redo && redo !== 'intake') {
@@ -136,11 +180,11 @@ async function advanceTicket({ key, fromFile, extras, repoDir, executor, models 
     for (const stage of order.slice(order.indexOf(redo))) delete run.stages[stage];
   }
 
-  if (!run.stages.intake || run.stages.intake.status !== 'EXECUTED_PASS' || fromFile || redo === 'intake') {
+  if (!run.stages.intake || run.stages.intake.status !== 'EXECUTED_PASS' || fromFile || imageFiles.length || redo === 'intake') {
     log('intake');
-    const before = JSON.stringify(evidenceBlocks(dir));
-    await intake(dir, run, { key, fromFile, extras, log });
-    if (JSON.stringify(evidenceBlocks(dir)) !== before) {
+    const before = evidenceDigest(dir);
+    await intake(dir, run, { key, fromFile, extras, imageFiles, log });
+    if (evidenceDigest(dir) !== before) {
       // New evidence: everything derived from the old evidence is stale.
       for (const stage of ['requirements', 'spec', 'analysis', 'ready']) delete run.stages[stage];
       run.stages.intake.evidence_changed = true;
@@ -153,6 +197,7 @@ async function advanceTicket({ key, fromFile, extras, repoDir, executor, models 
     const req = await extractRequirements({
       ticket: key,
       blocks: evidenceBlocks(dir),
+      images: ticketImages(dir).map((i) => i.file),
       executor,
       workDir: ensureDir(path.join(dir, 'work')),
       model: models.requirements,
@@ -180,6 +225,7 @@ async function advanceTicket({ key, fromFile, extras, repoDir, executor, models 
     const res = await runLooseJob({
       executor,
       label: 'spec',
+      images: ticketImages(dir).map((i) => i.file),
       workDir: ensureDir(path.join(dir, 'work')),
       cwd: ensureDir(path.join(dir, 'work')),
       model: models.spec || models.analysis,
@@ -239,6 +285,7 @@ async function advanceTicket({ key, fromFile, extras, repoDir, executor, models 
     const res = await runLooseJob({
       executor,
       label: 'analysis',
+      images: ticketImages(dir).map((i) => i.file),
       workDir,
       cwd: repoDir || workDir,
       model: models.analysis,
@@ -280,4 +327,4 @@ function approvedTicketInputs(key) {
   return out;
 }
 
-module.exports = { advanceTicket, approvedTicketInputs, validateAnalysis, renderAnalysisMarkdown, evidenceBlocks };
+module.exports = { advanceTicket, approvedTicketInputs, validateAnalysis, renderAnalysisMarkdown, evidenceBlocks, ticketImages };

@@ -36,6 +36,15 @@ for every item, and one finding can cover several failed items. Risky rule and b
 before the review counts as complete. Set `ARW_AUTO_APPROVE_SPEC=1` to let a deterministic policy approve
 clean specs (no gaps, contradictions or inferred rules).
 
+**Ticket evidence** is the ticket (Jira REST, an MCP server, or a file), the Confluence pages it links to or
+that mention it, its **linked tickets and parent** in brief (summary, status, description; `ARW_LINKED_ISSUES`,
+default 5; each is its own quotable evidence block), and **images**: Jira image attachments (REST, or MCP with a
+mapped download tool), or screenshots you pass with `arw ticket KEY --from-file t.md --image screen.png`.
+Images are stored with their sha256 under `runs/tickets/<KEY>/attachments/` and sent to the requirement,
+audit, spec and analysis jobs with `codex --image`; a changed image re-runs the later stages and a tampered one
+is not sent. Text that only an image shows cannot be quoted, so it becomes an INFERRED item a person confirms
+at the SPEC gate.
+
 ## Reproduction: from SUSPECTED to CONFIRMED
 
 After the review, every blocking (P1/P2) finding that was not withdrawn gets one reproduction attempt per
