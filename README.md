@@ -209,6 +209,16 @@ missing from `ARW_JAVA_CLASSPATH`) keep the structural result; if javac fails or
 the synthetic 3,000-file repository: about 26 s with javac against 5 s structural, same 20 callers.
 `ARW_JAVA_AST=off` turns it off.
 
+Setup on the machine that runs `arw` (nothing on the reviewed project's side, no build): a **JDK 11+** with
+javac — `java` on PATH, or `ARW_JAVA_HOME` pointing at one — **at least as new as the Java the projects build
+with** (javac reads older source, not newer: JDK 11 cannot read records or sealed classes). `arw doctor` checks
+it against the Java level of every configured repository (pom.xml / Gradle). The pack says when javac could
+not parse a file (that file's calls fall back to the structural match), when the project's Java level is newer
+than the JDK, and when a class name is declared in more than one file (separate modules, or Java 8 and 11
+variants of one API): javac kept only one of them, so its answers for that name are not used.
+`ARW_JAVA_CLASSPATH` (library jars, e.g. from `mvn dependency:build-classpath`) lets more calls resolve; calls
+between the repository's own classes need nothing.
+
 Still unknown: generated code, reflection beyond the patterns above, and repositories that are not
 configured. `ARW_IMPACT=off` skips the analysis.
 

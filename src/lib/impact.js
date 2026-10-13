@@ -472,6 +472,13 @@ function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
       engine = `javac (JDK ${javaAst.javaVersion()}, ${g.ms} ms) + structural`;
     }
   }
+  const astNotes = [];
+  if (ast) {
+    const level = javaAst.projectJavaLevel(cwd);
+    if (level && level > javaAst.javaVersion()) astNotes.push(`the project builds with Java ${level} but javac is JDK ${javaAst.javaVersion()}: newer syntax cannot be read (set ARW_JAVA_HOME to a JDK ${level}+)`);
+    if (ast.parseErrors.length) astNotes.push(`javac could not parse ${ast.parseErrors.length} file(s); their calls use the structural match: ${ast.parseErrors.slice(0, 5).map((e) => `${e.file}:${e.line} (${e.msg})`).join('; ')}${ast.parseErrors.length > 5 ? '; ...' : ''}`);
+    if (ast.ambiguous.size) astNotes.push(`declared in more than one file, so javac's answer is not used for them: ${[...ast.ambiguous].slice(0, 5).join(', ')}${ast.ambiguous.size > 5 ? ', ...' : ''}`);
+  }
   const baseIndexes = new Map();
   for (const f of parsed) {
     const rel = f.old_path || f.path;
@@ -555,6 +562,7 @@ function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
     scanned: indexes.length,
     engine,
     ...(astError ? { ast_error: astError } : {}),
+    ...(astNotes.length ? { ast_notes: astNotes } : {}),
     related: scannedRepos,
     changed: changed.map((m) => ({ path: m.path, symbol: label(m), lines: [m.start, m.end] })),
     edges,
@@ -565,6 +573,7 @@ function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
 function renderImpact(r) {
   const lines = ['', `## Impact: call sites of changed declarations (${r.engine || 'structural'} index of ${r.scanned} Java/Python files; comments and strings ignored)`];
   if (r.ast_error) lines.push(`(javac call graph unavailable: ${r.ast_error}; structural matching only)`);
+  for (const n of r.ast_notes || []) lines.push(`(${n})`);
   if (!r.changed.length) {
     lines.push('(no changed method or function found)');
     return `${lines.join('\n')}\n`;

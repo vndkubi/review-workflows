@@ -58,9 +58,21 @@ public class JavaIndex {
     DiagnosticCollector<JavaFileObject> diags = new DiagnosticCollector<>();
     JavacTask task = (JavacTask) compiler.getTask(null, fm, diags, options, null, fm.getJavaFileObjectsFromFiles(files));
     Iterable<? extends CompilationUnitTree> units = task.parse();
+    // Errors reported by parsing alone are syntax this JDK cannot read (a
+    // newer language level, `_` as a name in old code...): one line per file.
+    List<Diagnostic<? extends JavaFileObject>> parseErrors = new ArrayList<>(diags.getDiagnostics());
     try { task.analyze(); } catch (Throwable t) { System.err.println("analyze: " + t); }
     Trees trees = Trees.instance(task);
     PrintStream out = new PrintStream(new FileOutputStream(FileDescriptor.out), true, "UTF-8");
+    Set<String> reported = new HashSet<>();
+    for (Diagnostic<? extends JavaFileObject> d : parseErrors) {
+      if (d.getKind() != Diagnostic.Kind.ERROR || d.getSource() == null) continue;
+      String rel;
+      try { rel = realRoot.relativize(Paths.get(d.getSource().toUri()).toRealPath()).toString().replace('\\', '/'); }
+      catch (Exception e) { rel = d.getSource().getName(); }
+      if (!reported.add(rel)) continue;
+      out.println("{\"k\":\"parse_error\",\"file\":" + esc(rel) + ",\"line\":" + d.getLineNumber() + ",\"msg\":" + esc(d.getMessage(Locale.ROOT).split("\n")[0]) + "}");
+    }
     Set<String> declared = new HashSet<>();
     List<CompilationUnitTree> all = new ArrayList<>();
     for (CompilationUnitTree u : units) all.add(u);

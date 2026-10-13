@@ -3,6 +3,7 @@
 // resolution through imports and packages, comments and strings ignored.
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
 const { tmpDir, sh, write } = require('./helpers');
 
 // The structural index is tested on its own; javac is tested below when a JDK 11+ exists.
@@ -192,5 +193,56 @@ test('javac: a failing indexer falls back to the structural index and says so', 
   } finally {
     process.env.ARW_JAVA_AST = 'off';
     delete process.env.ARW_JAVA_AST_MAX_FILES;
+  }
+});
+
+test('javac setup: project Java level from pom.xml / Gradle; a bad ARW_JAVA_HOME falls back', () => {
+  const dir = tmpDir('arw-level-');
+  write(dir, 'pom.xml', '<project><properties><maven.compiler.source>1.8</maven.compiler.source></properties></project>');
+  assert.equal(javaAst.projectJavaLevel(dir), 8);
+  write(dir, 'pom.xml', '<project><properties><maven.compiler.release>17</maven.compiler.release></properties></project>');
+  assert.equal(javaAst.projectJavaLevel(dir), 17);
+  const g = tmpDir('arw-level-g-');
+  write(g, 'build.gradle.kts', 'java { toolchain { languageVersion.set(JavaLanguageVersion.of(21)) } }');
+  assert.equal(javaAst.projectJavaLevel(g), 21);
+  write(g, 'build.gradle.kts', '');
+  write(g, 'build.gradle', 'sourceCompatibility = JavaVersion.VERSION_11');
+  assert.equal(javaAst.projectJavaLevel(g), 11);
+  assert.equal(javaAst.projectJavaLevel(tmpDir('arw-level-none-')), null);
+  const saved = process.env.ARW_JAVA_HOME;
+  process.env.ARW_JAVA_HOME = path.join(tmpDir('arw-nojdk-'), 'jdk');
+  try {
+    assert.equal(javaAst.javaVersion(), null);
+    assert.match(javaAst.javaInfo().error, /not found/);
+    process.env.ARW_JAVA_AST = 'on';
+    assert.equal(javaAst.enabled(), false, 'no usable JDK: the structural index is used');
+  } finally {
+    process.env.ARW_JAVA_AST = 'off';
+    if (saved === undefined) delete process.env.ARW_JAVA_HOME;
+    else process.env.ARW_JAVA_HOME = saved;
+  }
+});
+
+test('javac: duplicated class names, unparsable files and a newer project level are reported, not trusted', { skip: !hasJdk && 'no JDK 11+ on PATH' }, () => {
+  const UTIL = (v) => `package com.acme.common;\n\npublic class Util {\n    public int v() {\n        return ${v};\n    }\n}\n`;
+  const r = repo({
+    'pom.xml': '<project><properties><maven.compiler.release>99</maven.compiler.release></properties></project>',
+    'api-java8/src/main/java/com/acme/common/Util.java': UTIL(1),
+    'api-java11/src/main/java/com/acme/common/Util.java': UTIL(1),
+    'app/src/main/java/com/acme/app/App.java': 'package com.acme.app;\n\nimport com.acme.common.Util;\n\npublic class App {\n    int run() {\n        return new Util().v();\n    }\n}\n',
+    'legacy/src/main/java/com/acme/old/Old.java': 'package com.acme.old;\n\nclass Old {\n    int f() {\n        java.util.function.IntUnaryOperator g = _ -> 1;\n        return g.applyAsInt(0);\n    }\n}\n',
+  }, { 'api-java11/src/main/java/com/acme/common/Util.java': UTIL(2) });
+  process.env.ARW_JAVA_AST = 'on';
+  try {
+    const out = analyzeImpact({ cwd: r.dir, base: r.base, parsed: r.parsed });
+    const notes = (out.ast_notes || []).join('\n');
+    assert.match(notes, /builds with Java 99 but javac is JDK \d+/);
+    assert.match(notes, /could not parse 1 file\(s\).*legacy\/src\/main\/java\/com\/acme\/old\/Old\.java:5/);
+    assert.match(notes, /declared in more than one file.*com\.acme\.common\.Util/);
+    // Which Util App calls cannot be told; the structural match stands instead of javac's guess.
+    assert.deepEqual(out.edges.map((e) => `${e.from.symbol} ${e.confidence}`), ['App.run typed']);
+    assert.match(renderImpact(out), /\(declared in more than one file/);
+  } finally {
+    process.env.ARW_JAVA_AST = 'off';
   }
 });

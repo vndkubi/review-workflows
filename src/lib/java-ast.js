@@ -11,27 +11,71 @@ const { spawnSync } = require('node:child_process');
 const { envInt } = require('./util');
 
 const INDEXER = path.join(__dirname, 'JavaIndex.java');
-let javaCache;
+const infoCache = new Map();
 
-// Major version of `java` on PATH if it can run a source file (11+), else null.
-function javaVersion() {
-  if (javaCache !== undefined) return javaCache;
-  javaCache = null;
+// The java launcher to use: ARW_JAVA_HOME/bin/java, else `java` on PATH.
+function javaBin() {
+  const home = process.env.ARW_JAVA_HOME;
+  return home ? path.join(home, 'bin', process.platform === 'win32' ? 'java.exe' : 'java') : 'java';
+}
+
+// { bin, version (major) | null, compiler (has jdk.compiler) , error }.
+function javaInfo() {
+  const bin = javaBin();
+  if (infoCache.has(bin)) return infoCache.get(bin);
+  const info = { bin, version: null, compiler: false, error: null };
   try {
-    const r = spawnSync('java', ['-version'], { encoding: 'utf8', timeout: 20000, windowsHide: true });
+    const r = spawnSync(bin, ['-version'], { encoding: 'utf8', timeout: 20000, windowsHide: true });
+    if (r.error) throw r.error;
     const m = /version "(\d+)(?:\.(\d+))?/.exec(`${r.stderr || ''}${r.stdout || ''}`);
-    if (m) {
-      const major = m[1] === '1' ? Number(m[2]) : Number(m[1]);
-      if (major >= 11) javaCache = major;
+    if (m) info.version = m[1] === '1' ? Number(m[2]) : Number(m[1]);
+    if (info.version >= 9) {
+      const mods = spawnSync(bin, ['--list-modules'], { encoding: 'utf8', timeout: 20000, windowsHide: true });
+      info.compiler = /^jdk\.compiler@/m.test(mods.stdout || '');
     }
-  } catch {
-    /* no java */
+  } catch (err) {
+    info.error = err.code === 'ENOENT' ? `${bin} not found` : err.message;
   }
-  return javaCache;
+  infoCache.set(bin, info);
+  return info;
+}
+
+// Major version if this JDK can run the indexer (11+ with javac), else null.
+function javaVersion() {
+  const i = javaInfo();
+  return i.version >= 11 && i.compiler ? i.version : null;
 }
 
 function enabled() {
   return process.env.ARW_JAVA_AST !== 'off' && javaVersion() != null;
+}
+
+// The Java language level a project builds with, from pom.xml or Gradle
+// files (maven.compiler.release/source, <release>, sourceCompatibility,
+// toolchain languageVersion). null when it cannot be told.
+function projectJavaLevel(dir) {
+  const read = (f) => {
+    try {
+      return fs.readFileSync(path.join(dir, f), 'utf8');
+    } catch {
+      return '';
+    }
+  };
+  const num = (v) => {
+    const m = /^(?:1\.)?(\d+)/.exec(String(v).trim());
+    return m ? Number(m[1]) : null;
+  };
+  const pom = read('pom.xml');
+  for (const re of [/<maven\.compiler\.release>\s*([\d.]+)/, /<release>\s*([\d.]+)\s*<\/release>/, /<maven\.compiler\.source>\s*([\d.]+)/, /<source>\s*([\d.]+)\s*<\/source>/, /<java\.version>\s*([\d.]+)/]) {
+    const m = re.exec(pom);
+    if (m) return num(m[1]);
+  }
+  const gradle = read('build.gradle') + read('build.gradle.kts');
+  for (const re of [/languageVersion\s*(?:=|\.set\()\s*JavaLanguageVersion\.of\(\s*(\d+)/, /sourceCompatibility\s*=\s*(?:JavaVersion\.VERSION_)?['"]?([\d._]+)/]) {
+    const m = re.exec(gradle);
+    if (m) return num(m[1].replace(/_/g, '.'));
+  }
+  return null;
 }
 
 // { types: Map(fqn -> { supers, file, line }), calls: Map('file:line' -> [{ name, owner, params, in }]), ms } or { error }.
@@ -41,11 +85,16 @@ function javaCallGraph(cwd, files, { classpath = process.env.ARW_JAVA_CLASSPATH 
   const list = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'arw-javaidx-')), 'files.txt');
   fs.writeFileSync(list, `${files.join('\n')}\n`);
   const started = Date.now();
-  const r = spawnSync('java', [INDEXER, cwd, list, classpath], { cwd, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 512 * 1024 * 1024, windowsHide: true });
+  const r = spawnSync(javaBin(), [INDEXER, cwd, list, classpath], { cwd, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 512 * 1024 * 1024, windowsHide: true });
   fs.rmSync(path.dirname(list), { recursive: true, force: true });
   if (r.error || r.status !== 0) return { error: (r.error ? r.error.message : `exit ${r.status}: ${String(r.stderr || '').trim().split('\n').pop()}`).slice(0, 300) };
   const types = new Map();
   const calls = new Map();
+  const parseErrors = [];
+  // A fully qualified name declared in two files (two modules, or Java 8 and
+  // 11 variants of one API): javac kept one of them, so its answers for that
+  // name cannot be trusted.
+  const ambiguous = new Set();
   for (const line of String(r.stdout).split('\n')) {
     if (!line.startsWith('{')) continue;
     let x;
@@ -54,14 +103,17 @@ function javaCallGraph(cwd, files, { classpath = process.env.ARW_JAVA_CLASSPATH 
     } catch {
       continue;
     }
-    if (x.k === 'type') types.set(x.fqn, { supers: x.supers, file: x.file, line: x.line });
-    else if (x.k === 'call') {
+    if (x.k === 'parse_error') parseErrors.push({ file: x.file, line: x.line, msg: x.msg });
+    else if (x.k === 'type') {
+      if (types.has(x.fqn) && types.get(x.fqn).file !== x.file) ambiguous.add(x.fqn);
+      types.set(x.fqn, { supers: x.supers, file: x.file, line: x.line });
+    } else if (x.k === 'call') {
       const key = `${x.file}:${x.line}`;
       if (!calls.has(key)) calls.set(key, []);
       calls.get(key).push({ name: x.name, owner: x.owner, params: x.params, in: x.in });
     }
   }
-  return { types, calls, ms: Date.now() - started };
+  return { types, calls, parseErrors, ambiguous, ms: Date.now() - started };
 }
 
 // Is `fqn` the same as, or a subtype of, `ancestor` in the javac hierarchy?
@@ -80,8 +132,8 @@ function isSubtypeFqn(graph, fqn, ancestor) {
 
 // The javac name of a type the structural index knows by simple name in a file.
 function fqnOf(graph, file, simpleName) {
-  for (const [fqn, t] of graph.types) if (t.file === file && (fqn === simpleName || fqn.endsWith(`.${simpleName}`))) return fqn;
+  for (const [fqn, t] of graph.types) if (t.file === file && (fqn === simpleName || fqn.endsWith(`.${simpleName}`))) return graph.ambiguous && graph.ambiguous.has(fqn) ? null : fqn;
   return null;
 }
 
-module.exports = { enabled, javaVersion, javaCallGraph, isSubtypeFqn, fqnOf, INDEXER };
+module.exports = { enabled, javaBin, javaInfo, javaVersion, projectJavaLevel, javaCallGraph, isSubtypeFqn, fqnOf, INDEXER };

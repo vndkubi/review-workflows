@@ -385,6 +385,19 @@ async function cmdDoctor() {
     return execFileSync(cmd, [...pre, '--version'], { encoding: 'utf8' }).trim();
   });
   const repos = github.reposConfig().repos;
+  // The JDK behind Java impact analysis: present, 11+, a real JDK, and at
+  // least as new as the Java the configured repositories build with.
+  const javaAst = require('../lib/java-ast');
+  const ji = javaAst.javaInfo();
+  const jdkName = 'JDK for Java impact (javac)';
+  if (process.env.ARW_JAVA_AST === 'off') checks.push([jdkName, 'ok', 'off (ARW_JAVA_AST=off): structural index only']);
+  else if (javaAst.javaVersion()) {
+    const levels = Object.entries(repos).map(([n, r]) => [n, r && r.checkout ? javaAst.projectJavaLevel(r.checkout) : null]).filter(([, l]) => l);
+    const low = levels.filter(([, l]) => l > ji.version);
+    checks.push([jdkName, low.length ? 'WARN' : 'ok', `JDK ${ji.version} (${ji.bin})${low.length ? `; older than ${low.map(([n, l]) => `${n} (Java ${l})`).join(', ')}: set ARW_JAVA_HOME to a newer JDK` : levels.length ? `; reads ${levels.map(([n, l]) => `${n} (Java ${l})`).join(', ')}` : ''}`]);
+  } else {
+    checks.push([jdkName, 'WARN', ji.error ? `${ji.error}: Java impact uses the structural index (install a JDK 11+ or set ARW_JAVA_HOME)` : ji.version && ji.version < 11 ? `${ji.bin} is Java ${ji.version}; a JDK 11+ is needed (ARW_JAVA_HOME)` : `${ji.bin} (Java ${ji.version}) has no javac — a JRE? A JDK is needed`]);
+  }
   checks.push(['config/repos.json', Object.keys(repos).length ? 'ok' : 'WARN', Object.keys(repos).length ? Object.keys(repos).join(', ') : 'no repos mapped; copy config/repos.example.json']);
   const { checkMcp } = require('../lib/ticket-mcp');
   const mcp = await checkMcp();
