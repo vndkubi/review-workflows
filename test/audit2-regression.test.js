@@ -201,3 +201,22 @@ test('N5: a test whose cases passed before its run timed out or failed is not a 
   assert.notEqual(r.results[0].head.status, 'pass', 'the command failed with no failing case to explain it');
   assert.equal(r.results[0].base.status, 'pass');
 });
+
+test('a worktree whose .git file is gone is not mistaken for the repository around it', () => {
+  const git = require('../src/lib/git');
+  const outer = tmpDir('arw-audit2-outer-');
+  sh(outer, ['init', '-q', '-b', 'main']);
+  write(outer, 'tool.txt', 'the tool repository\n');
+  sh(outer, ['add', '-A']);
+  sh(outer, ['commit', '-q', '-m', 'outer']);
+  const repo = makeRepo();
+  const wt = path.join(outer, 'runs', 'wt');
+  sh(repo.dir, ['worktree', 'add', '--detach', wt, repo.head]);
+  assert.equal(git.worktreeGit(repo.dir, wt, ['rev-parse', 'HEAD']).trim(), repo.head);
+  fs.rmSync(path.join(wt, '.git'), { force: true });
+  fs.writeFileSync(path.join(outer, 'tool.txt'), 'edited\n');
+  git.worktreeGit(repo.dir, wt, ['checkout', '--', '.'], { allowFail: true });
+  assert.equal(fs.readFileSync(path.join(outer, 'tool.txt'), 'utf8'), 'edited\n', 'git did not act on the outer repository');
+  assert.equal(git.worktreeGit(repo.dir, wt, ['rev-parse', 'HEAD']).trim(), repo.head, 'the git dir comes from the main repository');
+  assert.equal(git.worktreeGit(repo.dir, tmpDir('arw-audit2-notwt-'), ['status'], { allowFail: true }), null);
+});

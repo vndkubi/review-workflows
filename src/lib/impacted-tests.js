@@ -109,8 +109,8 @@ function prepareWorktree(source, wt, rev) {
     git.git(source, ['worktree', 'prune'], { allowFail: true });
     git.git(source, ['worktree', 'add', '--detach', wt, rev]);
   } else {
-    git.git(wt, ['checkout', '--', '.'], { allowFail: true });
-    git.git(wt, ['checkout', '--detach', '--force', rev]);
+    git.worktreeGit(source, wt, ['checkout', '--', '.'], { allowFail: true });
+    git.worktreeGit(source, wt, ['checkout', '--detach', '--force', rev]);
   }
   return wt;
 }

@@ -206,9 +206,9 @@ function ensureReproWorktree(runDir, context) {
   const wt = path.join(runDir, 'repro-wt');
   const { checkout, head_sha: head } = context.source;
   if (fs.existsSync(wt)) {
-    const current = git.git(wt, ['rev-parse', 'HEAD'], { allowFail: true });
+    const current = git.worktreeGit(checkout, wt, ['rev-parse', 'HEAD'], { allowFail: true });
     if (current && current.trim() === head) {
-      git.git(wt, ['checkout', '--', '.'], { allowFail: true });
+      git.worktreeGit(checkout, wt, ['checkout', '--', '.'], { allowFail: true });
       return wt;
     }
     git.git(checkout, ['worktree', 'remove', '--force', wt], { allowFail: true });
@@ -219,8 +219,8 @@ function ensureReproWorktree(runDir, context) {
   return wt;
 }
 
-function trackedClean(wt) {
-  return git.git(wt, ['diff', '--quiet', 'HEAD'], { allowFail: true }) !== null;
+function trackedClean(checkout, wt) {
+  return git.worktreeGit(checkout, wt, ['diff', '--quiet', 'HEAD'], { allowFail: true }) !== null;
 }
 
 // ---------- fix application ----------
@@ -541,7 +541,7 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
     let fix = null;
     const notes = [];
     try {
-      if (!trackedClean(wt)) throw new Error('repro worktree has modified tracked files');
+      if (!trackedClean(context.source.checkout, wt)) throw new Error('repro worktree has modified tracked files');
       try {
         confine.writeNewFile(wt, test.path, test.content);
       } catch (err) {
@@ -566,9 +566,9 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
         }
         // Control 2, regression: the same test passes on the base commit.
         if (!fix.verified) {
-          git.git(wt, ['checkout', '--', '.'], { allowFail: true });
+          git.worktreeGit(context.source.checkout, wt, ['checkout', '--', '.'], { allowFail: true });
           confine.removeConfined(wt, target);
-          git.git(wt, ['checkout', '--detach', '--force', context.source.base_sha]);
+          git.worktreeGit(context.source.checkout, wt, ['checkout', '--detach', '--force', context.source.base_sha]);
           let placed = true;
           try {
             confine.writeNewFile(wt, test.path, test.content);
@@ -583,8 +583,8 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
       }
     } finally {
       confine.removeConfined(wt, target);
-      git.git(wt, ['checkout', '--', '.'], { allowFail: true });
-      git.git(wt, ['checkout', '--detach', '--force', context.source.head_sha], { allowFail: true });
+      git.worktreeGit(context.source.checkout, wt, ['checkout', '--', '.'], { allowFail: true });
+      git.worktreeGit(context.source.checkout, wt, ['checkout', '--detach', '--force', context.source.head_sha], { allowFail: true });
     }
     const rec = { ...base, test: testInfo, toolchain: toolchain || 'custom', runs, status: statusFromRuns(runs), fix, control: controlOf(runs, fix), ...(notes.length ? { notes } : {}) };
     writeJsonAtomic(recordFile, rec);

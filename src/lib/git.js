@@ -1,6 +1,8 @@
 'use strict';
 // Read-only git helpers. Prompts are disabled so a missing credential fails
 // fast instead of hanging an unattended run.
+const fs = require('node:fs');
+const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const GIT_ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', LC_ALL: 'C' };
@@ -22,6 +24,51 @@ function git(cwd, args, { allowFail = false, input } = {}) {
     const stderr = err.stderr ? String(err.stderr).trim() : err.message;
     throw new Error(`git ${args.join(' ')} failed: ${stderr}`);
   }
+}
+
+function samePath(a, b) {
+  const real = (p) => {
+    try {
+      return path.join(fs.realpathSync.native(path.dirname(p)), path.basename(p));
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  const norm = (p) => (process.platform === 'win32' ? real(p).toLowerCase() : real(p));
+  return norm(a) === norm(b);
+}
+
+// The git dir of worktree `wt` as the main repository `source` records it,
+// or null when `wt` is not one of its worktrees.
+function worktreeGitDir(source, wt) {
+  const common = path.resolve(source, git(source, ['rev-parse', '--git-common-dir']).trim());
+  const dir = path.join(common, 'worktrees');
+  if (!fs.existsSync(dir)) return null;
+  for (const name of fs.readdirSync(dir)) {
+    let recorded;
+    try {
+      recorded = fs.readFileSync(path.join(dir, name, 'gitdir'), 'utf8').trim();
+    } catch {
+      continue;
+    }
+    if (samePath(recorded, path.join(wt, '.git'))) return path.join(dir, name);
+  }
+  return null;
+}
+
+// Git in a worktree that PR code has run in. That code can rewrite the
+// worktree's .git file to point at a repository of its own, whose config
+// runs commands (core.fsmonitor, hooks) when git runs there, on the host; or
+// delete it, so git walks up to a parent repository. So the git dir comes
+// from the main repository's records, never from the .git file, and hooks
+// and fsmonitor are off.
+function worktreeGit(source, wt, args, { allowFail = false } = {}) {
+  const gitDir = worktreeGitDir(source, wt);
+  if (!gitDir) {
+    if (allowFail) return null;
+    throw new Error(`${wt} is not a worktree of ${source}`);
+  }
+  return git(wt, ['--git-dir', gitDir, '--work-tree', wt, '-c', 'core.fsmonitor=false', '-c', `core.hooksPath=${path.join(gitDir, 'arw-no-hooks')}`, ...args], { allowFail });
 }
 
 function revParse(cwd, rev) {
@@ -81,4 +128,4 @@ function grepFiles(cwd, rev, word, pathspecs, cap) {
   return { files: files.slice(0, cap), truncated: files.length > cap };
 }
 
-module.exports = { git, revParse, mergeBase, isClean, changedFiles, diffPatch, showFile, grepFiles };
+module.exports = { git, worktreeGit, worktreeGitDir, revParse, mergeBase, isClean, changedFiles, diffPatch, showFile, grepFiles };

@@ -67,8 +67,9 @@ function executor(fixTobe) {
 // Stands in for pytest: the test passes only on the base implementation (or,
 // with baseFails, never: a defect the base has too). With linkTo, the PR
 // code replaces tests/ with a link to that directory during head-2.
-function runner(calls, { baseFails = false, linkTo = null } = {}) {
+function runner(calls, { baseFails = false, linkTo = null, plantGit = null } = {}) {
   return async ({ cwd, logFile, phase }) => {
+    if (plantGit && phase === 'head-1') plantGit(cwd);
     if (linkTo && phase === 'head-2') {
       fs.rmSync(path.join(cwd, 'tests'), { recursive: true, force: true });
       fs.symlinkSync(linkTo, path.join(cwd, 'tests'), 'junction');
@@ -122,4 +123,25 @@ test('N2: PR code that turned tests/ into a link out of the worktree cannot make
   assert.deepEqual([f.label, f.repro.control], ['REPRODUCED', null]);
   const rec = JSON.parse(fs.readFileSync(path.join(revisionDir(runDir, loadContext(runDir).context_id), 'repro', 'T1-technical-F1.json'), 'utf8'));
   assert.match(rec.notes.join(' '), /base control not run: tests is a link/);
+});
+
+// What a container can do to the worktree it is given: point .git at a
+// repository of its own whose config runs a command (core.fsmonitor) when
+// the harness next runs git there, on the host.
+function plantEvilGit(marker) {
+  return (cwd) => {
+    const evil = path.join(cwd, '.evil');
+    sh(cwd, ['init', '-q', evil]);
+    sh(evil, ['config', 'core.fsmonitor', `echo pwned > "${marker.replace(/\\/g, '/')}"; false`]);
+    fs.rmSync(path.join(cwd, '.git'), { force: true }); // hidden on Windows: replace, do not overwrite
+    fs.writeFileSync(path.join(cwd, '.git'), 'gitdir: .evil/.git\n');
+  };
+}
+
+test('PR code that rewrites the worktree .git file cannot make the harness run a command on the host', async () => {
+  const marker = path.join(tmpDir('arw-control-marker-'), 'pwned');
+  const { validation, calls } = await review('if days < 31:', 4, { plantGit: plantEvilGit(marker) });
+  assert.ok(!fs.existsSync(marker), 'git on the host ran a command the worktree configured');
+  assert.ok(calls.length >= 1);
+  assert.ok(validation.findings.find((x) => x.id === 'T1-technical-F1'));
 });

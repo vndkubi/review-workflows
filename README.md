@@ -77,7 +77,9 @@ any path in it may be a symlink (tracked, or made by a build). Writing the model
 reading or deleting JUnit reports all refuse paths that go through a link (`src/lib/confine.js`). A test path or
 PR test file name with anything other than letters, digits and `_ . - /` never reaches a shell command.
 The check and the write are separate calls, so a process left running in the background (a build daemon)
-could still swap a directory in between.
+could still swap a directory in between. Git in such a worktree never reads its `.git` file (PR code can point
+it at a repository whose config runs commands, or delete it so git finds a parent repository): the git dir
+comes from the main repository's records, with hooks and fsmonitor off.
 
 After the review, every blocking (P1/P2) finding that was not withdrawn gets one reproduction attempt per
 duplicate cluster:
