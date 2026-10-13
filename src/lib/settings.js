@@ -32,6 +32,8 @@ const ENV_SETTINGS = [
   ['ARW_LARGE_PR_LINES', 'review', 'number', '2000', 'A PR with more changed lines is flagged as large.', null, [1, 1000000]],
   ['ARW_VIEWPOINT_FILES', 'review', 'number', '25', 'Most files per whole-diff viewpoint part (V0_1, V0_2, ...).', null, [5, 500]],
   ['ARW_STATIC', 'static', 'enum', 'on', 'Run linters on the changed files before planning.', ['on', 'off']],
+  ['ARW_RUN_IMPACTED_TESTS', 'static', 'enum', 'off', 'Run the existing tests that cover changed files at base and head (executes PR code, like repro).', ['off', 'on']],
+  ['ARW_IMPACTED_TESTS_MAX', 'static', 'number', '10', 'Most impacted test files to run.', null, [1, 100]],
   ['ARW_RUFF_BIN', 'static', 'string', '', 'Path to ruff when it is not on PATH (e.g. ...\\Python312\\Scripts\\ruff.exe).'],
   ['ARW_SEMGREP_BIN', 'static', 'string', '', 'Path to semgrep when it is not on PATH.'],
   ['ARW_SEMGREP_CONFIG', 'static', 'string', '', 'semgrep rules (file or directory) when the repository has no .semgrep.yml.'],

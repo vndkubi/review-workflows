@@ -70,6 +70,8 @@ function diskUsage() {
         if (review && path.resolve(review).startsWith(path.resolve(worktreeRoot()) + path.sep) && fs.existsSync(review)) worktrees.push({ path: review, size: sizeOf(review), source });
         const repro = path.join(dir, 'repro-wt');
         if (fs.existsSync(repro)) worktrees.push({ path: repro, size: sizeOf(repro), source: review || source });
+        const testsWt = path.join(dir, 'tests-wt'); // left behind by an interrupted impacted-test run
+        if (fs.existsSync(testsWt)) worktrees.push({ path: testsWt, size: sizeOf(testsWt), source: review || source });
       }
       const attempts = attemptDirs(dir).reduce((n, d) => n + sizeOf(d), 0);
       const wtSize = worktrees.reduce((n, w) => n + w.size, 0);

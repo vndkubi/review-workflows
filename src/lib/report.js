@@ -106,6 +106,12 @@ function renderReport(runDir, validation, identity) {
     out.push('', `## Large PR: ${size.files} files, ${size.lines} changed lines`, '', `Above the review limits (${size.limits.files} files / ${size.limits.lines} lines): the review is spread thin and a person cannot check it well. Units ran riskiest first. Consider splitting along the planned units (riskiest first; units that share files stay together):`, '');
     for (const p of validation.split || []) out.push(`- **${p.units.join(' + ')}** (${p.files.length} file(s), ${p.lines} lines, risk ${p.risk}) — ${p.desc}`);
   }
+  const impacted = (readJsonIfExists(path.join(runDir, 'static.json'), {}) || {}).impacted_tests;
+  if (impacted && impacted.results && impacted.results.length) {
+    const broken = impacted.results.filter((r) => ['newly_failing', 'new_test_failing'].includes(r.verdict));
+    out.push('', `## Impacted tests (run at base and head)${broken.length ? ` — ${broken.length} broken by this change` : ''}`, '');
+    for (const r of impacted.results) out.push(`- \`${r.test}\`: **${r.verdict}**${r.head && r.head.failing && r.head.failing.length ? ` — ${r.head.failing.map((f) => `${f.name}: ${String(f.message || '').replace(/\s+/g, ' ').slice(0, 160)}`).join('; ')}` : ''}`);
+  }
   if (validation.gaps.length) out.push('', '## Not verified', '', ...validation.gaps.map((g) => `- ${g}`));
   if (validation.items && validation.items.length) {
     const texts = new Map(JSON.parse(readInput(runDir, loadContext(runDir), 'review-items') || '[]').map((i) => [i.id, i]));

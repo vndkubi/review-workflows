@@ -20,6 +20,7 @@ const { runRepro } = require('./repro');
 const { carryOver } = require('./carry-over');
 const { collectStatic } = require('./static-evidence');
 const { prSize, fileRisks, scoreUnits, suggestSplit } = require('./pr-size');
+const { runImpactedTests, renderImpacted } = require('./impacted-tests');
 const { makeSources } = require('./validate');
 const { writeReport } = require('./report');
 const { extractTicketKey } = require('./jira');
@@ -80,7 +81,7 @@ function ticketInputs(run, { ticket, info }) {
   return { key, ...t };
 }
 
-async function planPhase({ runDir, run, info, executor, models, log, singleRole, tickets, incremental = false, ciApi = null }) {
+async function planPhase({ runDir, run, info, executor, models, log, singleRole, tickets, incremental = false, ciApi = null, impactedRunner }) {
   const { checkout, head_sha: head, base_sha: base } = run.identity;
   const changed = git.changedFiles(checkout, base, head);
   const patch = git.diffPatch(checkout, base, head);
@@ -90,8 +91,10 @@ async function planPhase({ runDir, run, info, executor, models, log, singleRole,
   const repoCfg = run.identity.local ? {} : github.reposConfig().repos[run.identity.repo] || {};
   const statics = collectStatic({ repo: run.identity.repo, checkout, base, head, changed, reviewable: pack.reviewable.filter((f) => f.status !== 'D').map((f) => f.path), parsed, local: run.identity.local, repoCfg, api: ciApi, log });
   const { markdown: staticMarkdown, ...staticRecord } = statics;
+  // Opt-in: the impacted tests, run at base and head (executes PR code).
+  staticRecord.impacted_tests = await runImpactedTests({ runDir, checkout, base, head, impact: statics.tests, repoCfg, runner: impactedRunner, log });
   writeJsonAtomic(path.join(runDir, 'static.json'), staticRecord);
-  pack.text += `\n${staticMarkdown}`;
+  pack.text += `\n${staticMarkdown}${renderImpacted(staticRecord.impacted_tests)}`;
   // Instruction-like text aimed at an AI reviewer, anywhere in PR content.
   const injection = scanInjection([...addedLines(parsed), { where: 'PR description', lines: textLines(info.body) }, { where: 'ticket', lines: textLines(tickets.evidence) }]);
   writeJsonAtomic(path.join(runDir, 'injection.json'), { scanned_at: nowIso(), hits: injection });
@@ -193,7 +196,7 @@ function freezePhase({ runDir, run, info, tickets, planned }) {
   return context;
 }
 
-async function reviewPr({ repo, pr, ticket, executor, preflight, models = {}, workers, singleRole, skipSeams, skipRebuttals, skipSynthesis, refresh, noRepro, reproRunner, testCommand, log = () => {}, prepared, ciApi = null }) {
+async function reviewPr({ repo, pr, ticket, executor, preflight, models = {}, workers, singleRole, skipSeams, skipRebuttals, skipSynthesis, refresh, noRepro, reproRunner, testCommand, log = () => {}, prepared, ciApi = null, impactedRunner }) {
   const { runDir, run, info } = prepare({ repo, pr, prepared });
   log(`run dir ${runDir}; head ${run.identity.head_sha.slice(0, 12)} base ${run.identity.base_sha.slice(0, 12)}`);
   const tickets = ticketInputs(run, { ticket, info });
@@ -224,7 +227,7 @@ async function reviewPr({ repo, pr, ticket, executor, preflight, models = {}, wo
       const pf = await preflight();
       if (!pf.ok) throw new Error(`executor preflight failed (${pf.error_class}): ${pf.error_message}`);
     }
-    const planned = await planPhase({ runDir, run, info, executor, models, log, singleRole, tickets, incremental: Boolean(previous), ciApi: prepared ? ciApi : github.apiGet });
+    const planned = await planPhase({ runDir, run, info, executor, models, log, singleRole, tickets, incremental: Boolean(previous), ciApi: prepared ? ciApi : github.apiGet, impactedRunner });
     context = freezePhase({ runDir, run, info, tickets, planned });
     log(`froze context ${context.context_id} (${run.review.units.length} units)`);
     if (previous) {

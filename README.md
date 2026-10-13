@@ -167,6 +167,14 @@ file paths appended where `{files}` appears). Commands run without a shell, with
 environment, and file names are passed as `./path` so a PR cannot turn one into an option. `ARW_STATIC=off`
 disables linters.
 
+**Impacted tests (opt-in).** With `ARW_RUN_IMPACTED_TESTS=on` (or `"run_impacted_tests": true` on a repository)
+the existing tests found by test impact (up to `ARW_IMPACTED_TESTS_MAX`, 10) run at the base and at the head in
+their own worktree, grouped per toolchain and module (Maven `-Dtest=A,B`, Gradle `--tests`, pytest paths). Each
+test file gets a verdict — **newly failing** (passes on base, fails on head: broken by this change), still
+failing, fixed, passing, new test passing/failing — with the failing cases' messages. The result is frozen
+into the evidence pack and shown in the report and the Overview tab. This executes PR code like repro does,
+with secrets removed from the environment; leave it off for repositories you do not trust.
+
 **Large PRs.** The whole-diff viewpoints (V0 technical, V1 business) answer one coverage row per file, so on
 more than `ARW_VIEWPOINT_FILES` (25) files they are split into parts of neighbouring files (`V0_1`, `V0_2`, …).
 Every unit gets a deterministic risk score (changed lines, boundary signals, money/auth/data paths up,

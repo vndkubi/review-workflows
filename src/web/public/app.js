@@ -510,6 +510,14 @@ function staticView(s) {
       h('p', {}, h('strong', {}, l.tool), l.error ? h('span', { class: 'muted small' }, ` not run: ${l.error}`) : ` ${l.total} hit(s), ${l.hits.filter((x) => x.on_added_line).length} on added lines`),
       l.hits.length ? h('ul', {}, l.hits.map((x) => h('li', { class: 'small' }, h('span', { class: 'mono' }, `${x.path}:${x.line}`), x.rule ? ` [${x.rule}]` : '', ` ${x.message}`, x.on_added_line ? h('span', { class: 'badge warn' }, 'added line') : null))) : null))));
   }
+  const it = s.impacted_tests;
+  if (it && it.results && it.results.length) {
+    const cls = { newly_failing: 'bad', new_test_failing: 'bad', still_failing: 'warn', failing: 'bad', fixed: 'ok', passing: 'ok', new_test_passing: 'ok' };
+    out.push(...section('Impacted tests at base → head', table(['Test', 'Base', 'Head', 'Verdict', 'Failures on head'], it.results.map((r) => [
+      h('span', { class: 'mono small' }, r.test), r.base ? r.base.status : 'absent', r.head ? r.head.status : 'absent',
+      h('span', { class: `badge ${cls[r.verdict] || 'warn'}` }, r.verdict.replace(/_/g, ' ')),
+      h('div', { class: 'small' }, ((r.head && r.head.failing) || []).map((f) => h('div', {}, h('strong', {}, f.name), ` ${f.message || ''}`)))]))));
+  }
   out.push(...section('Test impact', table(['Changed source', 'Tests found'], s.tests.sources.map((t) => [
     h('span', { class: 'mono small' }, t.source),
     t.tests.length ? h('div', {}, t.tests.map((x) => h('div', { class: 'small' }, h('span', { class: 'mono' }, x.path), ` (${x.how})`, x.changed_in_pr ? h('span', { class: 'badge ok' }, 'changed in PR') : h('span', { class: 'badge' }, 'not changed')))) : h('span', { class: 'badge warn' }, 'no test found'),
