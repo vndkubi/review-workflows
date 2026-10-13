@@ -237,6 +237,18 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
       }
     }],
     ['GET', /^\/api\/acceptance$/, () => feedback.acceptanceStats()],
+    ['GET', /^\/api\/checklist\/proposals$/, () => require('../lib/checklist-mining').mineChecklist()],
+    ['POST', /^\/api\/checklist\/accept$/, (m, q, body) => {
+      try {
+        return require('../lib/checklist-mining').acceptProposal(String(body.id || ''), { text: body.text ? String(body.text) : undefined, category: body.category ? String(body.category) : undefined });
+      } catch (err) {
+        throw data.httpError(400, err.message);
+      }
+    }],
+    ['GET', /^\/api\/retro$/, (m, q) => {
+      const days = Number(q.get('since'));
+      return require('../lib/retro').retrospective({ sinceDays: Number.isFinite(days) && days > 0 ? Math.min(days, 3650) : undefined });
+    }],
     ['GET', /^\/api\/evals$/, () => {
       const evals = require('../lib/eval');
       return { dir: evals.evalDir(), cases: evals.loadCases().map((c) => ({ id: c.id, repo: c.repo, expected: (c.expected || []).length, not_expected: (c.not_expected || []).length, errors: c.errors })), runs: evals.listRuns() };

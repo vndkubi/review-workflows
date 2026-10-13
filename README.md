@@ -195,6 +195,26 @@ look-alikes are left out of the published draft and P1/P2 ones are published wit
 person rejected is never published. Validation never reads this memory, so verdicts stay a function of the
 frozen context. Local reviews share memory with the configured repository whose `checkout` is that directory.
 
+### Retrospective and checklist mining
+
+```bash
+node src/cli/arw.js retro --since 30 [--save]       # where calls and tokens go, what the validator rejects, who finds what
+node src/cli/arw.js checklist propose               # checklist changes mined from kept and rejected findings
+node src/cli/arw.js checklist accept add-1a2b3c4d --text "Money is rounded to the currency unit before it is stored."
+```
+
+`retro` reads run directories only: calls, repairs and first-try acceptance per job kind, the most common
+validator rejections (receipts keep a sample of the errors), findings per reviewer with how many people kept or
+dropped, budget stops and executor failures, plus rule-based suggestions that name the evidence they rest on.
+It has already paid off: on real runs the most repeated repair was a shortened input id (`"evidence"` for
+`"evidence-pack"`), which the runtime now completes itself.
+
+`checklist propose` suggests three kinds of change: **add** (the same kind of defect kept in two or more reviews
+with no checklist item behind it), **avoid** (look-alike findings rejected in two or more reviews become a
+"Do not report" line) and **revise** (an item whose findings are mostly rejected). Accepting writes the line
+under "## Learned from reviews" with the next free `CK-<CAT>-<n>` id; the new policy hash refreshes later
+reviews. The dashboard's **Insights** page shows both, with one-click accept.
+
 ### Evals: measure before you trust a change
 
 A case (`evals/cases/<id>.json`, git-ignored because it points at your clones) is a commit range plus labels:

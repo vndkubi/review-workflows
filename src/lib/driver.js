@@ -179,6 +179,8 @@ async function runModelJob(env, spec) {
       candidate = stripNulls(parseModelJson(res.output));
     } catch (err) {
       lastErrors = [`output is not one JSON object: ${err.message}`];
+      receipt.errors = [lastErrors[0].slice(0, 300)];
+      flushReceipts();
       repair = { errors: lastErrors, previous: res.output };
       log(`invalid JSON ${spec.label}`);
       continue;
@@ -189,6 +191,7 @@ async function runModelJob(env, spec) {
     if (changes.length) fs.writeFileSync(path.join(attemptDir, 'canonicalized.txt'), `${changes.join('\n')}\n`);
     const errors = spec.validate(candidate);
     receipt.validation_errors = errors.length;
+    if (errors.length) receipt.errors = errors.slice(0, 5).map((e) => e.slice(0, 300));
     flushReceipts();
     if (errors.length) {
       lastErrors = errors;

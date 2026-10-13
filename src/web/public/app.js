@@ -183,6 +183,7 @@ async function render() {
     else if (view === 'publish') await openPublish(await api('GET', `/api/prs/${encodeURIComponent(decodeURIComponent(arg))}`));
     else if (view === 'new-review') renderNewReview();
     else if (view === 'new-ticket') renderNewTicket();
+    else if (view === 'insights') await renderInsights();
     else if (view === 'evals') await renderEvals(arg ? decodeURIComponent(arg) : null);
     else if (view === 'jobs') renderJobs();
     else if (view === 'job') renderJob(arg);
@@ -1253,6 +1254,61 @@ async function diskPanel() {
     h('div', { class: 'row mt12' }, h('label', { class: 'small' }, 'Untouched for ', days, ' days'), h('label', { class: 'small' }, runs, ' whole runs (otherwise worktrees and attempt files)'),
       h('button', { class: 'btn', onclick: go(false) }, 'Preview'), h('button', { class: 'btn danger', onclick: go(true) }, 'Clean up')),
     h('p', { class: 'small muted' }, 'Removing a review worktree makes that run read-only: reports stay, re-validation and the source view need it.'));
+}
+
+// ---------- insights: retrospective, checklist proposals, acceptance ----------
+async function renderInsights() {
+  const since = sessionStorage.getItem('retro-since') || '30';
+  const [r, mined, acc] = await Promise.all([
+    api('GET', `/api/retro${since === 'all' ? '' : `?since=${since}`}`),
+    api('GET', '/api/checklist/proposals'),
+    api('GET', '/api/acceptance'),
+  ]);
+  const pick = h('select', { 'aria-label': 'period' }, [['7', 'last 7 days'], ['30', 'last 30 days'], ['90', 'last 90 days'], ['all', 'all runs']].map(([v, l]) => h('option', { value: v, selected: v === since }, l)));
+  pick.addEventListener('change', () => { sessionStorage.setItem('retro-since', pick.value); render(); });
+  const t = r.totals;
+  const pctOf = (x) => (x == null ? '–' : `${Math.round(x * 100)}%`);
+  put($main,
+    h('h1', {}, 'Insights'),
+    h('p', { class: 'muted' }, 'Measured from run directories and your decisions; no model involved. Suggestions name the evidence they rest on.'),
+    h('div', { class: 'row' }, pick),
+    h('div', { class: 'stats' }, stat(t.runs, 'runs'), stat(t.calls, 'model calls'), stat(t.repairs, 'repairs'), stat(t.input_tokens, 'input tokens'), stat(t.findings, 'findings'), stat(t.withdrawn, 'withdrawn'), stat(t.confirmed, 'CONFIRMED')),
+    ...section('Suggestions', h('ul', {}, r.suggestions.map((s) => h('li', {}, h('span', { class: 'badge' }, s.area), ` ${s.text}`)))),
+    ...section(`Checklist proposals (${mined.proposals.length})`, checklistProposals(mined)),
+    ...section('Jobs', table(['Kind', 'Jobs', 'Calls', 'Repairs', 'First try', 'Ended invalid', 'Input tokens'],
+      Object.entries(r.kinds).sort((a, b) => b[1].input_tokens - a[1].input_tokens).map(([k, x]) => [h('span', { class: 'mono small' }, k), x.jobs, x.calls, x.repairs, pctOf(x.first_try_rate), x.failed, fmtNum(x.input_tokens)]))),
+    ...section('Most common validator rejections', r.patterns.length
+      ? h('ul', {}, r.patterns.slice(0, 15).map((p) => h('li', { class: 'small' }, h('strong', {}, `${p.count}× `), h('code', {}, p.pattern), h('span', { class: 'muted' }, ` — ${Object.keys(p.kinds).join(', ')}`))))
+      : h('p', { class: 'muted small' }, 'None recorded.')),
+    ...section('Who produces findings', table(['Reviewer', 'Findings', 'Own', 'Withdrawn', 'Kept', 'Dropped'],
+      Object.entries(r.producers).map(([w, p]) => [w, p.findings, p.canonical, p.withdrawn, p.kept, p.dropped]))),
+    acceptanceView(acc),
+  );
+}
+
+function checklistProposals(mined) {
+  if (!mined.proposals.length) return h('p', { class: 'muted small' }, `Nothing to propose from ${mined.decided} decided finding(s). Proposals appear when the same kind of finding is kept, or rejected, in at least two reviews.`);
+  const kindText = { add: 'add a viewpoint', avoid: 'stop reporting', revise: 'revise an item' };
+  return mined.proposals.map((p) => {
+    const text = h('input', { type: 'text', class: 'minw', value: p.text, maxlength: '300', 'aria-label': 'checklist line' });
+    const cat = h('input', { type: 'text', value: p.kind === 'avoid' ? 'NO' : 'LR', pattern: '[A-Z]{2,4}', size: '4', 'aria-label': 'category' });
+    const accept = async () => {
+      if (!confirm('Add this line to the checklist? Later reviews will cite it.')) return;
+      try {
+        const res = await api('POST', '/api/checklist/accept', { id: p.id, text: text.value, category: cat.value });
+        toast(`Added ${res.id}`);
+        render();
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+    return h('div', { class: 'panel' },
+      h('div', { class: 'row' }, h('span', { class: `badge ${p.kind === 'avoid' ? 'warn' : p.kind === 'revise' ? 'bad' : 'ok'}` }, kindText[p.kind]), p.ck ? h('code', {}, p.ck) : null, h('span', { class: 'small muted' }, p.evidence)),
+      h('ul', {}, p.examples.map((e) => h('li', { class: 'small' }, h('a', { href: `#/pr/${e.run}` }, e.run), ` ${e.finding} [${e.severity}] ${e.title}`))),
+      p.kind === 'revise'
+        ? h('p', { class: 'small' }, 'Current line: ', h('q', {}, p.text), ' — edit it in config/policies/checklist.md.')
+        : h('div', { class: 'row mt8' }, text, cat, h('button', { class: 'btn primary', onclick: accept }, 'Add to checklist')));
+  });
 }
 
 // ---------- evals ----------

@@ -155,6 +155,20 @@ function canonicalizeCandidate(candidate, sources) {
         changes.push(`${at}: normalized path`);
       }
     }
+    // A shortened input id ("evidence", "inputs/plan.txt") that names exactly
+    // one frozen input. Measured with `arw retro`: the most repeated reason
+    // for repairs on real runs. The quote is still checked against it.
+    if (ev.kind === 'input' && typeof ev.path === 'string' && sources && sources.inputIds) {
+      const ids = sources.inputIds();
+      if (!ids.includes(ev.path)) {
+        const bare = ev.path.replace(/^inputs?[/:]/, '').replace(/\.txt$/, '');
+        const hits = ids.includes(bare) ? [bare] : ids.filter((id) => id.startsWith(`${bare}-`));
+        if (bare && hits.length === 1) {
+          changes.push(`${at}.path: "${ev.path}" -> "${hits[0]}"`);
+          ev.path = hits[0];
+        }
+      }
+    }
     if (typeof ev.quote !== 'string' || typeof ev.path !== 'string') return;
     if (ev.kind === 'input' && /^\s*\d+\| /m.test(ev.quote)) {
       ev.quote = ev.quote.replace(/^\s*\d+\| /gm, '');

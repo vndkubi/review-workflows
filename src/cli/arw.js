@@ -35,6 +35,9 @@ What people did with the findings:
 
 Measuring the reviewer:
   arw eval cases | run | list | show | rescore | compare | label | add   (arw eval for details)
+  arw retro [--since 30] [--save]              where calls go, what the validator rejects, suggestions
+  arw checklist propose | accept <id> [--text "..."] [--category BZ]
+                                               checklist items mined from kept and rejected findings
 
 Human gates (the runtime never approves):
   arw gate approve|reject|status (--ticket KEY | --repo owner/name --pr <n>) --gate ${Object.keys(GATES).join('|')} [--note "..."]
@@ -187,6 +190,42 @@ function cmdAcceptance() {
     for (const [k, c] of Object.entries(buckets).sort()) console.log(`  ${line(k, c)}`);
   }
   console.log(`\n${s.runs.length} run(s) with feedback (arw feedback --repo ... --pr ... after submitting a review)`);
+  return 0;
+}
+
+function cmdChecklist(argv) {
+  const [sub, ...rest] = argv;
+  const args = parseArgs(rest);
+  const mining = require('../lib/checklist-mining');
+  if (sub === 'propose' || !sub) {
+    const { proposals, decided } = mining.mineChecklist({ minRuns: Number(args.minRuns) || 2 });
+    for (const p of proposals) {
+      console.log(`${p.id}  [${p.kind}]${p.ck ? ` ${p.ck}` : ''} ${p.text}\n    ${p.evidence}`);
+      for (const e of p.examples) console.log(`    - ${e.run} ${e.finding} [${e.severity}] ${e.title}`);
+    }
+    console.log(`${proposals.length} proposal(s) from ${decided} finding(s) people decided on. Accept: arw checklist accept <id> [--text "..."] [--category BZ]`);
+    return 0;
+  }
+  if (sub === 'accept') {
+    const res = mining.acceptProposal(String(args._[0] || ''), { text: args.text, category: args.category });
+    console.log(`added ${res.line}\nto ${res.file}. Reviews frozen from now on cite it; older contexts are refreshed on their next run.`);
+    return 0;
+  }
+  throw new Error('usage: arw checklist propose [--min-runs 2] | accept <id> [--text "..."] [--category BZ]');
+}
+
+function cmdRetro(argv) {
+  const args = parseArgs(argv, ['save']);
+  const { retrospective, renderRetro } = require('../lib/retro');
+  const r = retrospective({ sinceDays: args.since ? Number(args.since) : undefined });
+  const text = renderRetro(r);
+  console.log(text);
+  if (args.save) {
+    const file = path.join(RUNS, 'retro', `${r.at.slice(0, 10)}${r.since_days ? `-last${r.since_days}d` : ''}.md`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text);
+    console.log(`saved ${file}`);
+  }
   return 0;
 }
 
@@ -363,6 +402,10 @@ async function main(argv) {
       return cmdAcceptance();
     case 'eval':
       return cmdEval(rest);
+    case 'retro':
+      return cmdRetro(rest);
+    case 'checklist':
+      return cmdChecklist(rest);
     case 'status':
       return cmdStatus();
     case 'doctor':

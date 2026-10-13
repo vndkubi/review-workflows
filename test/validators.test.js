@@ -162,6 +162,22 @@ test('canonicalize: strips N| prefixes from input quotes only, never touches nor
   assert.equal(code.evidence[0].quote, '9| x', 'code quotes are never rewritten');
 });
 
+// Measured with arw retro on real runs: models cite "evidence" for
+// "evidence-pack", costing a repair each time.
+test('canonicalize: a shortened input id that names exactly one input is completed', () => {
+  const { canonicalizeCandidate } = require('../src/lib/validate');
+  const short = { evidence: [{ kind: 'input', path: 'review', start_line: 1, end_line: 1, quote: 'x' }] };
+  const changes = canonicalizeCandidate(short, sources);
+  assert.equal(short.evidence[0].path, 'review-items');
+  assert.match(changes.join(), /"review" -> "review-items"/);
+  const file = { evidence: [{ kind: 'input', path: 'inputs/requirements.txt', start_line: 1, end_line: 1, quote: 'x' }] };
+  canonicalizeCandidate(file, sources);
+  assert.equal(file.evidence[0].path, 'requirements');
+  const ambiguous = { evidence: [{ kind: 'input', path: 'policy', start_line: 1, end_line: 1, quote: 'x' }] };
+  canonicalizeCandidate({ evidence: ambiguous.evidence }, { ...sources, inputIds: () => ['policy-a', 'policy-b'] });
+  assert.equal(ambiguous.evidence[0].path, 'policy', 'two candidates: left for the validator');
+});
+
 test('canonicalize: a repeated input quote re-anchors to its first occurrence; repeated code does not', () => {
   const { canonicalizeCandidate } = require('../src/lib/validate');
   const dup = { evidence: [{ kind: 'input', path: 'policy-policies-checklist', start_line: 9, end_line: 9, quote: 'Boundary conditions' }] };

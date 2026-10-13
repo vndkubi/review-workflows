@@ -24,7 +24,7 @@ async function runLooseJob({ executor, label, workDir, cwd, model, effort, build
       useSchema = false;
       log(`${label}: degenerate structured output; retrying without --output-schema`);
     }
-    (receipts[label] = receipts[label] || []).push({
+    const receipt = {
       attempt: attempt + 1,
       mode,
       model: res.model,
@@ -35,8 +35,15 @@ async function runLooseJob({ executor, label, workDir, cwd, model, effort, build
       error_class: res.error_class,
       error_message: res.error_message,
       at: nowIso(),
-    });
+    };
+    (receipts[label] = receipts[label] || []).push(receipt);
     writeJsonAtomic(receiptsFile, receipts);
+    // A sample of what the validator rejected, for `arw retro`.
+    const noteErrors = (errs) => {
+      receipt.validation_errors = errs.length;
+      receipt.errors = errs.slice(0, 5).map((e) => String(e).slice(0, 300));
+      writeJsonAtomic(receiptsFile, receipts);
+    };
     if (['auth', 'billing', 'rate_limit', 'config'].includes(res.error_class)) {
       return { ok: false, blocked: true, errors: [`${res.error_class}: ${res.error_message}`] };
     }
@@ -50,12 +57,14 @@ async function runLooseJob({ executor, label, workDir, cwd, model, effort, build
       candidate = stripNulls(parseModelJson(res.output));
     } catch (err) {
       lastErrors = [`output is not one JSON object: ${err.message}`];
+      noteErrors(lastErrors);
       repair = { errors: lastErrors, previous: res.output };
       continue;
     }
     const errors = validate(candidate);
     if (errors.length) {
       lastErrors = errors;
+      noteErrors(errors);
       repair = { errors: errors.slice(0, 40), previous: JSON.stringify(candidate, null, 1) };
       log(`rejected ${label}: ${errors[0]}`);
       continue;
