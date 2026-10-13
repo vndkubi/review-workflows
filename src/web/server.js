@@ -92,6 +92,15 @@ function readBody(req) {
   });
 }
 
+// Eval helpers throw plain errors for bad ids or labels: those are 400s.
+function evalCall(fn) {
+  try {
+    return fn();
+  } catch (err) {
+    throw data.httpError(/^no eval run|^bad eval run/.test(err.message) ? 404 : 400, err.message);
+  }
+}
+
 function knownRepo(repo) {
   if (!Object.prototype.hasOwnProperty.call(reposConfig().repos, repo)) throw data.httpError(400, `${repo} is not in config/repos.json`);
   return repo;
@@ -228,6 +237,21 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
       }
     }],
     ['GET', /^\/api\/acceptance$/, () => feedback.acceptanceStats()],
+    ['GET', /^\/api\/evals$/, () => {
+      const evals = require('../lib/eval');
+      return { dir: evals.evalDir(), cases: evals.loadCases().map((c) => ({ id: c.id, repo: c.repo, expected: (c.expected || []).length, not_expected: (c.not_expected || []).length, errors: c.errors })), runs: evals.listRuns() };
+    }],
+    ['GET', /^\/api\/evals\/compare$/, (m, q) => evalCall(() => require('../lib/eval').compare(String(q.get('a') || ''), String(q.get('b') || '')))],
+    ['GET', /^\/api\/evals\/([A-Za-z0-9._-]+)$/, (m) => evalCall(() => require('../lib/eval').loadRun(m[1]))],
+    ['POST', /^\/api\/evals\/run$/, (m, q, body) => {
+      const args = ['eval', 'run'];
+      const ids = Array.isArray(body.cases) ? body.cases.map(String).filter((c) => /^[A-Za-z0-9._-]+$/.test(c)) : [];
+      if (ids.length) args.push('--case', ids.join(','));
+      if (body.label && /^[A-Za-z0-9._-]{1,40}$/.test(String(body.label))) args.push('--label', String(body.label));
+      return queue.enqueue({ kind: 'eval', title: `eval${body.label ? ` ${body.label}` : ''}`, args, target: { type: 'eval' } });
+    }],
+    ['POST', /^\/api\/evals\/([A-Za-z0-9._-]+)\/rescore$/, (m) => evalCall(() => require('../lib/eval').rescore(m[1]))],
+    ['POST', /^\/api\/evals\/([A-Za-z0-9._-]+)\/label$/, (m, q, body) => evalCall(() => require('../lib/eval').labelFinding({ runId: m[1], caseId: String(body.case || ''), findingId: String(body.finding || ''), as: String(body.as || '') }))],
     ['GET', /^\/api\/memory$/, () => memory.loadMemory().entries.slice().reverse()],
     ['POST', /^\/api\/memory\/(RJ-[0-9a-f]+)\/forget$/, (m) => {
       if (!memory.forget(m[1])) throw data.httpError(404, 'no such memory entry');

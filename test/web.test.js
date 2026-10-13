@@ -11,6 +11,7 @@ process.env.ARW_RUNS_DIR = tmpDir('arw-web-runs-');
 // Never touch the real .env / repos.json from tests.
 process.env.ARW_ENV_FILE = path.join(tmpDir('arw-web-env-'), '.env');
 process.env.ARW_REPOS_FILE = path.join(tmpDir('arw-web-repos-'), 'repos.json');
+process.env.ARW_EVAL_DIR = tmpDir('arw-web-evals-');
 
 const { createServer } = require('../src/web/server');
 const { advanceTicket } = require('../src/lib/ticket-pipeline');
@@ -199,6 +200,16 @@ test('dashboard server', async (t) => {
     assert.deepEqual((await call(port, 'GET', '/api/memory')).json, []);
     assert.equal((await call(port, 'POST', '/api/memory/RJ-0123456789/forget', { body: {}, headers: auth })).status, 404);
     assert.equal((await call(port, 'GET', '/api/acceptance')).json.total.rate, null);
+  });
+
+  await t.test('evals: list, run as a job, unknown runs are 404', async () => {
+    const list = await call(port, 'GET', '/api/evals');
+    assert.deepEqual([list.json.cases, list.json.runs], [[], []]);
+    assert.equal((await call(port, 'GET', '/api/evals/nope')).status, 404);
+    assert.equal((await call(port, 'POST', '/api/evals/run', { body: {} })).status, 403);
+    const job = await call(port, 'POST', '/api/evals/run', { body: { cases: ['a', 'b;rm -rf', 'c'], label: 'prompt-v2' }, headers: auth });
+    assert.deepEqual(job.json.args, ['eval', 'run', '--case', 'a,c', '--label', 'prompt-v2'], 'case ids are filtered');
+    assert.equal((await call(port, 'POST', '/api/evals/nope/label', { body: { case: 'a', finding: 'x', as: 'tp' }, headers: auth })).status, 404);
   });
 
   await t.test('local reviews: a git directory becomes a queued job; bad input is refused', async () => {

@@ -35,8 +35,11 @@ function snapshotCommit(dir, mode, head) {
 }
 
 // Returns { repo, pr, prepared } for reviewPr.
-function prepareLocal({ dir, base = 'main', mode = 'branch' }) {
-  if (!MODES.includes(mode)) throw new Error(`mode must be one of ${MODES.join(', ')}`);
+// `head` (a commit) reviews merge-base(base, head)..head instead of the
+// working copy: the "range" mode evals use to replay a known change.
+function prepareLocal({ dir, base = 'main', mode = 'branch', head: headRev = null }) {
+  if (headRev) mode = 'range';
+  else if (!MODES.includes(mode)) throw new Error(`mode must be one of ${MODES.join(', ')}`);
   const repoDir = path.resolve(dir);
   if (!fs.existsSync(repoDir) || !git.git(repoDir, ['rev-parse', '--git-dir'], { allowFail: true })) throw new Error(`${repoDir} is not a git repository`);
   const top = git.git(repoDir, ['rev-parse', '--show-toplevel']).trim();
@@ -47,7 +50,11 @@ function prepareLocal({ dir, base = 'main', mode = 'branch' }) {
 
   let head;
   let baseSha;
-  if (mode === 'branch') {
+  if (mode === 'range') {
+    head = git.revParse(top, headRev);
+    baseSha = git.mergeBase(top, baseRef, head);
+    if (baseSha === head) throw new Error(`${headRev} has no commits beyond ${baseRef}`);
+  } else if (mode === 'branch') {
     head = headCommit;
     baseSha = git.mergeBase(top, baseRef, head);
     if (baseSha === head) throw new Error(`${branch} has no commits beyond ${baseRef}`);
@@ -58,7 +65,7 @@ function prepareLocal({ dir, base = 'main', mode = 'branch' }) {
 
   const name = path.basename(top).replace(/[^A-Za-z0-9._-]/g, '_');
   const repo = `local/${name}`;
-  const pr = runNumber(`${top}\0${branch}\0${mode}`);
+  const pr = runNumber(mode === 'range' ? `${top}\0${head}\0range` : `${top}\0${branch}\0${mode}`);
   const wt = path.join(worktreeRoot(), `local__${name}__${pr}`);
   if (fs.existsSync(wt)) {
     git.git(top, ['worktree', 'remove', '--force', wt], { allowFail: true });
@@ -67,8 +74,10 @@ function prepareLocal({ dir, base = 'main', mode = 'branch' }) {
   git.git(top, ['worktree', 'prune'], { allowFail: true });
   git.git(top, ['worktree', 'add', '--detach', wt, head]);
 
-  const log = git.git(top, ['log', '--format=- %s%n%b', `${baseSha}..${headCommit}`], { allowFail: true }) || '';
-  const title = mode === 'branch' ? `${branch} (local branch vs ${baseRef})` : `${branch} (${mode} changes)`;
+  const log = git.git(top, ['log', '--format=- %s%n%b', `${baseSha}..${mode === 'range' ? head : headCommit}`], { allowFail: true }) || '';
+  const title = mode === 'range'
+    ? `${(git.git(top, ['log', '-1', '--format=%s', head], { allowFail: true }) || headRev).trim()} (${head.slice(0, 12)} vs ${baseRef})`
+    : mode === 'branch' ? `${branch} (local branch vs ${baseRef})` : `${branch} (${mode} changes)`;
   return {
     repo,
     pr,

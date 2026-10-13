@@ -9,3 +9,5 @@ _study/
 # local repo -> checkout mapping
 config/repos.json
 config/mcp.json
+# eval cases point at private clones and runs hold their code
+evals/

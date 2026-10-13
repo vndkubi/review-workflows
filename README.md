@@ -187,6 +187,43 @@ look-alikes are left out of the published draft and P1/P2 ones are published wit
 person rejected is never published. Validation never reads this memory, so verdicts stay a function of the
 frozen context. Local reviews share memory with the configured repository whose `checkout` is that directory.
 
+### Evals: measure before you trust a change
+
+A case (`evals/cases/<id>.json`, git-ignored because it points at your clones) is a commit range plus labels:
+
+```json
+{
+  "id": "discount-boundary",
+  "repo": "D:/src/payment-api",
+  "base": "3f2a91c", "head": "8be04d7",
+  "flags": { "noRepro": true },
+  "expected": [
+    { "id": "E1", "path": "src/main/java/com/acme/OrderService.java", "lines": [8, 12],
+      "keywords": ["1000000", "boundary"], "severity_at_least": "P2" }
+  ],
+  "not_expected": [
+    { "id": "N1", "path": "billing/fees.py", "keywords": ["float"], "why": "rates are display-only" }
+  ]
+}
+```
+
+```bash
+node src/cli/arw.js eval add --repo your-org/payment-api --pr 123   # a case from a reviewed PR (after arw feedback / rejections)
+node src/cli/arw.js eval run --label baseline                       # each case: arw review --local <repo> --base --head, own runs dir
+node src/cli/arw.js eval label --run <run> --case <id> --finding T1-technical-F2 --as fp
+node src/cli/arw.js eval rescore <run>
+node src/cli/arw.js eval compare <baseline run> <new run>           # exits 1 when an expected defect is newly missed
+```
+
+A finding matches a label when it cites code in that file, within ±3 lines of `lines` (if given), and its
+title/ASIS/TOBE contains one of the `keywords` (if given). **Recall** = expected defects found; **precision** =
+true / (true + known false) among the findings a reader would see (not withdrawn by the red team, not folded as
+duplicates); everything else is listed as unlabelled for you to label. The scorecard also records a defect the
+red team wrongly withdrew, the cost of every case, the tool hash, the arw commit and the model. Comparisons
+re-score both runs on the current labels. The dashboard's **Evals** page runs cases as a job, labels findings
+with one click and compares runs. `ARW_EXECUTOR_MODULE` replaces codex with a module (tests use
+`test/fixtures/fake-review-executor.js`).
+
 ## Run layout
 
 ```
@@ -222,5 +259,4 @@ Java + Python fixture repo, with a scripted executor standing in for codex. Test
 
 ## Not built yet
 
-- An eval harness that replays frozen contexts against labelled findings.
 - Multi-user access (the dashboard is single-user, loopback only).

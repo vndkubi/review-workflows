@@ -66,7 +66,8 @@ function fmtTime(iso) {
 }
 
 function fmtNum(n) {
-  return n == null ? '–' : Number(n).toLocaleString();
+  // Preformatted values ("50%", "1.2 s") pass through unchanged.
+  return n == null ? '–' : typeof n === 'string' && !/^-?\d+(\.\d+)?$/.test(n) ? n : Number(n).toLocaleString();
 }
 
 function fmtMs(ms) {
@@ -151,7 +152,7 @@ async function refreshJobs() {
 }
 
 function targetHash(t) {
-  return t.type === 'pr' ? `#/pr/${t.id}` : t.type === 'ticket' ? `#/ticket/${t.key}` : '#/settings';
+  return t.type === 'pr' ? `#/pr/${t.id}` : t.type === 'ticket' ? `#/ticket/${t.key}` : t.type === 'eval' ? '#/evals' : '#/settings';
 }
 
 async function startJob(promise, label) {
@@ -182,6 +183,7 @@ async function render() {
     else if (view === 'publish') await openPublish(await api('GET', `/api/prs/${encodeURIComponent(decodeURIComponent(arg))}`));
     else if (view === 'new-review') renderNewReview();
     else if (view === 'new-ticket') renderNewTicket();
+    else if (view === 'evals') await renderEvals(arg ? decodeURIComponent(arg) : null);
     else if (view === 'jobs') renderJobs();
     else if (view === 'job') renderJob(arg);
     else if (view === 'settings' || view === 'system') await renderSettings();
@@ -1247,6 +1249,92 @@ async function diskPanel() {
     h('div', { class: 'row mt12' }, h('label', { class: 'small' }, 'Untouched for ', days, ' days'), h('label', { class: 'small' }, runs, ' whole runs (otherwise worktrees and attempt files)'),
       h('button', { class: 'btn', onclick: go(false) }, 'Preview'), h('button', { class: 'btn danger', onclick: go(true) }, 'Clean up')),
     h('p', { class: 'small muted' }, 'Removing a review worktree makes that run read-only: reports stay, re-validation and the source view need it.'));
+}
+
+// ---------- evals ----------
+const pctText = (x) => (x == null ? '–' : `${Math.round(x * 1000) / 10}%`);
+
+async function renderEvals(runId) {
+  if (runId && runId.startsWith('compare:')) return renderEvalCompare(...runId.slice(8).split('..'));
+  if (runId) return renderEvalRun(runId);
+  const e = await api('GET', '/api/evals');
+  const running = state.jobs.find((j) => j.kind === 'eval' && ['queued', 'running'].includes(j.status));
+  const label = h('input', { type: 'text', placeholder: 'label, e.g. prompt-v2', pattern: '[A-Za-z0-9._-]{1,40}', class: 'minw' });
+  const picks = Object.fromEntries(e.cases.filter((c) => !c.errors.length).map((c) => [c.id, h('input', { type: 'checkbox', checked: true })]));
+  const pickA = h('select', { 'aria-label': 'baseline run' }, e.runs.map((r, i) => h('option', { value: r.id, selected: i === 1 }, r.id)));
+  const pickB = h('select', { 'aria-label': 'new run' }, e.runs.map((r, i) => h('option', { value: r.id, selected: i === 0 }, r.id)));
+  const start = () => startJob(api('POST', '/api/evals/run', { cases: Object.entries(picks).filter(([, b]) => b.checked).map(([id]) => id), label: label.value.trim() || undefined }), 'Eval');
+  put($main,
+    h('h1', {}, 'Evals'),
+    h('p', { class: 'muted' }, 'Labelled changes replayed through the whole review, scored without a model: recall on defects a good review must find, precision on findings labelled true or false. Measure a prompt, model or code change before trusting it.'),
+    running ? livePanel(running) : null,
+    ...section(`Cases (${e.cases.length})`,
+      e.cases.length ? table(['', 'Case', 'Repository', 'Expected', 'Not expected', 'Problems'], e.cases.map((c) => [
+        picks[c.id] || '', h('strong', {}, c.id), h('span', { class: 'mono small' }, c.repo || ''), c.expected, c.not_expected,
+        c.errors.length ? h('span', { class: 'err small' }, c.errors.join('; ')) : h('span', { class: 'badge ok' }, 'ok')]))
+        : h('p', { class: 'muted small' }, `No cases yet. Write JSON files in ${e.dir}/cases (see the README), or build one from a reviewed PR: arw eval add --repo owner/name --pr N.`),
+      e.cases.length ? h('div', { class: 'row mt8' }, label, h('button', { class: 'btn primary', disabled: Boolean(running) || !Object.keys(picks).length, onclick: start }, 'Run selected cases')) : null,
+      h('p', { class: 'small muted' }, 'Each case runs as a full review (real model calls, repro off unless the case enables it).')),
+    ...section('Runs', e.runs.length ? [
+      table(['Run', 'Recall', 'Precision', 'TP / FP / unlabelled', 'Cases', 'Calls', 'Model', 'Started'], e.runs.map((r) => [
+        h('a', { href: `#/evals/${encodeURIComponent(r.id)}` }, r.id), pctText(r.totals.recall), pctText(r.totals.precision),
+        `${r.totals.tp} / ${r.totals.fp} / ${r.totals.unlabelled}`, `${r.totals.completed}/${r.totals.cases}`, fmtNum(r.totals.calls), r.model || 'default', fmtTime(r.started_at)])),
+      e.runs.length > 1 ? h('div', { class: 'row mt8' }, pickA, ' → ', pickB, h('button', { class: 'btn', onclick: () => { location.hash = `#/evals/${encodeURIComponent(`compare:${pickA.value}..${pickB.value}`)}`; } }, 'Compare')) : null,
+    ] : h('p', { class: 'muted small' }, 'No eval runs yet.')),
+  );
+}
+
+async function renderEvalRun(id) {
+  const card = await api('GET', `/api/evals/${encodeURIComponent(id)}`);
+  const t = card.totals;
+  const label = (caseId, findingId, as) => async () => {
+    try {
+      await api('POST', `/api/evals/${encodeURIComponent(id)}/label`, { case: caseId, finding: findingId, as });
+      await api('POST', `/api/evals/${encodeURIComponent(id)}/rescore`, {});
+      toast(as === 'tp' ? 'Labelled as a real defect' : 'Labelled as a false positive');
+      render();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  const verdictCls = { tp: 'ok', fp: 'bad', unlabelled: 'warn' };
+  put($main,
+    h('a', { href: '#/evals' }, '← evals'),
+    h('h1', {}, `Eval ${card.id}`),
+    h('p', { class: 'small muted' }, `tool ${card.tool_sha256.slice(0, 12)} · arw ${String(card.arw_commit || '?').slice(0, 12)} · model ${card.model || 'default'} · ${card.executor} · ${fmtTime(card.started_at)}${card.rescored_at ? ` · re-scored ${fmtTime(card.rescored_at)}` : ''}`),
+    h('div', { class: 'stats' }, stat(pctText(t.recall), `recall (${t.found}/${t.expected})`), stat(pctText(t.precision), 'precision'), stat(t.tp, 'true'), stat(t.fp, 'false'), stat(t.unlabelled, 'unlabelled'), stat(t.calls, 'model calls')),
+    card.cases.map((s) => h('section', { class: 'panel' },
+      h('h2', {}, s.id, ' ', statusBadge(s.status)),
+      h('p', { class: 'small' }, `recall ${pctText(s.recall)} · precision ${pctText(s.precision)} · ${s.cost ? s.cost.calls : 0} calls`, s.recommendation ? ` · ${s.recommendation}` : ''),
+      s.error ? h('div', { class: 'notice bad small' }, `exit ${s.exit_code}: ${s.error}`) : null,
+      (s.details.expected || []).length ? table(['Expected', 'Found by', 'Severity'], s.details.expected.map((e) => [
+        h('strong', {}, e.id), e.found ? e.by.join(', ') : h('span', { class: 'badge bad' }, e.withdrawn_by && e.withdrawn_by.length ? `missed (withdrawn: ${e.withdrawn_by.join(', ')})` : 'missed'),
+        e.severity ? `${e.severity}${e.severity_ok === false ? ' (too low)' : ''}` : '–'])) : null,
+      (s.details.findings || []).length ? table(['Finding', 'Verdict', 'Label'], s.details.findings.map((f) => [
+        h('div', {}, h('span', { class: `badge ${f.severity}` }, f.severity), ` ${f.title}`, h('div', { class: 'mono small muted' }, `${f.id}${f.path ? ` · ${f.path}` : ''}`)),
+        h('span', { class: `badge ${verdictCls[f.verdict]}` }, f.verdict, f.labels && f.labels.length ? ` (${f.labels.join(', ')})` : ''),
+        f.verdict === 'unlabelled' ? h('div', { class: 'row' },
+          h('button', { class: 'btn', onclick: label(s.id, f.id, 'tp') }, 'Real defect'),
+          h('button', { class: 'btn', onclick: label(s.id, f.id, 'fp') }, 'False positive')) : ''])) : h('p', { class: 'muted small' }, 'No findings shown.'))),
+  );
+}
+
+async function renderEvalCompare(a, b) {
+  const c = await api('GET', `/api/evals/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+  const pair = (x) => `${pctText(x[0])} → ${pctText(x[1])}`;
+  put($main,
+    h('a', { href: '#/evals' }, '← evals'),
+    h('h1', {}, 'Compare eval runs'),
+    h('p', {}, h('span', { class: 'mono' }, c.a.id), ' → ', h('span', { class: 'mono' }, c.b.id)),
+    h('div', { class: 'stats' },
+      stat(pair([c.a.totals.recall, c.b.totals.recall]), 'recall'),
+      stat(pair([c.a.totals.precision, c.b.totals.precision]), 'precision'),
+      stat(`${c.a.totals.calls} → ${c.b.totals.calls}`, 'model calls')),
+    c.a.tool !== c.b.tool ? h('p', { class: 'small muted' }, 'The review tool changed between these runs.') : null,
+    table(['Case', 'Recall', 'Precision', 'False positives', 'Calls', 'Changes'], c.rows.map((r) => [
+      r.id, pair(r.recall), pair(r.precision), `${r.fp[0] == null ? '–' : r.fp[0]} → ${r.fp[1]}`, `${r.calls[0] == null ? '–' : r.calls[0]} → ${r.calls[1]}`,
+      h('div', {}, r.newly_missed.length ? h('span', { class: 'badge bad' }, `newly missed ${r.newly_missed.join(', ')}`) : null, r.newly_found.length ? h('span', { class: 'badge ok' }, `newly found ${r.newly_found.join(', ')}`) : null)])),
+  );
 }
 
 async function memoryPanel() {

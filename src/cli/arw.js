@@ -19,7 +19,8 @@ Ticket pipeline (understand the requirement; stops at each human gate):
   arw ticket <KEY> [--from-file ticket.md] [--extra notes.md ...] [--repo owner/name | --repo-dir <path>] [--redo intake|requirements|spec|analysis]
 
 PR review (plan -> freeze -> waves -> validate -> report):
-  arw review --local [<repo dir>] [--base main] [--mode branch|staged|worktree]   self-review before a PR
+  arw review --local [<repo dir>] [--base main] [--mode branch|staged|worktree | --head <commit>]
+                                               self-review before a PR (--head: one commit range)
   arw review --repo owner/name --pr <n> [--ticket KEY] [--workers 4] [--single-role]
              [--skip-seams] [--skip-rebuttals] [--skip-synthesis] [--refresh] [--no-repro]
   arw validate --repo owner/name --pr <n>      re-validate on disk, no model calls
@@ -31,6 +32,9 @@ What people did with the findings:
   arw feedback --repo owner/name --pr <n>      read the submitted review back: kept / edited / dropped
   arw acceptance                               acceptance rate by severity, label and role
   arw memory [--repo owner/name] [--forget RJ-...]
+
+Measuring the reviewer:
+  arw eval cases | run | list | show | rescore | compare | label | add   (arw eval for details)
 
 Human gates (the runtime never approves):
   arw gate approve|reject|status (--ticket KEY | --repo owner/name --pr <n>) --gate ${Object.keys(GATES).join('|')} [--note "..."]
@@ -55,7 +59,10 @@ function models() {
   };
 }
 
-const executor = (opts) => runCodex({ ...opts, effort: opts.effort || executorConfig().effort });
+// ARW_EXECUTOR_MODULE swaps codex for a module exporting the same executor
+// function (evals of the harness itself, tests). Preflight is skipped then.
+const customExecutor = process.env.ARW_EXECUTOR_MODULE ? require(path.resolve(process.env.ARW_EXECUTOR_MODULE)) : null;
+const executor = customExecutor || ((opts) => runCodex({ ...opts, effort: opts.effort || executorConfig().effort }));
 
 function runDirFrom(args) {
   if (args.ticket) return ticketDir(args.ticket);
@@ -88,7 +95,7 @@ async function cmdReview(argv) {
   let local = null;
   if (args.local) {
     const { prepareLocal } = require('../lib/local-review');
-    local = prepareLocal({ dir: args.local === true ? process.cwd() : args.local, base: args.base || 'main', mode: args.mode || 'branch' });
+    local = prepareLocal({ dir: args.local === true ? process.cwd() : args.local, base: args.base || 'main', mode: args.mode || 'branch', head: args.head || null });
     args.repo = local.repo;
     args.pr = local.pr;
     console.error(`local review of ${local.prepared.info.title}: run ${local.repo.replace('/', '__')}__${local.pr}`);
@@ -100,7 +107,7 @@ async function cmdReview(argv) {
     pr: Number(args.pr),
     ticket: args.ticket,
     executor,
-    preflight: () => preflight({ cwd: ROOT, attemptDir: pfDir, model: executorConfig().model }),
+    preflight: customExecutor ? undefined : () => preflight({ cwd: ROOT, attemptDir: pfDir, model: executorConfig().model }),
     models: models(),
     workers: Number(args.workers) || envInt('ARW_WORKERS', 4),
     singleRole: args.singleRole,
@@ -181,6 +188,64 @@ function cmdAcceptance() {
   }
   console.log(`\n${s.runs.length} run(s) with feedback (arw feedback --repo ... --pr ... after submitting a review)`);
   return 0;
+}
+
+async function cmdEval(argv) {
+  const evals = require('../lib/eval');
+  const [sub, ...rest] = argv;
+  const args = parseArgs(rest, ['force']);
+  const pct = (x) => (x == null ? '-' : `${Math.round(x * 1000) / 10}%`);
+  if (sub === 'cases') {
+    const cases = evals.loadCases();
+    for (const c of cases) console.log(`${c.errors.length ? 'INVALID' : 'ok     '} ${c.id.padEnd(30)} ${(c.expected || []).length} expected · ${(c.not_expected || []).length} not expected${c.errors.length ? `\n        ${c.errors.join('\n        ')}` : ''}`);
+    console.log(`${cases.length} case(s) in ${path.join(evals.evalDir(), 'cases')}`);
+    return cases.some((c) => c.errors.length) ? 1 : 0;
+  }
+  if (sub === 'run') {
+    const { outDir, card } = await evals.runEval({ only: args.case ? String(args.case).split(',') : undefined, label: args.label, log });
+    const t = card.totals;
+    console.log(`recall ${pct(t.recall)} (${t.found}/${t.expected}) · precision ${pct(t.precision)} (${t.tp} TP, ${t.fp} FP) · ${t.unlabelled} unlabelled · ${t.calls} calls\nscorecard: ${path.join(outDir, 'scorecard.md')}`);
+    return t.completed === t.cases ? 0 : 1;
+  }
+  if (sub === 'list') {
+    for (const r of evals.listRuns()) console.log(`${r.id.padEnd(40)} recall ${pct(r.totals.recall).padStart(6)} · precision ${pct(r.totals.precision).padStart(6)} · ${r.totals.unlabelled} unlabelled · ${r.totals.calls} calls · ${r.model || 'default'}`);
+    return 0;
+  }
+  if (sub === 'show') {
+    evals.loadRun(String(args._[0] || ''));
+    console.log(fs.readFileSync(path.join(evals.evalDir(), 'runs', args._[0], 'scorecard.md'), 'utf8'));
+    return 0;
+  }
+  if (sub === 'rescore') {
+    const card = evals.rescore(String(args._[0] || ''));
+    console.log(`recall ${pct(card.totals.recall)} · precision ${pct(card.totals.precision)} · ${card.totals.unlabelled} unlabelled`);
+    return 0;
+  }
+  if (sub === 'compare') {
+    const c = evals.compare(String(args._[0] || ''), String(args._[1] || ''));
+    console.log(`${c.a.id} -> ${c.b.id}\nrecall ${pct(c.a.totals.recall)} -> ${pct(c.b.totals.recall)} · precision ${pct(c.a.totals.precision)} -> ${pct(c.b.totals.precision)} · calls ${c.a.totals.calls} -> ${c.b.totals.calls}`);
+    for (const r of c.rows) console.log(`  ${r.id.padEnd(30)} recall ${pct(r.recall[0])} -> ${pct(r.recall[1])} · FP ${r.fp[0]} -> ${r.fp[1]}${r.newly_missed.length ? ` · NEWLY MISSED ${r.newly_missed.join(', ')}` : ''}${r.newly_found.length ? ` · newly found ${r.newly_found.join(', ')}` : ''}`);
+    return c.rows.some((r) => r.newly_missed.length) ? 1 : 0;
+  }
+  if (sub === 'label') {
+    if (!args.run || !args.case || !args.finding || !args.as) throw new Error('usage: arw eval label --run <eval run> --case <id> --finding <id> --as tp|fp [--severity P2]');
+    const label = evals.labelFinding({ runId: String(args.run), caseId: String(args.case), findingId: String(args.finding), as: String(args.as), severity: args.severity });
+    console.log(`added ${label.id}: ${label.path}:${label.lines.join('-')} keywords ${label.keywords.join(', ')} — re-score with: arw eval rescore ${args.run}`);
+    return 0;
+  }
+  if (sub === 'add') {
+    const { file, case: c } = evals.caseFromRun(runDirFrom(args), { id: args.id, force: args.force });
+    console.log(`wrote ${file}: ${c.expected.length} expected, ${c.not_expected.length} not expected`);
+    return 0;
+  }
+  console.log(`usage:
+  arw eval cases                                  list and check the labelled cases
+  arw eval run [--case a,b] [--label name]        review every case (one process and runs dir each), then score
+  arw eval list | show <run> | rescore <run> | compare <run A> <run B>
+  arw eval label --run <run> --case <id> --finding <id> --as tp|fp [--severity P2]
+  arw eval add (--repo owner/name --pr <n> | --run <run dir>) [--id name] [--force]
+                                                  a case from a reviewed PR: kept findings expected, dropped/rejected not`);
+  return sub ? 1 : 0;
 }
 
 function cmdGate(argv) {
@@ -296,6 +361,8 @@ async function main(argv) {
       return cmdMemory(rest);
     case 'acceptance':
       return cmdAcceptance();
+    case 'eval':
+      return cmdEval(rest);
     case 'status':
       return cmdStatus();
     case 'doctor':
