@@ -6,7 +6,7 @@
 // validation verdict itself never reads this file: it stays a function of
 // the frozen context.
 const path = require('node:path');
-const { readJsonIfExists, writeJsonAtomic, sha256, nowIso } = require('./util');
+const { readJsonIfExists, writeJsonAtomic, sha256, nowIso, samePath } = require('./util');
 const { RUNS } = require('./runs');
 const { words, jaccard } = require('./cluster');
 
@@ -26,7 +26,7 @@ function memoryScope(identity) {
   if (identity && identity.local) {
     const { reposConfig } = require('./github');
     const dir = path.resolve(identity.local.dir);
-    const hit = Object.entries(reposConfig().repos).find(([, r]) => r && r.checkout && path.resolve(r.checkout) === dir);
+    const hit = Object.entries(reposConfig().repos).find(([, r]) => r && r.checkout && samePath(r.checkout, dir));
     if (hit) return hit[0];
   }
   return identity.repo;

@@ -138,8 +138,24 @@ async function runPool(items, width, fn) {
   return results;
 }
 
+// Two paths name the same directory: symlinks and Windows 8.3 short names
+// resolved, case-insensitive on Windows.
+function samePath(a, b) {
+  const norm = (p) => {
+    let r = path.resolve(p);
+    try {
+      r = fs.realpathSync.native(r);
+    } catch {
+      /* missing: compare as given */
+    }
+    return process.platform === 'win32' ? r.toLowerCase() : r;
+  };
+  return Boolean(a && b) && norm(a) === norm(b);
+}
+
 module.exports = {
   ROOT,
+  samePath,
   sha256,
   sha256File,
   sha256Value,

@@ -6,7 +6,7 @@
 // the PR head and the tool are unchanged.
 const fs = require('node:fs');
 const path = require('node:path');
-const { ROOT, readJson, readJsonIfExists, writeJsonAtomic, writeFileAtomic, nowIso, ensureDir } = require('./util');
+const { ROOT, readJson, readJsonIfExists, writeJsonAtomic, writeFileAtomic, nowIso, ensureDir, samePath } = require('./util');
 const git = require('./git');
 const { parsePatch } = require('./patch');
 const { buildEvidencePack } = require('./evidence-pack');
@@ -246,7 +246,7 @@ async function reviewPr({ repo, pr, ticket, executor, preflight, models = {}, wo
   if (!noRepro && validation.status !== 'INVALIDATED') {
     // Local reviews take the test command of the configured repo at that path.
     const repoCfg = prepared
-      ? (prepared.local && Object.values(github.reposConfig().repos).find((r) => r && r.checkout && path.resolve(r.checkout) === path.resolve(prepared.local.dir))) || {}
+      ? (prepared.local && Object.values(github.reposConfig().repos).find((r) => r && r.checkout && samePath(r.checkout, prepared.local.dir))) || {}
       : github.reposConfig().repos[repo] || {};
     const results = await runRepro({
       runDir,

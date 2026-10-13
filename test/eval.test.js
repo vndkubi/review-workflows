@@ -89,7 +89,8 @@ test('run, score, label, rescore, and build a case from a reviewed run', async (
   const kept = s.details.findings.find((f) => f.verdict === 'tp').id;
   fs.writeFileSync(path.join(runDir, 'feedback.json'), JSON.stringify({ findings: s.details.findings.map((f) => ({ id: f.id, verdict: f.id === kept ? 'kept' : 'dropped' })) }));
   const built = evals.caseFromRun(runDir, { id: 'from-review' });
-  assert.equal(built.case.repo.replace(/\\/g, '/').toLowerCase(), r.dir.replace(/\\/g, '/').toLowerCase());
+  // realpath: Windows temp dirs may be 8.3 short names (RUNNER~1) while git reports long ones.
+  assert.equal(fs.realpathSync.native(built.case.repo).toLowerCase(), fs.realpathSync.native(r.dir).toLowerCase());
   assert.deepEqual([built.case.expected.length, built.case.not_expected.length], [1, 2]);
   assert.deepEqual(built.case.expected[0].lines, [2, 2]);
   assert.deepEqual(evals.validateCase(built.case), []);

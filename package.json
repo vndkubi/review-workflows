@@ -9,7 +9,7 @@
     "arw": "src/cli/arw.js"
   },
   "scripts": {
-    "test": "node --test \"test/*.test.js\"",
+    "test": "node scripts/test.js",
     "arw": "node src/cli/arw.js",
     "doctor": "node src/cli/arw.js doctor",
     "start": "node src/cli/arw.js ui"
