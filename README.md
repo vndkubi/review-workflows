@@ -196,7 +196,9 @@ their own worktree, grouped per toolchain and module (Maven `-Dtest=A,B`, Gradle
 test file gets a verdict — **newly failing** (passes on base, fails on head: broken by this change), still
 failing, fixed, passing, new test passing/failing — with the failing cases' messages. The result is frozen
 into the evidence pack and shown in the report and the Overview tab. This executes PR code like repro does,
-with secrets removed from the environment; leave it off for repositories you do not trust.
+with secrets removed from the environment; leave it off for repositories you do not trust. pytest runs with
+`ARW_PYTHON`, or the first of `python`, `python3`, `py` that can import pytest (on some machines `python` is
+another tool's virtualenv).
 
 **Large PRs.** The whole-diff viewpoints (V0 technical, V1 business) answer one coverage row per file, so on
 more than `ARW_VIEWPOINT_FILES` (25) files they are split into parts of neighbouring files (`V0_1`, `V0_2`, …).
