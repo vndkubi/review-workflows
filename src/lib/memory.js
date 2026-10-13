@@ -43,22 +43,28 @@ function codePath(f) {
 // identifiers of the code its fix would change. `src` = context.source.
 const symbolCache = new Map();
 function anchorOf(f, src) {
-  const ev = (f.evidence || []).find((e) => e.kind === 'code' && e.revision !== 'base') || (f.evidence || []).find((e) => e.kind === 'code');
-  const anchor = { path: ev ? ev.path : null, symbol: null, authority: f.authority && f.authority.kind !== 'inferred' ? `${f.authority.kind}:${f.authority.id}` : null, fix: f.fix && f.fix.kind === 'code_change' ? [...codeTokens(f.fix.asis)].sort() : [] };
-  if (!ev || !src || !src.checkout) return anchor;
-  const rev = ev.revision === 'base' ? src.base_sha : src.head_sha;
-  const key = `${src.checkout}\0${rev}\0${ev.path}`;
-  if (!symbolCache.has(key)) {
-    if (symbolCache.size > 500) symbolCache.clear();
-    const { indexFile } = require('./impact');
-    const text = require('./git').showFile(src.checkout, rev, ev.path);
-    symbolCache.set(key, text == null ? null : indexFile(ev.path, text));
-  }
-  const idx = symbolCache.get(key);
-  if (idx) {
-    const { enclosing } = require('./impact');
-    const m = enclosing(idx, ev.start_line);
-    if (m) anchor.symbol = `${m.owner ? `${m.owner}.` : ''}${m.name}`;
+  // Reviewed-side code first, then base; the first one inside a declaration
+  // wins (a module docstring or an import line has no method).
+  const code = (f.evidence || []).filter((e) => e.kind === 'code');
+  const ordered = [...code.filter((e) => e.revision !== 'base'), ...code.filter((e) => e.revision === 'base')];
+  const anchor = { path: ordered[0] ? ordered[0].path : null, symbol: null, authority: f.authority && f.authority.kind !== 'inferred' ? `${f.authority.kind}:${f.authority.id}` : null, fix: f.fix && f.fix.kind === 'code_change' ? [...codeTokens(f.fix.asis)].sort() : [] };
+  if (!ordered.length || !src || !src.checkout) return anchor;
+  const { indexFile, enclosing } = require('./impact');
+  for (const ev of ordered) {
+    const rev = ev.revision === 'base' ? src.base_sha : src.head_sha;
+    const key = `${src.checkout}\0${rev}\0${ev.path}`;
+    if (!symbolCache.has(key)) {
+      if (symbolCache.size > 500) symbolCache.clear();
+      const text = require('./git').showFile(src.checkout, rev, ev.path);
+      symbolCache.set(key, text == null ? null : indexFile(ev.path, text));
+    }
+    const idx = symbolCache.get(key);
+    const m = idx && enclosing(idx, ev.start_line);
+    if (m) {
+      anchor.path = ev.path;
+      anchor.symbol = `${m.owner ? `${m.owner}.` : ''}${m.name}`;
+      break;
+    }
   }
   return anchor;
 }

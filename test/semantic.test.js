@@ -40,6 +40,19 @@ test('similarity: rephrased concerns match; other defects in the same method do 
   assert.ok(different.score < memory.MATCH_THRESHOLD && different.structural === 0, JSON.stringify(different));
 });
 
+// Seen on a real review: the first evidence quoted the module docstring, so
+// the finding had no method and no reachability line.
+test('anchor: the first evidence inside a declaration names the method', () => {
+  const dir = tmpDir('arw-anchor-');
+  sh(dir, ['init', '-q', '-b', 'main']);
+  require('./helpers').write(dir, 'billing/fees.py', '"""Late fees."""\n\n\ndef late_fee(days):\n    if days < 30:\n        return 0\n    return days\n');
+  sh(dir, ['add', '-A']);
+  sh(dir, ['commit', '-q', '-m', 'x']);
+  const head = sh(dir, ['rev-parse', 'HEAD']);
+  const f = { evidence: [{ kind: 'code', path: 'billing/fees.py', start_line: 1, end_line: 1, quote: '"""Late fees."""' }, { kind: 'code', path: 'billing/fees.py', start_line: 5, end_line: 5, quote: 'if days < 30:' }] };
+  assert.equal(memory.anchorOf(f, { checkout: dir, head_sha: head, base_sha: head }).symbol, 'late_fee');
+});
+
 test('memory: rejections carry an anchor; a reworded finding on the same code is matched', () => {
   const repo = makeRepo();
   const src = { checkout: repo.dir, head_sha: repo.head, base_sha: repo.base };
