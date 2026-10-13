@@ -3,6 +3,7 @@
 // for caller/consumer lookups instead of free filesystem search, which was
 // measured at 3-7.5 minutes per command in the system this one is modelled on.
 const { grepFiles, showFile } = require('./git');
+const { analyzeImpact, renderImpact } = require('./impact');
 
 const LIMITS = { refsPerSymbol: 50, symbols: 40, signals: 30 };
 
@@ -130,13 +131,24 @@ function buildEvidencePack({ cwd, base, head, changed, parsed }) {
     symbolRows.push({ name, language: info.language, declared_in: [...info.declared_in], referenced_in: files, truncated });
   }
 
+  // Call sites of the changed declarations, from a structural index that
+  // ignores comments and strings (ARW_IMPACT=off skips it).
+  let impact = null;
+  if (process.env.ARW_IMPACT !== 'off') {
+    try {
+      impact = analyzeImpact({ cwd, base, parsed });
+    } catch (err) {
+      impact = { error: err.message, scanned: 0, changed: [], edges: [], truncated: false };
+    }
+  }
   return {
     reviewable,
     skipped,
     symbols: symbolRows,
     symbols_truncated: symbols.size > LIMITS.symbols,
     signals,
-    text: renderPack({ base, head, reviewable, skipped, byPath, symbolRows, symbolsTruncated: symbols.size > LIMITS.symbols, signals, cwd }),
+    impact,
+    text: renderPack({ base, head, reviewable, skipped, byPath, symbolRows, symbolsTruncated: symbols.size > LIMITS.symbols, signals, cwd }) + (impact && !impact.error ? renderImpact(impact) : ''),
   };
 }
 

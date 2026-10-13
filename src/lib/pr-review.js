@@ -89,7 +89,7 @@ async function planPhase({ runDir, run, info, executor, models, log, singleRole,
   const pack = buildEvidencePack({ cwd: checkout, base, head, changed, parsed });
   // CI results, linter hits and test impact: frozen with the pack as leads.
   const repoCfg = run.identity.local ? {} : github.reposConfig().repos[run.identity.repo] || {};
-  const statics = collectStatic({ repo: run.identity.repo, checkout, base, head, changed, reviewable: pack.reviewable.filter((f) => f.status !== 'D').map((f) => f.path), parsed, local: run.identity.local, repoCfg, api: ciApi, log });
+  const statics = collectStatic({ repo: run.identity.repo, checkout, base, head, changed, reviewable: pack.reviewable.filter((f) => f.status !== 'D').map((f) => f.path), parsed, local: run.identity.local, repoCfg, api: ciApi, impact: pack.impact, log });
   const { markdown: staticMarkdown, ...staticRecord } = statics;
   // Opt-in: the impacted tests, run at base and head (executes PR code).
   staticRecord.impacted_tests = await runImpactedTests({ runDir, checkout, base, head, impact: statics.tests, repoCfg, runner: impactedRunner, log });

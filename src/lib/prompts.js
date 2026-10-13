@@ -59,6 +59,7 @@ const PACKET_RULES = `FINDINGS
 - fix: {"kind":"code_change","asis":<the exact current lines, copied verbatim from one of this finding's code evidence ranges>,"tobe":<complete replacement code for exactly those lines>,"reason":<why>} — prose in asis/tobe is rejected. Use {"kind":"not_code","asis":"","tobe":"","reason":<decision needed>} only for design or process decisions.
 - verification: {"method":"inspected","detail":<what you read>,"evidence":[...]} — never "executed"; you cannot run anything.
 - ids: exactly <unit id>-<role>-F<n>, numbered from 1 (the job block names them).
+- The evidence pack's "Impact" section lists call sites of the changed declarations up to three levels, from an index that ignores comments and strings. [resolved] callers import or share the package of the declaring type; [name-only] ones may call a different method of the same name. Read the callers that matter to your unit before judging compatibility; say so in coverage when a caller could not be checked.
 - The evidence pack's "Machine evidence" section (CI results, linter hits, test impact) gives leads, not findings: check each relevant lead in the code yourself and cite the code. A failing CI check or a linter hit on an added line in your unit deserves a look; a changed source whose tests were not changed supports a "missing tests for changed behaviour" finding only when the changed behaviour is real.
 
 COVERAGE

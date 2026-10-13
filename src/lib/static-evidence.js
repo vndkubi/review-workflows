@@ -159,7 +159,9 @@ function isTest(f) {
   return /(^|\/)src\/test\//.test(f) || /(^|\/)tests?\//.test(f) || /(^|\/)test_[^/]*\.py$/.test(f) || /_test\.py$/.test(f) || /(Test|Tests|IT)\.java$/.test(f);
 }
 
-function testImpact({ checkout, head, changed }) {
+// impact: the call-site analysis of the evidence pack, when available. A test
+// that (transitively) calls a changed declaration is the strongest link.
+function testImpact({ checkout, head, changed, impact = null }) {
   const all = String(git.git(checkout, ['ls-files'], { allowFail: true }) || '').split('\n').filter(Boolean);
   const tests = all.filter(isTest);
   const changedSet = new Set(changed);
@@ -173,7 +175,21 @@ function testImpact({ checkout, head, changed }) {
     const ext = src.endsWith('.java') ? '*.java' : '*.py';
     const grep = String(git.git(checkout, ['grep', '-l', '-w', '-F', name, head, '--', ext], { allowFail: true }) || '')
       .split('\n').filter(Boolean).map((l) => l.slice(head.length + 1)).filter((t) => isTest(t) && !byName.includes(t)).slice(0, 10);
-    const found = [...byName.map((t) => ({ path: t, how: 'name' })), ...grep.map((t) => ({ path: t, how: 'reference' }))].map((t) => ({ ...t, changed_in_pr: changedSet.has(t.path) }));
+    // Tests that call a changed declaration of this file, directly or through up to two callers.
+    const reached = new Set([src]);
+    const calls = [];
+    for (const level of [1, 2, 3]) {
+      for (const e of ((impact && impact.edges) || []).filter((x) => x.level === level && x.confidence === 'resolved' && reached.has(x.to.path))) {
+        if (isTest(e.from.path)) calls.push(e.from.path);
+        else reached.add(e.from.path);
+      }
+    }
+    const callers = [...new Set(calls)].filter((t) => !byName.includes(t));
+    const found = [
+      ...byName.map((t) => ({ path: t, how: callers.includes(t) ? 'name+call' : 'name' })),
+      ...callers.map((t) => ({ path: t, how: 'call' })),
+      ...grep.filter((t) => !callers.includes(t)).map((t) => ({ path: t, how: 'reference' })),
+    ].map((t) => ({ ...t, changed_in_pr: changedSet.has(t.path) }));
     out.push({ source: src, tests: found });
   }
   return { sources: out, tests_changed: changed.filter(isTest) };
@@ -210,7 +226,7 @@ function renderMarkdown(s) {
   return `${lines.join('\n')}\n`;
 }
 
-function collectStatic({ repo, checkout, base, head, changed: changedFiles, reviewable, parsed, local, repoCfg, api, log = () => {} }) {
+function collectStatic({ repo, checkout, base, head, changed: changedFiles, reviewable, parsed, local, repoCfg, api, impact = null, log = () => {} }) {
   // git.changedFiles entries ({status, path}); deleted files have no head side.
   const changed = changedFiles.filter((f) => typeof f === 'string' || f.status !== 'D').map((f) => (typeof f === 'string' ? f : f.path));
   const s = {
@@ -219,7 +235,7 @@ function collectStatic({ repo, checkout, base, head, changed: changedFiles, revi
     base,
     ci: local ? null : ciChecks({ repo, head, files: changed, api, log }),
     linters: process.env.ARW_STATIC === 'off' ? [] : runLinters({ checkout, files: reviewable, repoCfg, parsed, log }),
-    tests: testImpact({ checkout, head, changed }),
+    tests: testImpact({ checkout, head, changed, impact }),
   };
   s.markdown = renderMarkdown(s);
   return s;

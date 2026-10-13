@@ -154,6 +154,17 @@ only shows whether they are set, and MCP headers must reference them as `${NAME}
 It binds to 127.0.0.1 only, rejects unexpected `Host`/`Origin` headers, requires a per-start token for every
 write, and sends a strict CSP. There is no login, so do not expose it beyond your machine.
 
+**Impact analysis.** The evidence pack carries the call sites of every changed method or function, up to three
+levels of callers, from a structural index of the repository's Java and Python files (no parser dependency):
+comments and string literals are blanked first, declarations are indexed with their line ranges, and a
+changed declaration is one whose lines hold an added line at head or a removed line at base. Each call site
+names the method that contains it and how sure the match is: **resolved** (the caller imports or shares the
+package of the declaring type, or imports the module; or a call within the same class/file) or **name-only**
+(another method of that name is possible; not followed further, and dropped for common names such as `get`).
+`Other.name(...)` with a type-like receiver other than the owner is not counted. Tests reached through the
+callers are added to test impact as `call`. Measured on a synthetic 3,000-file Java repository: about 5 s.
+Reflection, dependency injection wiring and other repositories stay unknown; `ARW_IMPACT=off` skips it.
+
 **Machine evidence.** Before planning, the runtime collects cheap facts and freezes them in the evidence pack
 (also `runs/prs/<id>/static.json`, and the Overview tab): GitHub check runs, commit statuses and failing-check
 annotations on changed files for the head commit; linter hits on the changed files, marked when they fall on an
