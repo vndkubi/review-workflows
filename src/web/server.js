@@ -267,6 +267,7 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
       const ids = Array.isArray(body.cases) ? body.cases.map(String).filter((c) => /^[A-Za-z0-9._-]+$/.test(c)) : [];
       if (ids.length) args.push('--case', ids.join(','));
       if (body.label && /^[A-Za-z0-9._-]{1,40}$/.test(String(body.label))) args.push('--label', String(body.label));
+      if (body.config && Object.keys(require('../lib/eval').CONFIGS).includes(String(body.config))) args.push('--config', String(body.config));
       return queue.enqueue({ kind: 'eval', title: `eval${body.label ? ` ${body.label}` : ''}`, args, target: { type: 'eval' } });
     }],
     ['POST', /^\/api\/evals\/([A-Za-z0-9._-]+)\/rescore$/, (m) => evalCall(() => require('../lib/eval').rescore(m[1]))],

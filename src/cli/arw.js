@@ -23,6 +23,7 @@ PR review (plan -> freeze -> waves -> validate -> report):
                                                self-review before a PR (--head: one commit range)
   arw review --repo owner/name --pr <n> [--ticket KEY] [--workers 4] [--single-role]
              [--skip-seams] [--skip-rebuttals] [--skip-synthesis] [--refresh] [--no-repro]
+             [--single-agent]   baseline: one reviewer over the whole diff, no planner/seams/red team/synthesis
   arw validate --repo owner/name --pr <n>      re-validate on disk, no model calls
   arw publish  --repo owner/name --pr <n> [--min-severity P3] [--dry-run]
                                                creates a PENDING GitHub review you submit yourself
@@ -100,7 +101,7 @@ async function cmdTicket(argv) {
 }
 
 async function cmdReview(argv) {
-  const args = parseArgs(argv, ['singleRole', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'refresh', 'noRepro']);
+  const args = parseArgs(argv, ['singleRole', 'singleAgent', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'refresh', 'noRepro']);
   let local = null;
   if (args.local) {
     const { prepareLocal } = require('../lib/local-review');
@@ -120,6 +121,7 @@ async function cmdReview(argv) {
     models: models(),
     workers: Number(args.workers) || envInt('ARW_WORKERS', 4),
     singleRole: args.singleRole,
+    singleAgent: args.singleAgent,
     skipSeams: args.skipSeams,
     skipRebuttals: args.skipRebuttals,
     skipSynthesis: args.skipSynthesis,
@@ -277,7 +279,7 @@ async function cmdEval(argv) {
     return cases.some((c) => c.errors.length) ? 1 : 0;
   }
   if (sub === 'run') {
-    const { outDir, card } = await evals.runEval({ only: args.case ? String(args.case).split(',') : undefined, label: args.label, log });
+    const { outDir, card } = await evals.runEval({ only: args.case ? String(args.case).split(',') : undefined, label: args.label || args.config, config: args.config, log });
     const t = card.totals;
     console.log(`recall ${pct(t.recall)} (${t.found}/${t.expected}) · precision ${pct(t.precision)} (${t.tp} TP, ${t.fp} FP) · ${t.unlabelled} unlabelled · ${t.calls} calls\nscorecard: ${path.join(outDir, 'scorecard.md')}`);
     return t.completed === t.cases ? 0 : 1;
@@ -315,7 +317,8 @@ async function cmdEval(argv) {
   }
   console.log(`usage:
   arw eval cases                                  list and check the labelled cases
-  arw eval run [--case a,b] [--label name]        review every case (one process and runs dir each), then score
+  arw eval run [--case a,b] [--label name] [--config single-agent|multi-agent|multi-agent+repro]
+                                                  review every case (one process and runs dir each), then score
   arw eval list | show <run> | rescore <run> | compare <run A> <run B>
   arw eval label --run <run> --case <id> --finding <id> --as tp|fp [--severity P2]
   arw eval add (--repo owner/name --pr <n> | --run <run dir>) [--id name] [--force]

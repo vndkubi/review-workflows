@@ -1344,7 +1344,12 @@ async function renderEvals(runId) {
   const picks = Object.fromEntries(e.cases.filter((c) => !c.errors.length).map((c) => [c.id, h('input', { type: 'checkbox', checked: true })]));
   const pickA = h('select', { 'aria-label': 'baseline run' }, e.runs.map((r, i) => h('option', { value: r.id, selected: i === 1 }, r.id)));
   const pickB = h('select', { 'aria-label': 'new run' }, e.runs.map((r, i) => h('option', { value: r.id, selected: i === 0 }, r.id)));
-  const start = () => startJob(api('POST', '/api/evals/run', { cases: Object.entries(picks).filter(([, b]) => b.checked).map(([id]) => id), label: label.value.trim() || undefined }), 'Eval');
+  const config = h('select', { 'aria-label': 'configuration' },
+    h('option', { value: '' }, 'flags of each case'),
+    h('option', { value: 'single-agent' }, 'single-agent (baseline: one reviewer)'),
+    h('option', { value: 'multi-agent' }, 'multi-agent (planner, waves, red team)'),
+    h('option', { value: 'multi-agent+repro' }, 'multi-agent + reproduction'));
+  const start = () => startJob(api('POST', '/api/evals/run', { cases: Object.entries(picks).filter(([, b]) => b.checked).map(([id]) => id), label: label.value.trim() || undefined, config: config.value || undefined }), 'Eval');
   put($main,
     h('h1', {}, 'Evals'),
     h('p', { class: 'muted' }, 'Labelled changes replayed through the whole review, scored without a model: recall on defects a good review must find, precision on findings labelled true or false. Measure a prompt, model or code change before trusting it.'),
@@ -1354,11 +1359,11 @@ async function renderEvals(runId) {
         picks[c.id] || '', h('strong', {}, c.id), h('span', { class: 'mono small' }, c.repo || ''), c.expected, c.not_expected,
         c.errors.length ? h('span', { class: 'err small' }, c.errors.join('; ')) : h('span', { class: 'badge ok' }, 'ok')]))
         : h('p', { class: 'muted small' }, `No cases yet. Write JSON files in ${e.dir}/cases (see the README), or build one from a reviewed PR: arw eval add --repo owner/name --pr N.`),
-      e.cases.length ? h('div', { class: 'row mt8' }, label, h('button', { class: 'btn primary', disabled: Boolean(running) || !Object.keys(picks).length, onclick: start }, 'Run selected cases')) : null,
+      e.cases.length ? h('div', { class: 'row mt8' }, config, label, h('button', { class: 'btn primary', disabled: Boolean(running) || !Object.keys(picks).length, onclick: start }, 'Run selected cases')) : null,
       h('p', { class: 'small muted' }, 'Each case runs as a full review (real model calls, repro off unless the case enables it).')),
     ...section('Runs', e.runs.length ? [
-      table(['Run', 'Recall', 'Precision', 'TP / FP / unlabelled', 'Cases', 'Calls', 'Model', 'Started'], e.runs.map((r) => [
-        h('a', { href: `#/evals/${encodeURIComponent(r.id)}` }, r.id), pctText(r.totals.recall), pctText(r.totals.precision),
+      table(['Run', 'Config', 'Recall', 'Precision', 'TP / FP / unlabelled', 'Cases', 'Calls', 'Model', 'Started'], e.runs.map((r) => [
+        h('a', { href: `#/evals/${encodeURIComponent(r.id)}` }, r.id), r.config || '–', pctText(r.totals.recall), pctText(r.totals.precision),
         `${r.totals.tp} / ${r.totals.fp} / ${r.totals.unlabelled}`, `${r.totals.completed}/${r.totals.cases}`, fmtNum(r.totals.calls), r.model || 'default', fmtTime(r.started_at)])),
       e.runs.length > 1 ? h('div', { class: 'row mt8' }, pickA, ' → ', pickB, h('button', { class: 'btn', onclick: () => { location.hash = `#/evals/${encodeURIComponent(`compare:${pickA.value}..${pickB.value}`)}`; } }, 'Compare')) : null,
     ] : h('p', { class: 'muted small' }, 'No eval runs yet.')),

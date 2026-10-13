@@ -335,6 +335,12 @@ node src/cli/arw.js eval rescore <run>
 node src/cli/arw.js eval compare <baseline run> <new run>           # exits 1 when an expected defect is newly missed
 ```
 
+**Is the multi-agent harness worth its calls?** Run the same cases under named configurations and compare:
+`arw eval run --config single-agent` (one reviewer over the whole diff: no planner, seams, red team or
+synthesis — the baseline), `--config multi-agent`, and `--config multi-agent+repro`. Same model, same inputs,
+same labels; `arw eval compare` shows recall, precision and calls side by side. Until such runs exist on PRs
+with known defects, any claim that one configuration is better is an opinion.
+
 A finding matches a label when it cites code in that file, within ±3 lines of `lines` (if given), and its
 title/ASIS/TOBE contains one of the `keywords` (if given). **Recall** = expected defects found; **precision** =
 true / (true + known false) among the findings a reader would see (not withdrawn by the red team, not folded as

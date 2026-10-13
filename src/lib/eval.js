@@ -20,7 +20,14 @@ const { words, SEVERITY_RANK } = require('./cluster');
 const git = require('./git');
 
 const LINE_SLACK = 3;
-const FLAGS = ['singleRole', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'noRepro'];
+const FLAGS = ['singleRole', 'singleAgent', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'noRepro'];
+// Named configurations, to compare on the same cases (same model and inputs):
+// what the multi-agent waves add over one reviewer, and what execution adds.
+const CONFIGS = {
+  'single-agent': { singleAgent: true, noRepro: true },
+  'multi-agent': { singleAgent: false, noRepro: true },
+  'multi-agent+repro': { singleAgent: false, noRepro: false },
+};
 
 function evalDir() {
   return process.env.ARW_EVAL_DIR ? path.resolve(process.env.ARW_EVAL_DIR) : path.join(ROOT, 'evals');
@@ -186,7 +193,7 @@ function renderScorecard(card) {
   const lines = [
     `# Eval ${card.id}`,
     '',
-    `- started ${card.started_at}, finished ${card.finished_at || '(running)'} · tool \`${card.tool_sha256.slice(0, 12)}\` · arw commit \`${(card.arw_commit || '?').slice(0, 12)}\` · model ${card.model || 'default'}`,
+    `- started ${card.started_at}, finished ${card.finished_at || '(running)'} · tool \`${card.tool_sha256.slice(0, 12)}\` · arw commit \`${(card.arw_commit || '?').slice(0, 12)}\` · model ${card.model || 'default'} · config ${card.config || 'per-case flags'}`,
     `- **recall ${pct(t.recall)}** (${t.found}/${t.expected} expected defects found, ${t.severity_ok} at the expected severity) · **precision ${pct(t.precision)}** on labelled findings (${t.tp} true, ${t.fp} known false) · ${t.unlabelled} unlabelled`,
     `- ${t.completed}/${t.cases} case(s) complete · ${t.calls} model calls · tokens in ${t.input_tokens} / out ${t.output_tokens}`,
     '',
@@ -205,10 +212,10 @@ function renderScorecard(card) {
 }
 
 // ---------- running ----------
-function runOne(c, { outDir, arw = path.join(ROOT, 'src', 'cli', 'arw.js'), timeoutMs, log }) {
+function runOne(c, { outDir, arw = path.join(ROOT, 'src', 'cli', 'arw.js'), timeoutMs, log, configFlags = null }) {
   const caseDir = ensureDir(path.join(outDir, 'cases', c.id));
   const args = [arw, 'review', '--local', c.repo, '--base', c.base, '--head', c.head];
-  const flags = { noRepro: true, ...(c.flags || {}) };
+  const flags = { noRepro: true, ...(c.flags || {}), ...(configFlags || {}) };
   for (const k of FLAGS) if (flags[k]) args.push(`--${k.replace(/[A-Z]/g, (x) => `-${x.toLowerCase()}`)}`);
   // Worktrees go to a short path: git on Windows refuses long worktree paths.
   const wtDir = path.join(worktreeRoot(), `ev-${sha256(caseDir).slice(0, 10)}`);
@@ -241,7 +248,8 @@ function evalRunId(label) {
   return `${stamp}${label ? `-${String(label).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 40)}` : ''}`;
 }
 
-async function runEval({ only, label, log = () => {}, arw, timeoutMs = envInt('ARW_EVAL_TIMEOUT_MS', 3600000) } = {}) {
+async function runEval({ only, label, config = null, log = () => {}, arw, timeoutMs = envInt('ARW_EVAL_TIMEOUT_MS', 3600000) } = {}) {
+  if (config && !CONFIGS[config]) throw new Error(`--config: one of ${Object.keys(CONFIGS).join(', ')}`);
   const cases = loadCases({ only });
   if (!cases.length) throw new Error(`no eval cases in ${casesDir()}${only ? ` matching ${only.join(', ')}` : ''}`);
   const bad = cases.filter((c) => c.errors.length);
@@ -260,6 +268,7 @@ async function runEval({ only, label, log = () => {}, arw, timeoutMs = envInt('A
     judge_model: process.env.CODEX_JUDGE_MODEL || null,
     effort: process.env.CODEX_EFFORT || null,
     executor: process.env.ARW_EXECUTOR_MODULE ? 'custom' : 'codex',
+    config: config || 'per-case flags',
     cases: [],
     totals: null,
   };
@@ -270,7 +279,7 @@ async function runEval({ only, label, log = () => {}, arw, timeoutMs = envInt('A
   };
   save();
   for (const c of cases) {
-    const res = await runOne(c, { outDir, arw, timeoutMs, log });
+    const res = await runOne(c, { outDir, arw, timeoutMs, log, configFlags: config ? CONFIGS[config] : null });
     const score = { ...scoreCase(c, res.runDir), exit_code: res.exit_code, wall_ms: res.elapsed_ms, run_dir: res.runDir ? path.relative(outDir, res.runDir).split(path.sep).join('/') : null };
     if (score.status === 'NO_RESULT' || res.exit_code !== 0) score.error = res.tail;
     card.cases.push(score);
@@ -422,4 +431,4 @@ function labelFinding({ runId, caseId, findingId, as, severity }) {
   return label;
 }
 
-module.exports = { evalDir, loadCases, validateCase, scoreCase, aggregate, renderScorecard, runEval, rescore, listRuns, loadRun, compare, caseFromRun, labelFinding, matches, keywordsOf };
+module.exports = { CONFIGS, evalDir, loadCases, validateCase, scoreCase, aggregate, renderScorecard, runEval, rescore, listRuns, loadRun, compare, caseFromRun, labelFinding, matches, keywordsOf };

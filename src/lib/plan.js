@@ -145,6 +145,25 @@ function buildUnits(plan, reviewableFiles, items, { singleRole = false } = {}) {
   return { units, required_coverage, errors };
 }
 
+// The single-agent baseline: one unit over every reviewable file (and every
+// review item, graded by a business reviewer when there are items), no
+// orphans, seams or viewpoints. Used to measure what the multi-agent waves add.
+function singleAgentUnits(reviewableFiles, items) {
+  const hasItems = Boolean(items && items.length);
+  const unit = {
+    id: hasItems ? 'B1' : 'T1',
+    kind: hasItems ? 'business' : 'technical',
+    desc: 'Single-agent baseline: the whole change, one reviewer.',
+    covers: [...reviewableFiles.map((f) => `file:${f}`), ...(hasItems ? items.map((i) => i.id) : [])],
+    depends_on: [],
+    required: true,
+    roles: [hasItems ? 'business' : 'technical'],
+    status: 'NOT_RUN',
+  };
+  const plan = { schema_version: '1.0', hypotheses: [], units: [{ id: unit.id, kind: unit.kind, desc: unit.desc, files: reviewableFiles, items: hasItems ? items.map((i) => i.id) : [] }], gaps: [], notes: 'single-agent baseline (no planner)' };
+  return { units: [unit], required_coverage: [...unit.covers].sort(), errors: [], plan };
+}
+
 function renderPlanMarkdown({ identity, plan, units, items, reviewable, skipped }) {
   const out = [];
   out.push(`# Review plan — ${identity.repo}#${identity.pr}`, '');
@@ -169,4 +188,4 @@ function renderPlanMarkdown({ identity, plan, units, items, reviewable, skipped 
   return `${out.join('\n')}\n`;
 }
 
-module.exports = { buildUnits, renderPlanMarkdown, VIEWPOINTS };
+module.exports = { buildUnits, singleAgentUnits, renderPlanMarkdown, VIEWPOINTS };

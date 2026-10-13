@@ -34,6 +34,30 @@ function repoWithBugs() {
   return { dir, base, head: sh(dir, ['rev-parse', 'HEAD']) };
 }
 
+test('configurations: the single-agent baseline runs one reviewer, no planner, on the same case', async () => {
+  const r = repoWithBugs();
+  const dir = tmpDir('arw-eval-config-');
+  const saved = process.env.ARW_EVAL_DIR;
+  process.env.ARW_EVAL_DIR = dir;
+  try {
+    fs.mkdirSync(path.join(dir, 'cases'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'cases', 'totals.json'), JSON.stringify({ id: 'totals', repo: r.dir, base: r.base, head: r.head, expected: [{ id: 'E1', path: 'billing/total.py', keywords: ['off by one'] }] }));
+    await assert.rejects(evals.runEval({ config: 'everything' }), /--config: one of single-agent, multi-agent, multi-agent\+repro/);
+    const { card, outDir } = await evals.runEval({ config: 'single-agent', label: 'single-agent' });
+    assert.equal(card.config, 'single-agent');
+    const s = card.cases[0];
+    assert.equal(s.status, 'EXECUTED_PASS', s.error);
+    assert.equal(s.found, 1);
+    const run = JSON.parse(fs.readFileSync(path.join(outDir, s.run_dir, 'run.json'), 'utf8'));
+    assert.equal(run.review.mode, 'single-agent');
+    assert.deepEqual(run.review.units.map((u) => [u.id, u.roles]), [['T1', ['technical']]], 'one unit, one reviewer');
+    assert.ok(!fs.existsSync(path.join(outDir, s.run_dir, 'plan-work')), 'no planner call');
+    assert.equal(s.cost.calls, 1, 'one model call for the whole review');
+  } finally {
+    process.env.ARW_EVAL_DIR = saved;
+  }
+});
+
 test('cases are validated before anything runs', () => {
   assert.match(evals.validateCase({ id: 'x', repo: 'relative', base: 'a', head: 'b', expected: [] }).join(';'), /absolute path/);
   const r = repoWithBugs();
