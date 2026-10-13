@@ -462,13 +462,20 @@ test('ticket pipeline -> PR review, end to end', async (t) => {
     const api = (state) => (p) => {
       if (p.endsWith('/reviews/99')) return { id: 99, state, body: review.body, submitted_at: state === 'PENDING' ? null : '2026-10-13T10:00:00Z' };
       if (p.includes('/reviews/99/comments')) return [{ id: 1, path: b1.path, line: b1.line, body: b1.body.replace('**Impact:**', 'Please fix before merge.\n\n**Impact:**') }];
+      // The PR author answers in the thread after the review was submitted.
+      if (p.endsWith('/pulls/7/comments?per_page=100')) return [{ id: 1, body: b1.body }, { id: 2, in_reply_to_id: 1, user: { login: 'author' }, created_at: '2026-10-13T11:00:00Z', body: 'This is by design: the threshold is exclusive in the contract.' }];
       throw new Error(`unexpected ${p}`);
     };
-    assert.deepEqual(feedback.readBack(runDir, { api: api('PENDING') }).record.counts, { kept: 0, edited: 0, dropped: 0, pending: 2, dismissed: 0 });
+    const graphql = () => ({ data: { repository: { pullRequest: { reviewThreads: { nodes: [{ isResolved: true, isOutdated: false, comments: { nodes: [{ databaseId: 1 }] } }] } } } } });
+    assert.deepEqual(feedback.readBack(runDir, { api: api('PENDING') }).record.counts, { kept: 0, edited: 0, dropped: 0, pending: 2, dismissed: 0, disputed: 0, fixed: 0, resolved: 0 });
     assert.equal(memory.loadMemory().entries.length, 0, 'nothing is remembered while the review is pending');
-    const { record: fb, remembered } = feedback.readBack(runDir, { api: api('COMMENTED') });
+    const { record: fb, remembered } = feedback.readBack(runDir, { api: api('COMMENTED'), graphql });
     assert.deepEqual(fb.findings.map((f) => [f.id, f.verdict]), [['B1-business-F1', 'edited'], ['B2-technical-F1', 'dropped']]);
-    assert.deepEqual(remembered.map((e) => [e.finding_id, e.scope, e.source]), [['B2-technical-F1', 'acme/shop', 'github']]);
+    // The author disputed B1 in its thread and the thread was resolved.
+    const thread = fb.findings[0].thread;
+    assert.deepEqual([thread.replies, thread.signal, thread.resolved, thread.last_reply.user], [1, 'disputed', true, 'author']);
+    assert.deepEqual([fb.counts.disputed, fb.counts.resolved], [1, 1]);
+    assert.deepEqual(remembered.map((e) => [e.finding_id, e.scope, e.source]), [['B2-technical-F1', 'acme/shop', 'github']], 'a dispute is shown, not remembered: only the reviewer rejects');
     const stats = feedback.acceptanceStats();
     assert.deepEqual([stats.total.edited, stats.total.dropped, stats.total.rate], [1, 1, 50]);
     assert.equal(stats.groups.severity.P3.dropped, 1);

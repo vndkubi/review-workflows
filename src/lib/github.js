@@ -60,6 +60,13 @@ function apiGet(apiPath) {
   return JSON.parse(gh(['api', apiPath]));
 }
 
+// GraphQL through gh: strings with -f, numbers with -F.
+function graphql(query, vars = {}) {
+  const args = ['api', 'graphql', '-f', `query=${query}`];
+  for (const [k, v] of Object.entries(vars)) args.push(typeof v === 'number' ? '-F' : '-f', `${k}=${v}`);
+  return JSON.parse(gh(args));
+}
+
 function currentLogin() {
   return JSON.parse(gh(['api', 'user'])).login;
 }
@@ -77,4 +84,4 @@ function createPendingReview({ repo, pr, commitId, body, comments }) {
   return JSON.parse(gh(['api', '--method', 'POST', `repos/${repo}/pulls/${pr}/reviews`, '--input', '-'], JSON.stringify(payload)));
 }
 
-module.exports = { gh, prView, reposConfig, sourceCheckoutFor, preparePrWorktree, removeWorktree, createPendingReview, currentLogin, apiGet };
+module.exports = { gh, prView, reposConfig, sourceCheckoutFor, preparePrWorktree, removeWorktree, createPendingReview, currentLogin, apiGet, graphql };

@@ -357,7 +357,7 @@ function prActions(d) {
       !d.published.dry_run ? [' · ', h('button', { type: 'button', class: 'linkbtn', onclick: readBack, title: 'after you submitted the review: which comments you kept, edited or deleted' }, 'Read back from GitHub')] : '') : null,
     d.feedback ? h('div', { class: 'small mt8' },
       h('span', { class: 'label' }, 'Feedback '),
-      d.feedback.state === 'PENDING' ? 'the review is still pending on GitHub — submit it, then read back again' : `kept ${d.feedback.counts.kept} · edited ${d.feedback.counts.edited} · dropped ${d.feedback.counts.dropped}`,
+      d.feedback.state === 'PENDING' ? 'the review is still pending on GitHub — submit it, then read back again' : `kept ${d.feedback.counts.kept} · edited ${d.feedback.counts.edited} · dropped ${d.feedback.counts.dropped}${d.feedback.counts.disputed ? ` · disputed in thread ${d.feedback.counts.disputed}` : ''}${d.feedback.counts.fixed ? ` · reported fixed ${d.feedback.counts.fixed}` : ''}${d.feedback.counts.resolved ? ` · resolved ${d.feedback.counts.resolved}` : ''}`,
       h('span', { class: 'muted' }, ` (${d.feedback.state}, read ${fmtTime(d.feedback.at)})`)) : null,
   );
 }
@@ -390,6 +390,7 @@ function findingCard(d, meta, dupes) {
       h('span', { class: 'badge' }, `votes ${meta.votes}`),
       h('span', { class: 'badge', title: 'SUSPECTED = static evidence validated; CONFIRMED needs an executed reproduction' }, `${meta.label} ${meta.evidence_level}`),
       meta.rejected ? h('span', { class: 'badge warn', title: meta.rejected.reason }, meta.rejected.same ? 'rejected' : 'rejected before') : null,
+      threadBadge(d.feedback && d.feedback.findings.find((x) => x.id === meta.id)),
       h('span', { class: 'muted small mono' }, meta.id)));
   if (!f) return card;
   const body = h('div', { class: 'body' },
@@ -415,6 +416,15 @@ function findingCard(d, meta, dupes) {
   );
   add(card, body);
   return card;
+}
+
+// What happened to the published comment on GitHub: verdict, thread replies.
+function threadBadge(fb) {
+  if (!fb || fb.verdict === 'pending') return null;
+  const t = fb.thread;
+  const text = [fb.verdict, t && t.signal, t && t.resolved ? 'resolved' : null, t && t.replies ? `${t.replies} repl${t.replies === 1 ? 'y' : 'ies'}` : null].filter(Boolean).join(' · ');
+  const cls = fb.verdict === 'dropped' || (t && t.signal === 'disputed') ? 'warn' : 'ok';
+  return h('span', { class: `badge ${cls}`, title: t && t.last_reply ? `${t.last_reply.user}: ${t.last_reply.text}` : 'on GitHub' }, `GitHub: ${text}`);
 }
 
 // Rejecting a finding remembers it for this repository: look-alikes in later

@@ -227,6 +227,11 @@ look-alikes are left out of the published draft and P1/P2 ones are published wit
 person rejected is never published. Validation never reads this memory, so verdicts stay a function of the
 frozen context. Local reviews share memory with the configured repository whose `checkout` is that directory.
 
+The conversation after submission is read too: replies in each comment's thread (with a hint when a reply
+disputes the finding — "by design", "won't fix" — or reports it fixed) and, through GraphQL, whether the thread
+was resolved or became outdated. A dispute is shown and counted, not remembered as a rejection: only the
+reviewer's own decision suppresses a finding.
+
 ### Retrospective and checklist mining
 
 ```bash

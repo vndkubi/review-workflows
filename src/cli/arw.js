@@ -168,9 +168,13 @@ function cmdReject(argv) {
 
 function cmdFeedback(argv) {
   const args = parseArgs(argv);
-  const { record, remembered } = require('../lib/feedback').readBack(runDirFrom(args), { api: github.apiGet });
+  const { record, remembered } = require('../lib/feedback').readBack(runDirFrom(args), { api: github.apiGet, graphql: github.graphql });
   console.log(`review ${record.review_id}: ${record.state}${record.submitted_at ? ` at ${record.submitted_at}` : ''}`);
-  for (const f of record.findings) console.log(`  ${f.verdict.padEnd(9)} ${f.id}  [${f.severity}] ${f.title}`);
+  for (const f of record.findings) {
+    console.log(`  ${f.verdict.padEnd(9)} ${f.id}  [${f.severity}] ${f.title}`);
+    const t = f.thread;
+    if (t && (t.replies || t.resolved)) console.log(`            thread: ${t.replies} repl${t.replies === 1 ? 'y' : 'ies'}${t.signal ? ` (${t.signal})` : ''}${t.resolved ? ' · resolved' : ''}${t.last_reply ? ` · last by ${t.last_reply.user}: ${t.last_reply.text.replace(/\s+/g, ' ').slice(0, 100)}` : ''}`);
+  }
   const c = record.counts;
   console.log(`kept ${c.kept} · edited ${c.edited} · dropped ${c.dropped}${c.pending ? ` · pending ${c.pending} (submit the review on GitHub first)` : ''}${remembered.length ? ` · ${remembered.length} dropped finding(s) remembered` : ''}`);
   return 0;

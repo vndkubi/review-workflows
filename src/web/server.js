@@ -233,7 +233,7 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
     ['POST', /^\/api\/prs\/([^/]+)\/feedback$/, (m) => {
       const { dir } = data.prDirFromId(m[1]);
       try {
-        return feedback.readBack(dir, { api: githubApi });
+        return feedback.readBack(dir, { api: githubApi, graphql: githubApi === github.apiGet ? github.graphql : null });
       } catch (err) {
         throw data.httpError(400, err.message);
       }

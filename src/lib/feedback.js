@@ -64,7 +64,44 @@ function runRejections(runDir) {
 
 // Reads the submitted review back from GitHub. `api(path)` returns parsed
 // JSON for a GitHub REST path (gh api in production, a stub in tests).
-function readBack(runDir, { api }) {
+// What a reply says about a finding: a dispute ("by design", "won't fix")
+// or a fix ("fixed", "done"). A hint for people and the memory, not a verdict.
+const DISPUTED = /won'?t fix|wontfix|not (a|an) (bug|problem|defect|issue)|by design|intended|intentional|false positive|as expected|not applicable|disagree|works as designed/i;
+const FIXED = /\b(fixed|done|addressed|resolved|updated|changed it)\b/i;
+
+function replySignal(text) {
+  if (DISPUTED.test(text)) return 'disputed';
+  if (FIXED.test(text)) return 'fixed';
+  return null;
+}
+
+// Threads of the published inline comments: replies (from anyone, after the
+// comment) and, through GraphQL when available, resolved/outdated state.
+function threadsFor({ api, graphql, repo, pr, commentIds }) {
+  const all = api(`repos/${repo}/pulls/${pr}/comments?per_page=100`) || [];
+  const out = new Map();
+  for (const id of commentIds) {
+    const replies = all.filter((c) => c.in_reply_to_id === id).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+    const last = replies[replies.length - 1];
+    const signal = replies.map((r) => replySignal(r.body || '')).filter(Boolean).pop() || null;
+    out.set(id, { replies: replies.length, last_reply: last ? { user: last.user && last.user.login, text: String(last.body || '').slice(0, 300), at: last.created_at } : null, signal, resolved: null, outdated: null });
+  }
+  if (graphql) {
+    const [owner, name] = repo.split('/');
+    try {
+      const data = graphql('query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved isOutdated comments(first:1){nodes{databaseId}}}}}}}', { owner, name, number: pr });
+      for (const t of data.data.repository.pullRequest.reviewThreads.nodes) {
+        const first = t.comments.nodes[0];
+        if (first && out.has(first.databaseId)) Object.assign(out.get(first.databaseId), { resolved: t.isResolved, outdated: t.isOutdated });
+      }
+    } catch {
+      /* thread state is optional */
+    }
+  }
+  return out;
+}
+
+function readBack(runDir, { api, graphql = null }) {
   const published = readJsonIfExists(path.join(runDir, 'published.json'));
   if (!published || published.dry_run || !published.review_id) throw new Error('nothing was published for this run (only dry runs)');
   const { run, byId } = currentFindings(runDir);
@@ -75,6 +112,7 @@ function readBack(runDir, { api }) {
   const byMarker = new Map();
   for (const c of comments) for (const id of markersIn(c.body)) byMarker.set(id, c);
   const used = new Set();
+  const commentOf = new Map(); // finding id -> GitHub comment id, for its thread
   const findings = [];
   const verdictOf = (id, placed) => {
     if (review.state === 'PENDING') return 'pending';
@@ -83,12 +121,14 @@ function readBack(runDir, { api }) {
       const c = byMarker.get(id);
       if (c) {
         used.add(c.id);
+        commentOf.set(id, c.id);
         return hashes[id] && bodyHash(c.body) !== hashes[id] ? 'edited' : 'kept';
       }
       // The reviewer may have rewritten the comment and removed the marker.
       const moved = comments.find((x) => !used.has(x.id) && !markersIn(x.body).length && x.path === placed.path && (x.line === placed.line || x.original_line === placed.line));
       if (moved) {
         used.add(moved.id);
+        commentOf.set(id, moved.id);
         return 'edited';
       }
       return 'dropped';
@@ -100,15 +140,29 @@ function readBack(runDir, { api }) {
     const f = byId.get(p.id);
     findings.push({ id: p.id, verdict: verdictOf(p.id, p), severity: f ? f.severity : null, title: f ? f.title : null, inline: p.inline });
   }
-  const counts = { kept: 0, edited: 0, dropped: 0, pending: 0, dismissed: 0 };
-  for (const f of findings) counts[f.verdict] += 1;
+  // After submission the thread goes on: replies and resolution.
+  const threads = commentOf.size ? threadsFor({ api, graphql, repo, pr, commentIds: [...commentOf.values()] }) : new Map();
+  for (const f of findings) {
+    const t = threads.get(commentOf.get(f.id));
+    if (t) f.thread = t;
+  }
+  const counts = { kept: 0, edited: 0, dropped: 0, pending: 0, dismissed: 0, disputed: 0, fixed: 0, resolved: 0 };
+  for (const f of findings) {
+    counts[f.verdict] += 1;
+    if (f.thread && f.thread.signal) counts[f.thread.signal] += 1;
+    if (f.thread && f.thread.resolved) counts.resolved += 1;
+  }
   const record = { at: nowIso(), review_id: published.review_id, context_id: published.context_id, state: review.state, submitted_at: review.submitted_at || null, findings, counts };
   writeJsonAtomic(path.join(runDir, 'feedback.json'), record);
   const remembered = [];
-  for (const f of findings.filter((x) => x.verdict === 'dropped')) {
+  const remember = (f, reason, source) => {
     const full = byId.get(f.id);
-    if (full) remembered.push(memory.addRejection(full, { scope: memory.memoryScope(run.identity), reason: 'removed from the GitHub review before submitting', source: 'github', run: runId(runDir), contextId: published.context_id }));
-  }
+    if (full) remembered.push(memory.addRejection(full, { scope: memory.memoryScope(run.identity), reason, source, run: runId(runDir), contextId: published.context_id }));
+  };
+  // Only the reviewer's own decision (deleting the comment) is remembered. A
+  // reply that disputes a finding is recorded and shown, not remembered: the
+  // reviewer may well disagree with the author.
+  for (const f of findings.filter((x) => x.verdict === 'dropped')) remember(f, 'removed from the GitHub review before submitting', 'github');
   return { record, remembered };
 }
 
