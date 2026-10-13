@@ -84,7 +84,7 @@ function languageOf(path) {
 }
 
 // parsed: output of parsePatch; changed: output of git.changedFiles.
-function buildEvidencePack({ cwd, base, head, changed, parsed }) {
+function buildEvidencePack({ cwd, base, head, changed, parsed, related = [] }) {
   const byPath = new Map(parsed.map((f) => [f.path, f]));
   const reviewable = changed.filter((f) => !isSkipped(f.path));
   const skipped = changed.filter((f) => isSkipped(f.path));
@@ -136,7 +136,7 @@ function buildEvidencePack({ cwd, base, head, changed, parsed }) {
   let impact = null;
   if (process.env.ARW_IMPACT !== 'off') {
     try {
-      impact = analyzeImpact({ cwd, base, parsed });
+      impact = analyzeImpact({ cwd, base, parsed, related });
     } catch (err) {
       impact = { error: err.message, scanned: 0, changed: [], edges: [], truncated: false };
     }

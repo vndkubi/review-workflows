@@ -179,7 +179,7 @@ function testImpact({ checkout, head, changed, impact = null }) {
     const reached = new Set([src]);
     const calls = [];
     for (const level of [1, 2, 3]) {
-      for (const e of ((impact && impact.edges) || []).filter((x) => x.level === level && x.confidence === 'resolved' && reached.has(x.to.path))) {
+      for (const e of ((impact && impact.edges) || []).filter((x) => x.level === level && ['typed', 'resolved', 'interface'].includes(x.confidence) && !x.repo && reached.has(x.to.path))) {
         if (isTest(e.from.path)) calls.push(e.from.path);
         else reached.add(e.from.path);
       }

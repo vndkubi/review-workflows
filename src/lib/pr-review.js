@@ -81,14 +81,30 @@ function ticketInputs(run, { ticket, info }) {
   return { key, ...t };
 }
 
+// The configured repository whose checkout is a local review's directory.
+function localRepoConfig(dir) {
+  return Object.values(github.reposConfig().repos).find((r) => r && r.checkout && samePath(r.checkout, dir)) || {};
+}
+
+// "related": ["owner/name" (a configured repository) or a path] -> [{ name, dir }]
+// for impact analysis across repositories (read-only, at their checkout's HEAD).
+function relatedRepos(repoCfg) {
+  const repos = github.reposConfig().repos;
+  return (repoCfg.related || []).map((r) => {
+    if (repos[r] && repos[r].checkout) return { name: r, dir: repos[r].checkout };
+    if (typeof r === 'string' && path.isAbsolute(r) && fs.existsSync(r)) return { name: path.basename(r), dir: r };
+    return null;
+  }).filter(Boolean);
+}
+
 async function planPhase({ runDir, run, info, executor, models, log, singleRole, tickets, incremental = false, ciApi = null, impactedRunner }) {
   const { checkout, head_sha: head, base_sha: base } = run.identity;
   const changed = git.changedFiles(checkout, base, head);
   const patch = git.diffPatch(checkout, base, head);
   const parsed = parsePatch(patch);
-  const pack = buildEvidencePack({ cwd: checkout, base, head, changed, parsed });
+  const repoCfg = run.identity.local ? localRepoConfig(run.identity.local.dir) : github.reposConfig().repos[run.identity.repo] || {};
+  const pack = buildEvidencePack({ cwd: checkout, base, head, changed, parsed, related: relatedRepos(repoCfg) });
   // CI results, linter hits and test impact: frozen with the pack as leads.
-  const repoCfg = run.identity.local ? {} : github.reposConfig().repos[run.identity.repo] || {};
   const statics = collectStatic({ repo: run.identity.repo, checkout, base, head, changed, reviewable: pack.reviewable.filter((f) => f.status !== 'D').map((f) => f.path), parsed, local: run.identity.local, repoCfg, api: ciApi, impact: pack.impact, log });
   const { markdown: staticMarkdown, ...staticRecord } = statics;
   // Opt-in: the impacted tests, run at base and head (executes PR code).

@@ -163,7 +163,19 @@ package of the declaring type, or imports the module; or a call within the same 
 (another method of that name is possible; not followed further, and dropped for common names such as `get`).
 `Other.name(...)` with a type-like receiver other than the owner is not counted. Tests reached through the
 callers are added to test impact as `call`. Measured on a synthetic 3,000-file Java repository: about 5 s.
-Reflection, dependency injection wiring and other repositories stay unknown; `ARW_IMPACT=off` skips it.
+
+Receivers are typed where the code says so: fields, parameters and locals (`OrderService orders`,
+`var x = new T()`, Python `svc = FeeService()`, `o: Other`), `new T().m()` and `T().m()`. A call on a receiver
+declared as the changed type is **typed**; declared as one of its supertypes (an interface or base class, as
+with Spring-injected interfaces) it is **interface** dispatch; declared as an unrelated type it is dropped.
+Beyond calls, the analysis lists references **by name**: configuration files naming the type
+(`applicationContext.xml`, MyBatis mappers, YAML/properties, with the method id when present), reflection
+(`getMethod("x")`, `getattr(o, "x")`), and **HTTP clients** of changed endpoints (Spring `@…Mapping`,
+Flask/FastAPI decorators) found by path in non-handler files. Other repositories are searched when a
+repository lists them under `"related"` in `config/repos.json` (configured names or absolute paths): callers
+that import the changed type or module, and clients of changed endpoints, read-only at their checkout's HEAD.
+Still unknown: types that only inference across methods would give, generated code, and repositories that
+are not configured. `ARW_IMPACT=off` skips the analysis.
 
 **Machine evidence.** Before planning, the runtime collects cheap facts and freezes them in the evidence pack
 (also `runs/prs/<id>/static.json`, and the Overview tab): GitHub check runs, commit statuses and failing-check

@@ -128,10 +128,22 @@ function indexJava(rel, raw) {
   const pkg = (/\bpackage\s+([\w.]+)\s*;/.exec(text) || [])[1] || '';
   const imports = [...text.matchAll(/\bimport\s+(?:static\s+)?([\w.]+(?:\.\*)?)\s*;/g)].map((m) => m[1]);
   const types = [];
-  for (const m of text.matchAll(/\b(class|interface|enum|record)\s+(\w+)[^{;]*\{/g)) {
+  for (const m of text.matchAll(/\b(class|interface|enum|record)\s+(\w+)([^{;]*)\{/g)) {
     const open = m.index + m[0].length - 1;
-    types.push({ name: m[2], start: lineAt(text, m.index), end: lineAt(text, closeBrace(text, open)), open });
+    // Supertypes from "extends A implements B, C" (generic arguments dropped).
+    const header = m[3].replace(/<[^<>]*(?:<[^<>]*>[^<>]*)*>/g, '');
+    const supers = [...header.matchAll(/\b(?:extends|implements)\s+([\w$.\s,]+)/g)].flatMap((x) => x[1].split(',').map((s) => s.trim().split('.').pop()).filter((s) => /^[A-Z]/.test(s)));
+    types.push({ name: m[2], start: lineAt(text, m.index), end: lineAt(text, closeBrace(text, open)), open, supers });
   }
+  // Declared types of fields, parameters and locals: name -> Set(simple type).
+  // Scope-insensitive on purpose: a name's types in one file rarely collide.
+  const vars = new Map();
+  const addVar = (name, type) => {
+    if (!vars.has(name)) vars.set(name, new Set());
+    vars.get(name).add(type);
+  };
+  for (const m of text.matchAll(/\b([A-Z][\w$]*)(?:\s*<[^;(){}=]*?>)?(?:\s*\[\s*\])*\s+([a-z_$][\w$]*)\s*(?=[;=,):])/g)) addVar(m[2], m[1]);
+  for (const m of text.matchAll(/\bvar\s+([a-z_$][\w$]*)\s*=\s*new\s+([A-Z][\w$]*)/g)) addVar(m[1], m[2]);
   const typeAt = (line) => types.filter((t) => t.start <= line && line <= t.end).sort((a, b) => b.start - a.start)[0];
   // A declaration is `name(...)` followed by an optional throws clause and a
   // body, and preceded by a return type or modifier (a word, `>` or `]`); a
@@ -165,7 +177,7 @@ function indexJava(rel, raw) {
     const bodyOpen = close + 1 + after[0].length - 1;
     methods.push({ name, owner: type ? type.name : null, start: line, end: lineAt(text, closeBrace(text, bodyOpen)) });
   }
-  return { lang: 'java', path: rel, text, pkg, imports, types, methods };
+  return { lang: 'java', path: rel, text, pkg, imports, types, methods, vars };
 }
 
 // ---------- Python ----------
@@ -189,12 +201,23 @@ function indexPython(rel, raw) {
     }
     defs.push({ kind: m[2], name: m[3], indent, start: i + 1, end: end + 1 });
   });
-  const classes = defs.filter((d) => d.kind === 'class').map((d) => ({ name: d.name, start: d.start, end: d.end }));
+  const classes = defs.filter((d) => d.kind === 'class').map((d) => {
+    const bases = (new RegExp(`^\\s*class\\s+${d.name}\\s*\\(([^)]*)\\)`).exec(lines[d.start - 1]) || [])[1] || '';
+    return { name: d.name, start: d.start, end: d.end, supers: bases.split(',').map((s) => s.trim().split('.').pop()).filter((s) => /^[A-Z]/.test(s)) };
+  });
   const methods = defs.filter((d) => d.kind === 'def').map((d) => {
     const owner = classes.filter((c) => c.start < d.start && d.end <= c.end).sort((a, b) => b.start - a.start)[0];
     return { name: d.name, owner: owner ? owner.name : null, start: d.start, end: d.end };
   });
-  return { lang: 'python', path: rel, text, module, imports, types: classes, methods };
+  // x = Cls(...), self.x = Cls(...), x: Cls (parameters and annotations).
+  const vars = new Map();
+  const addVar = (name, type) => {
+    if (!vars.has(name)) vars.set(name, new Set());
+    vars.get(name).add(type);
+  };
+  for (const m of text.matchAll(/(?:\bself\.)?\b([a-z_]\w*)\s*(?::\s*[\w.]*?\.?([A-Z]\w*)[^=\n,)]*)?=\s*(?:[\w.]*?\.)?([A-Z]\w*)\s*\(/g)) addVar(m[1], m[3]);
+  for (const m of text.matchAll(/\b([a-z_]\w*)\s*:\s*(?:[\w.]*\.)?([A-Z]\w*)\b/g)) addVar(m[1], m[2]);
+  return { lang: 'python', path: rel, text, module, imports, types: classes, methods, vars };
 }
 
 function indexFile(rel, raw) {
@@ -228,8 +251,47 @@ function pythonResolves(caller, callee, sameFile) {
     || (i.from && i.from.startsWith('.') && mod.endsWith(i.from.replace(/^\.+/, '')) && (i.names.includes(callee.name) || (callee.owner && i.names.includes(callee.owner)))));
 }
 
+// Type hierarchy across all indexed files: simple name -> Set(supertypes).
+function hierarchyOf(indexes) {
+  const h = new Map();
+  for (const idx of indexes) {
+    for (const t of idx.types) {
+      if (!h.has(t.name)) h.set(t.name, new Set());
+      for (const s of t.supers || []) h.get(t.name).add(s);
+    }
+  }
+  return h;
+}
+
+// Is `type` the same as, or a subtype of, `ancestor`?
+function isSubtype(hierarchy, type, ancestor) {
+  const seen = new Set();
+  const stack = [type];
+  while (stack.length) {
+    const t = stack.pop();
+    if (t === ancestor) return true;
+    if (seen.has(t)) continue;
+    seen.add(t);
+    for (const s of hierarchy.get(t) || []) stack.push(s);
+  }
+  return false;
+}
+
+// The static type of the receiver before ".name(" when it can be told:
+// a typed variable (field, parameter, local), `new T(...)` or `T(...)`.
+function receiverTypes(idx, prev) {
+  const ctor = idx.lang === 'java' ? /new\s+([A-Z][\w$]*)\s*(?:<[^<>()]*>)?\s*\([^()]*\)\s*\.\s*$/.exec(prev) : /\b([A-Z]\w*)\s*\([^()]*\)\s*\.\s*$/.exec(prev);
+  if (ctor) return new Set([ctor[1]]);
+  const r = (/([A-Za-z_$][\w$]*)\s*\.\s*$/.exec(prev) || [])[1];
+  if (!r || /^[A-Z]/.test(r) || r === 'this' || r === 'self' || r === 'super') return null;
+  return idx.vars && idx.vars.get(r) ? idx.vars.get(r) : null;
+}
+
 // Call sites of `target` (a method in `target.index`) across `indexes`.
-function callSites(target, indexes) {
+// Confidence: typed (receiver's declared type is the owner), interface (it
+// is a supertype of the owner: dispatch, as with injected interfaces),
+// resolved (import/package/module or same class), name-only.
+function callSites(target, indexes, hierarchy = hierarchyOf(indexes)) {
   const out = [];
   const re = new RegExp(`(^|[^\\w$])(${target.name})\\s*\\(`, 'g');
   for (const idx of indexes) {
@@ -238,20 +300,72 @@ function callSites(target, indexes) {
       const at = m.index + m[1].length;
       const line = lineAt(idx.text, at);
       if (idx.methods.some((d) => d.name === target.name && d.start === line)) continue; // a declaration, not a call
-      const prev = idx.text.slice(Math.max(0, at - 40), at);
+      const prev = idx.text.slice(Math.max(0, at - 200), at);
       if (/\b(def|function)\s+$/.test(prev)) continue;
+      // `Type name(` is a declaration (abstract and interface methods have no
+      // body, so the index does not list them); calls follow `.`, `(`, `=`...
+      if (idx.lang === 'java' && /[\w$>\]]\s+$/.test(prev) && !/\b(return|new|else|throw|case|yield|await|assert)\s+$/.test(prev)) continue;
       // `Other.name(` with a type-like receiver other than the owner is a
       // different method (static call or a class of the same method name).
       const receiver = (/([A-Za-z_$][\w$]*)\s*\.\s*$/.exec(prev) || [])[1];
       if (receiver && /^[A-Z]/.test(receiver) && receiver !== target.owner && !/^[A-Z0-9_]+$/.test(receiver)) continue;
       const caller = enclosing(idx, line);
+      const site = { file: idx.path, line, caller: caller ? { name: caller.name, owner: caller.owner, start: caller.start, end: caller.end } : null };
+      const types = target.owner ? receiverTypes(idx, prev) : null;
+      if (types) {
+        if (types.has(target.owner)) out.push({ ...site, confidence: 'typed' });
+        else if ([...types].some((t) => isSubtype(hierarchy, target.owner, t))) out.push({ ...site, confidence: 'interface', via: [...types].find((t) => isSubtype(hierarchy, target.owner, t)) });
+        // otherwise the receiver is declared as an unrelated type: another method
+        continue;
+      }
       const sameScope = idx === target.index && (!target.owner || (caller && caller.owner === target.owner));
       const qualified = /\.\s*$/.test(prev);
       const ok = idx.lang === 'java' ? javaResolves(idx, target, sameScope && !qualified) : pythonResolves(idx, target, idx === target.index);
-      out.push({ file: idx.path, line, caller: caller ? { name: caller.name, owner: caller.owner, start: caller.start, end: caller.end } : null, confidence: ok ? 'resolved' : 'name-only' });
+      out.push({ ...site, confidence: ok ? 'resolved' : 'name-only' });
     }
   }
   return out;
+}
+
+// Declarations named in configuration (Spring XML, MyBatis mappers, YAML,
+// properties) or looked up by name (reflection, getattr). Raw text, since
+// these references live in strings.
+function configAndReflection(cwd, target) {
+  const out = [];
+  const lang = target.index.lang;
+  const fqn = lang === 'java' ? [target.index.pkg, target.owner].filter(Boolean).join('.') : [target.index.module, target.owner].filter(Boolean).join('.');
+  const grep = (pattern, globs) => String(git.git(cwd, ['grep', '-n', '-F', pattern, '--', ...globs], { allowFail: true }) || '').split('\n').filter(Boolean).slice(0, 20)
+    .map((l) => { const m = /^(.*?):(\d+):(.*)$/.exec(l); return m ? { file: m[1], line: Number(m[2]), text: m[3] } : null; }).filter(Boolean);
+  const CONFIG = ['*.xml', '*.yml', '*.yaml', '*.properties', '*.json', '*.conf', '*.cfg', '*.ini', '*.toml'];
+  if (target.owner && fqn.includes('.')) {
+    for (const hit of grep(fqn, CONFIG)) {
+      // A mapper/bean file for the owner: does it name this method too?
+      const named = grep(`"${target.name}"`, [hit.file]).find((h) => /\bid\s*=|method|name\s*=/.test(h.text));
+      out.push({ file: hit.file, line: named ? named.line : hit.line, caller: null, confidence: 'config', note: named ? `names ${target.name}` : `names ${fqn}` });
+    }
+  }
+  if (!COMMON_NAMES.has(target.name) && target.name.length >= 4) {
+    const quoted = lang === 'java' ? [`"${target.name}"`] : [`"${target.name}"`, `'${target.name}'`];
+    for (const q of quoted) {
+      for (const hit of grep(q, lang === 'java' ? ['*.java'] : ['*.py'])) {
+        if (/getMethod|getDeclaredMethod|\.invoke\(|MethodHandles|getattr|setattr|hasattr|methodcaller|importlib/.test(hit.text)) out.push({ file: hit.file, line: hit.line, caller: null, confidence: 'reflection', note: hit.text.trim().slice(0, 120) });
+      }
+    }
+  }
+  return out;
+}
+
+// REST paths a changed handler serves (Spring mapping annotations, Flask /
+// FastAPI decorators), read from the raw text above the declaration.
+function endpointsOf(rawText, target) {
+  const lines = String(rawText).split('\n');
+  const above = lines.slice(Math.max(0, target.start - 6), target.start).join('\n');
+  const paths = [];
+  for (const m of above.matchAll(/@(?:Get|Post|Put|Delete|Patch|Request)Mapping\s*\(\s*(?:(?:value|path)\s*=\s*)?\{?\s*"([^"]+)"/g)) paths.push(m[1]);
+  for (const m of above.matchAll(/@\w+(?:\.\w+)*\.(?:get|post|put|delete|patch|route|api_route)\s*\(\s*["']([^"']+)["']/g)) paths.push(m[1]);
+  if (!paths.length) return [];
+  const prefix = target.index.lang === 'java' ? ((/@RequestMapping\s*\(\s*(?:(?:value|path)\s*=\s*)?\{?\s*"([^"]+)"[^\n]*\n(?:[^\n]*\n){0,3}?[^\n]*\bclass\s/.exec(rawText) || [])[1] || '') : '';
+  return paths.map((p) => `${prefix.replace(/\/$/, '')}${p.startsWith('/') ? '' : '/'}${p}`.replace(/\/{2,}/g, '/'));
 }
 
 // Changed declarations: methods whose head range holds an added line, or
@@ -305,10 +419,15 @@ function readIndex(cwd, rel) {
 
 const label = (m) => `${m.owner ? `${m.owner}.` : ''}${m.name}`;
 
-// { changed: [...], edges: [...], truncated, scanned }
-function analyzeImpact({ cwd, base, parsed, depth = 3 }) {
+const FOLLOW = new Set(['typed', 'resolved', 'interface']);
+
+// { changed: [...], edges: [...], truncated, scanned, related }
+// related: [{ name, dir }] other repositories (local checkouts) to search for
+// callers by import and for clients of changed REST endpoints.
+function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
   const files = sourceFiles(cwd);
   const indexes = files.map((f) => readIndex(cwd, f)).filter(Boolean);
+  const hierarchy = hierarchyOf(indexes);
   const baseIndexes = new Map();
   for (const f of parsed) {
     const rel = f.old_path || f.path;
@@ -325,15 +444,15 @@ function analyzeImpact({ cwd, base, parsed, depth = 3 }) {
     const next = [];
     let count = 0;
     for (const target of frontier) {
-      const sites = callSites(target, indexes).filter((s) => !(COMMON_NAMES.has(target.name) && s.confidence === 'name-only'));
+      const sites = callSites(target, indexes, hierarchy).filter((s) => !(COMMON_NAMES.has(target.name) && s.confidence === 'name-only'));
       for (const s of sites) {
         if (count >= MAX_EDGES_PER_LEVEL) {
           truncated = true;
           break;
         }
         count += 1;
-        edges.push({ level, to: { path: target.path, symbol: label(target) }, from: { path: s.file, line: s.line, symbol: s.caller ? label(s.caller) : '(top level)' }, confidence: s.confidence });
-        if (s.caller && s.confidence === 'resolved') {
+        edges.push({ level, to: { path: target.path, symbol: label(target) }, from: { path: s.file, line: s.line, symbol: s.caller ? label(s.caller) : '(top level)' }, confidence: s.confidence, ...(s.via ? { via: s.via } : {}) });
+        if (s.caller && FOLLOW.has(s.confidence)) {
           const key = `${s.file}#${label(s.caller)}`;
           if (!visited.has(key)) {
             visited.add(key);
@@ -345,8 +464,52 @@ function analyzeImpact({ cwd, base, parsed, depth = 3 }) {
     }
     frontier = next;
   }
+  // References by name: configuration files and reflection.
+  for (const target of changed) {
+    for (const s of configAndReflection(cwd, target)) {
+      edges.push({ level: 1, to: { path: target.path, symbol: label(target) }, from: { path: s.file, line: s.line, symbol: `(${s.confidence})` }, confidence: s.confidence, note: s.note });
+    }
+  }
+  // Other repositories: callers that import the changed type or module, and
+  // clients of changed REST endpoints (also in this repository's non-source
+  // files, such as a front end).
+  const scannedRepos = [];
+  for (const r of related) {
+    if (!r || !r.dir || !fs.existsSync(r.dir)) continue;
+    const other = sourceFiles(r.dir).map((f) => readIndex(r.dir, f)).filter(Boolean);
+    scannedRepos.push({ name: r.name, files: other.length });
+    const h = hierarchyOf([...indexes, ...other]);
+    for (const target of changed) {
+      // Across repositories only resolvable calls count: name-only is noise there.
+      for (const s of callSites(target, other, h).filter((x) => FOLLOW.has(x.confidence))) {
+        edges.push({ level: 1, repo: r.name, to: { path: target.path, symbol: label(target) }, from: { path: s.file, line: s.line, symbol: s.caller ? label(s.caller) : '(top level)' }, confidence: s.confidence, ...(s.via ? { via: s.via } : {}) });
+      }
+    }
+  }
+  for (const target of changed) {
+    let raw = null;
+    try {
+      raw = fs.readFileSync(path.join(cwd, target.path), 'utf8');
+    } catch {
+      continue;
+    }
+    for (const endpoint of endpointsOf(raw, target)) {
+      const literal = endpoint.split(/[{:<]/)[0].replace(/\/$/, '');
+      if (literal.length < 4) continue;
+      for (const r of [{ name: null, dir: cwd }, ...related.filter((x) => x && x.dir && fs.existsSync(x.dir))]) {
+        const hits = String(git.git(r.dir, ['grep', '-n', '-F', literal], { allowFail: true }) || '').split('\n').filter(Boolean).slice(0, 15);
+        for (const l of hits) {
+          const m = /^(.*?):(\d+):(.*)$/.exec(l);
+          if (!m || (r.name === null && m[1] === target.path)) continue;
+          if (r.name === null && /(^|\/)(src\/main\/java|.*\.py$)/.test(m[1]) && /Mapping|\.route|\.get\(|\.post\(/.test(m[3])) continue; // another handler, not a client
+          edges.push({ level: 1, ...(r.name ? { repo: r.name } : {}), to: { path: target.path, symbol: label(target) }, from: { path: m[1], line: Number(m[2]), symbol: '(http client)' }, confidence: 'http', note: `${endpoint}: ${m[3].trim().slice(0, 100)}` });
+        }
+      }
+    }
+  }
   return {
     scanned: indexes.length,
+    related: scannedRepos,
     changed: changed.map((m) => ({ path: m.path, symbol: label(m), lines: [m.start, m.end] })),
     edges,
     truncated,
@@ -360,15 +523,23 @@ function renderImpact(r) {
     return `${lines.join('\n')}\n`;
   }
   lines.push(`Changed: ${r.changed.map((c) => `${c.symbol} (${c.path}:${c.lines[0]}-${c.lines[1]})`).join(', ')}`);
+  const byName = new Set(['config', 'reflection', 'http']);
+  const fmt = (e) => `- ${e.repo ? `[${e.repo}] ` : ''}${e.from.symbol} at ${e.from.path}:${e.from.line} -> ${e.to.symbol} [${e.confidence}${e.via ? ` via ${e.via}` : ''}]${e.note ? ` ${e.note}` : ''}`;
+  const local = r.edges.filter((e) => !e.repo && !byName.has(e.confidence));
   for (const level of [1, 2, 3]) {
-    const es = r.edges.filter((e) => e.level === level);
+    const es = local.filter((e) => e.level === level);
     if (!es.length) continue;
     lines.push(['', 'Direct callers:', 'Callers of those callers:', 'Third level:'][level]);
-    for (const e of es) lines.push(`- ${e.from.symbol} at ${e.from.path}:${e.from.line} -> ${e.to.symbol} [${e.confidence}]`);
+    for (const e of es) lines.push(fmt(e));
   }
-  if (!r.edges.length) lines.push('No call sites found in this repository (callers may be in other services, or use reflection/DI).');
+  const named = r.edges.filter((e) => !e.repo && byName.has(e.confidence));
+  if (named.length) lines.push('Referenced by name (configuration, reflection, HTTP clients):', ...named.map(fmt));
+  const other = r.edges.filter((e) => e.repo);
+  if (other.length) lines.push(`Other repositories (${(r.related || []).map((x) => x.name).join(', ')}):`, ...other.map(fmt));
+  else if (r.related && r.related.length) lines.push(`Other repositories searched (${r.related.map((x) => x.name).join(', ')}): no callers or clients found.`);
+  if (!r.edges.length) lines.push('No call sites found (callers may live in repositories not configured as related).');
   if (r.truncated) lines.push(`(truncated at ${MAX_EDGES_PER_LEVEL} call sites per level)`);
-  lines.push('name-only: the name matches but the caller does not import the declaring type/module; it may call another method of the same name.');
+  lines.push('Confidence: typed = the receiver is declared as the changed type; interface = declared as its supertype (dispatch, e.g. an injected interface); resolved = import/package/module or same class; name-only = only the name matches. config/reflection/http = referenced by name, not by a call.');
   return `${lines.join('\n')}\n`;
 }
 
