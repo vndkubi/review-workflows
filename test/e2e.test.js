@@ -394,6 +394,8 @@ test('ticket pipeline -> PR review, end to end', async (t) => {
     assert.match(text, /## Review items \(/);
     assert.match(text, /### \[P2\] Member discount excludes orders of exactly 1,000,000/);
     assert.match(text, /_Duplicates: B1-technical-F1_/);
+    // Where the P2 sits and who reaches it, from the frozen call graph.
+    assert.match(text, /\*\*Reachability\*\* — `OrderService\.discount` is reached from 1 typed site\(s\), e\.g\. CheckoutController\.quote \(src\/main\/java\/com\/acme\/CheckoutController\.java:\d+\)\./);
   });
 
   await t.test('repro: RED twice on head, GREEN with the fix -> CONFIRMED (L3) for the whole cluster', async () => {

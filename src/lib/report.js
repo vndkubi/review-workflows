@@ -48,6 +48,25 @@ function loadArtifacts(runDir, validation) {
   return { findings, rebuttal, synthesis };
 }
 
+const BLOCKING_SEVERITIES = new Set(['P1', 'P2']);
+
+// A quote shows where the code is, not that the defect can be reached. From
+// the frozen call graph: who calls the method the finding sits in, and how
+// sure that is. A hint for the person, not a verdict.
+function reachability(f, impact, source) {
+  if (!impact || !impact.edges) return null;
+  const anchor = memory.anchorOf(f, source);
+  if (!anchor.symbol) return null;
+  const edges = impact.edges.filter((e) => e.to.symbol === anchor.symbol && e.to.path === anchor.path);
+  const changed = (impact.changed || []).some((c) => c.symbol === anchor.symbol && c.path === anchor.path);
+  if (!changed) return `\`${anchor.symbol}\` is not among the changed declarations; its callers were not analysed.`;
+  if (!edges.length) return `no caller of \`${anchor.symbol}\` found in this repository${(impact.related || []).length ? ' or the related ones' : ''} — reachability is unknown (entry point, reflection, another service?).`;
+  const by = {};
+  for (const e of edges) by[e.confidence] = (by[e.confidence] || 0) + 1;
+  const sample = edges.filter((e) => e.confidence !== 'name-only').slice(0, 3).map((e) => `${e.repo ? `[${e.repo}] ` : ''}${e.from.symbol} (${e.from.path}:${e.from.line})`);
+  return `\`${anchor.symbol}\` is reached from ${Object.entries(by).map(([k, n]) => `${n} ${k}`).join(', ')} site(s)${sample.length ? `, e.g. ${sample.join('; ')}` : ''}.`;
+}
+
 function renderFinding(f, meta, rebuttal) {
   const code = f.evidence.find((e) => e.kind === 'code');
   const out = [];
@@ -134,6 +153,8 @@ function renderReport(runDir, validation, identity) {
   }
   out.push('', '## Findings', '');
   if (!metas.length) out.push('No findings were reported by any valid packet.');
+  const staticImpact = (readJsonIfExists(path.join(runDir, 'static.json'), {}) || {}).impact || null;
+  const ctxSource = (readJsonIfExists(path.join(revisionDir(runDir, validation.context_id), 'context.json')) || {}).source || null;
   const scope = memory.memoryScope(identity);
   const entries = memory.loadMemory().entries;
   for (const meta of metas) {
@@ -141,6 +162,8 @@ function renderReport(runDir, validation, identity) {
     const f = findings.get(meta.id);
     if (!f) continue;
     out.push(renderFinding(f, meta, rebuttal(meta.rebuttal_from || meta.id)), '');
+    const reach = reachability(f, staticImpact, ctxSource);
+    if (reach && BLOCKING_SEVERITIES.has(f.severity)) out.push(`**Reachability** — ${reach}`, '');
     const match = memory.matchRejected(f, { scope, run: path.basename(runDir), source: (readJsonIfExists(path.join(revisionDir(runDir, validation.context_id), 'context.json')) || {}).source }, entries);
     if (match) out.push(`> ${match.same ? 'Rejected' : `Looks like a finding rejected earlier (${match.entry_id}, ${match.how || 'similar'}, ${match.score})`}: ${match.reason}. ${memory.publishAction(f, match) === 'omit' ? 'Left out of the published draft.' : 'Still published because of its severity.'}`, '');
     const dups = (synthesis ? synthesis.aliases : []).filter((a) => a.duplicate_of === meta.id).map((a) => a.id);

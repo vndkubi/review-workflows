@@ -109,6 +109,7 @@ async function planPhase({ runDir, run, info, executor, models, log, singleRole,
   const { markdown: staticMarkdown, ...staticRecord } = statics;
   // Opt-in: the impacted tests, run at base and head (executes PR code).
   staticRecord.impacted_tests = await runImpactedTests({ runDir, checkout, base, head, impact: statics.tests, repoCfg, runner: impactedRunner, log });
+  staticRecord.impact = pack.impact; // call graph of the changed declarations, for reachability hints
   writeJsonAtomic(path.join(runDir, 'static.json'), staticRecord);
   pack.text += `\n${staticMarkdown}${renderImpacted(staticRecord.impacted_tests)}`;
   // Instruction-like text aimed at an AI reviewer, anywhere in PR content.
