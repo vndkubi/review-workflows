@@ -395,6 +395,12 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
       return send(res, status, { error: status === 500 ? `internal error: ${err.message}` : err.message });
     }
   });
+  // Keep idle connections open longer than a client keeps them for reuse:
+  // with Node's 5 s default, a socket the browser (or fetch) reuses can be
+  // closed by the server at the same moment ("fetch failed", seen in CI on
+  // Windows / Node 20). close() still drops idle connections.
+  server.keepAliveTimeout = 65000;
+  server.headersTimeout = 66000;
   server.queue = queue;
   server.watchEnqueue = watchEnqueue;
   return server;
