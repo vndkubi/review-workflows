@@ -15,7 +15,7 @@ const { validateAgainst, outputSchema } = require('./schema');
 const { fetchTicketEvidence } = require('./jira');
 const { fetchTicketEvidenceMcp, atlassianConfig } = require('./ticket-mcp');
 const { extractRequirements, renderRequirementsMarkdown } = require('./requirements');
-const { buildSpec, renderSpecMarkdown, itemsFromRequirements } = require('./spec');
+const { buildSpec, renderSpecMarkdown, itemsFromRequirements, scenarioInput } = require('./spec');
 const { runLooseJob } = require('./loose-job');
 const { redactSecrets } = require('./guard');
 const prompts = require('./prompts');
@@ -312,7 +312,7 @@ async function advanceTicket({ key, fromFile, extras, images: imageFiles = [], r
 function approvedTicketInputs(key) {
   const dir = ticketDir(key);
   if (!fs.existsSync(dir)) return null;
-  const out = { dir, requirements: null, items: null, specMarkdown: null, evidence: null, approved: false };
+  const out = { dir, requirements: null, items: null, specMarkdown: null, scenarios: null, evidence: null, approved: false };
   if (fs.existsSync(path.join(dir, 'ticket-evidence.md'))) out.evidence = fs.readFileSync(path.join(dir, 'ticket-evidence.md'), 'utf8');
   if (fs.existsSync(path.join(dir, 'requirements.json'))) out.requirements = readJson(path.join(dir, 'requirements.json'));
   if (isApproved(dir, 'SPEC')) {
@@ -320,6 +320,8 @@ function approvedTicketInputs(key) {
     out.items = spec.review_items;
     out.requirements = { ...out.requirements, items: spec.requirement_items };
     out.specMarkdown = fs.readFileSync(path.join(dir, 'spec.md'), 'utf8');
+    // Scenario rows with harness-computed expected values: approved specs only.
+    out.scenarios = scenarioInput(spec);
     out.approved = true;
   } else if (out.requirements && out.requirements.items.length) {
     out.items = itemsFromRequirements(out.requirements);

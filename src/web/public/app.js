@@ -545,10 +545,22 @@ function itemsView(d) {
   const tally = {};
   for (const r of d.items) tally[r.result] = (tally[r.result] || 0) + 1;
   const cls = { pass: 'ok', fail: 'bad', not_applicable: '', cannot_determine: 'warn', not_graded: 'warn' };
+  // CALIBRATED is weaker than ALIGNED (which needs K3): not shown as ok.
+  const driftCls = { ALIGNED: 'ok', CALIBRATED: '', DRIFT: 'bad', UNKNOWN: 'warn' };
+  const fmt = (o) => (o ? Object.entries(o).map(([k, v]) => `${k}=${v}`).join(', ') : '—');
+  // Executed: the approved spec's scenarios run through the code (report-only).
+  const executed = (r) => {
+    if (!r.drift) return '—';
+    const rows = (r.drift.rows || []).filter((x) => x.verdict === 'MISMATCH').map((x) => `${x.id}: expected ${fmt(x.expected)}, head ${fmt(x.observed)}, base ${x.base || 'not run'}`);
+    return h('div', {}, h('span', { class: `badge ${driftCls[r.drift.verdict] || ''}`, title: r.drift.reason }, `${r.drift.verdict}${r.drift.evidence_level ? ` ${r.drift.evidence_level}` : ''}`),
+      rows.length ? h('div', { class: 'small mono' }, rows.map((x) => h('div', {}, x))) : h('div', { class: 'small muted' }, r.drift.reason));
+  };
+  const intent = d.validation && d.validation.scenarios ? d.validation.scenarios.intent : null;
   return [
     h('div', { class: 'stats mt12' }, Object.entries(tally).map(([k, n]) => stat(n, k))),
-    table(['Item', 'Kind', 'Risk', 'Result', 'Expected', 'Reviewer verdicts'], d.items.map((r) => [
-      h('strong', { title: r.text }, r.id), r.kind, r.risk, h('span', { class: `badge ${cls[r.result] || ''}` }, r.result), r.expected,
+    intent ? h('div', { class: 'stats mt12', title: 'Approved spec scenarios run through the code; expected values come from the approved rules. Calibrated: the adapter passed calibration, K1 variance and K2 repeat. Aligned also needs K3 (not built yet).' }, stat(intent.aligned || 0, 'executed: aligned'), stat(intent.calibrated || 0, 'executed: calibrated'), stat(intent.drift, 'executed: drift'), stat(intent.unknown, 'executed: unknown')) : null,
+    table(['Item', 'Kind', 'Risk', 'Result', 'Executed', 'Expected', 'Reviewer verdicts'], d.items.map((r) => [
+      h('strong', { title: r.text }, r.id), r.kind, r.risk, h('span', { class: `badge ${cls[r.result] || ''}` }, r.result), executed(r), r.expected,
       h('div', { class: 'small' }, r.verdicts.map((v) => h('div', {}, h('span', { class: 'mono' }, `${v.unit_id}/${v.role} `), `${v.verdict} — ${v.note}`))),
     ])),
   ];
@@ -734,7 +746,7 @@ function renderNewReview() {
   const ticket = h('input', { type: 'text', placeholder: 'optional, e.g. ACME-7 (taken from title/branch otherwise)' });
   const workers = h('input', { type: 'number', min: '1', max: '8', value: String(state.config.workers) });
   const prList = h('div', {});
-  const flags = { singleRole: 'Single role (business units: business pass only)', skipSeams: 'Skip seams', skipRebuttals: 'Skip red-team', skipSynthesis: 'Skip synthesis', noRepro: 'Skip repro tests', refresh: 'Refresh (re-plan, re-freeze)' };
+  const flags = { singleRole: 'Single role (business units: business pass only)', skipSeams: 'Skip seams', skipRebuttals: 'Skip red-team', skipSynthesis: 'Skip synthesis', noRepro: 'Skip repro tests', noScenarios: 'Skip spec scenarios (intent drift)', refresh: 'Refresh (re-plan, re-freeze)' };
   const boxes = Object.fromEntries(Object.keys(flags).map((k) => [k, h('input', { type: 'checkbox' })]));
   const loadPrs = async () => {
     if (!repo.value) return;

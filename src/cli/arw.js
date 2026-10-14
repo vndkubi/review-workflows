@@ -23,6 +23,7 @@ PR review (plan -> freeze -> waves -> validate -> report):
                                                self-review before a PR (--head: one commit range)
   arw review --repo owner/name --pr <n> [--ticket KEY] [--workers 4] [--single-role]
              [--skip-seams] [--skip-rebuttals] [--skip-synthesis] [--refresh] [--no-repro]
+             [--no-scenarios]   skip running the approved spec's scenarios through the code (intent drift)
              [--single-agent]   baseline: one reviewer over the whole diff, no planner/seams/red team/synthesis
   arw validate --repo owner/name --pr <n>      re-validate on disk, no model calls
   arw publish  --repo owner/name --pr <n> [--min-severity P3] [--dry-run]
@@ -116,7 +117,7 @@ async function cmdTicket(argv) {
 }
 
 async function cmdReview(argv) {
-  const args = parseArgs(argv, ['singleRole', 'singleAgent', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'refresh', 'noRepro']);
+  const args = parseArgs(argv, ['singleRole', 'singleAgent', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'refresh', 'noRepro', 'noScenarios']);
   let local = null;
   if (args.local) {
     const { prepareLocal } = require('../lib/local-review');
@@ -142,6 +143,7 @@ async function cmdReview(argv) {
     skipSynthesis: args.skipSynthesis,
     refresh: args.refresh,
     noRepro: args.noRepro,
+    noScenarios: args.noScenarios,
     prepared: local ? local.prepared : undefined,
     log,
   });

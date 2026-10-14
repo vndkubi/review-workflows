@@ -7,10 +7,14 @@
 const { validateAgainst } = require('./schema');
 const { collapse } = require('./validate');
 const { nowIso, sha256Value } = require('./util');
+const { parseExpr, evaluate } = require('./expr');
 
 const EXHAUSTIVE_LIMIT = 64;
 const MAX_COMBOS = 100000;
 const ORDERED = new Set(['integer', 'decimal', 'date']);
+const NUMERIC = new Set(['integer', 'decimal']);
+// A typed outcome's value for a rule where it does not apply (a rejection).
+const NOT_APPLICABLE = /^n\/a$/i;
 const RISK_RANK = { security: 4, money: 3, data: 2, normal: 1 };
 const DAY = 86400000;
 
@@ -79,6 +83,94 @@ function representative(v, c) {
   return c.value || formatValue(v, v.type === 'date' ? Math.round(Date.parse('2026-01-01T00:00:00Z') / DAY) : 1);
 }
 
+// ---------- typed outcomes ----------
+// An outcome with a type other than "text" can be checked by running code:
+// each rule gives it a literal of that type, "n/a", or (integer/decimal) an
+// expression over the feature's numeric variables.
+function outcomeType(o) {
+  return o.type || 'text';
+}
+
+// Canonical text of a literal of the outcome's type, or null.
+function parseLiteral(o, s) {
+  const t = String(s == null ? '' : s).trim();
+  const type = outcomeType(o);
+  if (type === 'boolean') return /^(true|false)$/i.test(t) ? t.toLowerCase() : null;
+  if (type === 'enum') return t || null;
+  if (NUMERIC.has(type)) {
+    const n = t.replace(/[,_\s]/g, '');
+    if (!(type === 'integer' ? /^-?\d+$/ : /^-?(\d+(\.\d+)?|\.\d+)$/).test(n)) return null;
+    return formatOutcome(o, Number(n));
+  }
+  return null;
+}
+
+// Canonical text of a number for the outcome: integers exactly, decimals at
+// the outcome's step (default: up to 10 places, trailing zeros dropped).
+function formatOutcome(o, n) {
+  if (outcomeType(o) === 'integer') return String(Math.round(n));
+  if (o.step && Number(o.step) > 0) return n.toFixed(decimalsOf(o.step));
+  return String(Number(n.toFixed(10)));
+}
+
+function checkResult(o, x, vars, at) {
+  const errors = [];
+  const type = outcomeType(o);
+  if (x.expr != null && x.expr !== '') {
+    if (!NUMERIC.has(type)) return [`${at}.expr: only an integer or decimal outcome takes an expression (outcome "${o.id}" is ${type})`];
+    let parsed;
+    try {
+      parsed = parseExpr(x.expr);
+    } catch (err) {
+      return [`${at}.expr: ${err.message}`];
+    }
+    for (const id of parsed.variables) {
+      const v = vars.get(id);
+      if (!v) errors.push(`${at}.expr: unknown variable "${id}"`);
+      else if (!NUMERIC.has(v.type)) errors.push(`${at}.expr: variable "${id}" is ${v.type}; expressions use integer or decimal variables only`);
+    }
+    return errors;
+  }
+  if (type === 'text' || NOT_APPLICABLE.test(String(x.value).trim())) return errors;
+  if (parseLiteral(o, x.value) == null) {
+    const hint = NUMERIC.has(type) ? 'give the number itself (e.g. "0.1", "100000"), an "expr", or "n/a"' : type === 'boolean' ? '"true", "false" or "n/a"' : 'a non-empty value or "n/a"';
+    errors.push(`${at}.value: "${x.value}" is not ${/^[aeiou]/.test(type) ? 'an' : 'a'} ${type} literal for outcome "${o.id}"; ${hint}`);
+  }
+  return errors;
+}
+
+// { values: { outcome: canonical text }, notes: [...] } for one scenario row
+// matched by rule r. Text and "n/a" outcomes are not checked.
+function expectedValues(f, r, values) {
+  const out = {};
+  const notes = [];
+  for (const x of r.results) {
+    const o = f.outcomes.find((y) => y.id === x.outcome);
+    const type = outcomeType(o);
+    if (type === 'text') continue;
+    if (x.expr) {
+      const env = {};
+      for (const v of f.variables) if (NUMERIC.has(v.type)) env[v.id] = parseValue(v, values[v.id]);
+      let n;
+      try {
+        n = evaluate(x.expr, env);
+      } catch (err) {
+        notes.push(`${o.id}: ${err.message}`);
+        continue;
+      }
+      if (type === 'integer' && Math.abs(n - Math.round(n)) > 1e-9) {
+        notes.push(`${o.id}: ${x.expr} gives ${n}, not an integer (use round, floor or ceil)`);
+        continue;
+      }
+      out[o.id] = formatOutcome(o, n);
+    } else if (!NOT_APPLICABLE.test(String(x.value).trim())) {
+      const lit = parseLiteral(o, x.value);
+      if (lit != null) out[o.id] = lit;
+    }
+  }
+  return { values: out, notes };
+}
+
 // ---------- model checks (errors go back to the model) ----------
 function checkPartition(v, at, errors) {
   const ranges = v.classes.filter((c) => !c.special).map((c) => ({ c, r: rangeOf(v, c) }));
@@ -143,6 +235,9 @@ function checkModel(model, requirements, ticket) {
       }
     });
     const outcomes = new Set(f.outcomes.map((o) => o.id));
+    f.outcomes.forEach((o, oi) => {
+      if (o.step != null && o.step !== '' && (outcomeType(o) !== 'decimal' || !(Number(o.step) > 0))) errors.push(`${fat}.outcomes[${oi}].step: only a decimal outcome has a step, a positive number such as "0.01"`);
+    });
     f.rules.forEach((r, ri) => {
       const at = `${fat}.rules[${ri}]`;
       if (ruleIds.has(r.id)) errors.push(`${at}.id: duplicate rule id ${r.id} (rule ids are unique across features)`);
@@ -156,7 +251,10 @@ function checkModel(model, requirements, ticket) {
         for (const cls of c.classes) if (!v.classes.some((x) => x.id === cls)) errors.push(`${at}.conditions[${ci}]: "${cls}" is not a class of ${c.variable}`);
       });
       const given = new Set(r.results.map((x) => x.outcome));
-      for (const x of r.results) if (!outcomes.has(x.outcome)) errors.push(`${at}.results: unknown outcome "${x.outcome}"`);
+      r.results.forEach((x, xi) => {
+        if (!outcomes.has(x.outcome)) errors.push(`${at}.results: unknown outcome "${x.outcome}"`);
+        else errors.push(...checkResult(f.outcomes.find((o) => o.id === x.outcome), x, vars, `${at}.results[${xi}]`));
+      });
       for (const o of outcomes) if (!given.has(o)) errors.push(`${at}.results: missing a value for outcome "${o}" (every rule states every outcome)`);
       for (const ac of r.acs) {
         if (!acIds.has(ac)) errors.push(`${at}.acs: ${ac} is not a requirement item`);
@@ -188,7 +286,7 @@ function matcher(feature) {
   const rules = feature.rules.map((r) => ({
     rule: r,
     conds: r.conditions.map((c) => [varIndex.get(c.variable), new Set(c.classes)]),
-    key: JSON.stringify([...r.results].sort((a, b) => a.outcome.localeCompare(b.outcome)).map((x) => [x.outcome, x.value])),
+    key: JSON.stringify([...r.results].sort((a, b) => a.outcome.localeCompare(b.outcome)).map((x) => [x.outcome, x.value, x.expr || ''])),
   }));
   return (combo) => rules.filter((r) => r.conds.every(([i, set]) => set.has(combo[i])));
 }
@@ -417,6 +515,45 @@ function buildSpec({ model, requirements, ticket, blocks }) {
       }
     });
 
+    // Expression edges: a rule whose expected result is computed from an
+    // ordered variable is also checked at both ends of each of its classes
+    // (and well above an open-ended one), where caps and rounding show.
+    for (const r of f.rules) {
+      const exprVars = new Set(r.results.flatMap((x) => (x.expr ? parseExpr(x.expr).variables : [])));
+      const base = firstComboOfRule.get(r.id);
+      if (!exprVars.size || !base) continue;
+      for (const vid of exprVars) {
+        const vi = f.variables.findIndex((v) => v.id === vid);
+        const v = f.variables[vi];
+        const cond = r.conditions.find((c) => c.variable === vid);
+        for (const cid of cond ? cond.classes : v.classes.map((c) => c.id)) {
+          const c = classOf(vi, cid);
+          if (c.special) continue;
+          const combo = [...base];
+          combo[vi] = cid;
+          const out = resultByCombo.get(combo.join('\u0000'));
+          if (out.kind !== 'rule' || !out.rules.includes(r.id)) continue;
+          const rr = rangeOf(v, c);
+          const far = rr.highEdge == null && rr.lowEdge != null ? (rr.lowEdge > 0 ? rr.lowEdge * 2 : rr.lowEdge + 100) : null;
+          for (const at of [rr.lowEdge, rr.highEdge, far]) {
+            if (at == null) continue;
+            const values = { ...valuesFor(combo), [vid]: formatValue(v, at) };
+            if (scenarios.some((s) => JSON.stringify(s.values) === JSON.stringify(values))) continue;
+            sCounter += 1;
+            scenarios.push({ id: `S${sCounter}`, feature: f.id, classes: Object.fromEntries(combo.map((x, i) => [f.variables[i].id, x])), values, rules: out.rules, expected: out.text, kind: out.kind, edge: true });
+          }
+        }
+      }
+    }
+    // Machine-checkable expected values, computed here from the approved
+    // rule (never by a model): what scenario execution compares against.
+    for (const s of scenarios) {
+      if (s.kind !== 'rule') continue;
+      const ev = expectedValues(f, f.rules.find((r) => r.id === s.rules[0]), s.values);
+      if (Object.keys(ev.values).length) s.expected_values = ev.values;
+      if (ev.notes.length) s.unchecked = ev.notes;
+    }
+
     // Review items, in a stable order: rules, boundaries, gaps, conflicts.
     const featureAcs = [...new Set(f.rules.flatMap((r) => r.acs))];
     for (const r of f.rules) {
@@ -478,7 +615,7 @@ function buildSpec({ model, requirements, ticket, blocks }) {
           const c = r.conditions.find((x) => x.variable === v.id);
           return [v.id, c ? c.classes.map((cid) => v.classes.find((x) => x.id === cid).label) : ['*']];
         })),
-        results: Object.fromEntries(r.results.map((x) => [x.outcome, x.value])),
+        results: Object.fromEntries(r.results.map((x) => [x.outcome, x.expr ? `${x.value} = ${x.expr}` : x.value])),
         acs: r.acs,
         label: r.label,
         quote: r.source.quote,
@@ -502,6 +639,7 @@ function buildSpec({ model, requirements, ticket, blocks }) {
     gaps: questions.filter((q) => q.kind === 'gap').length,
     contradictions: questions.filter((q) => q.kind === 'contradiction').length,
     inferred_rules: inferred,
+    executable_scenarios: features.reduce((n, f) => n + f.scenarios.filter((x) => x.expected_values).length, 0),
     downgraded,
     items: items.length,
   };
@@ -538,6 +676,39 @@ function itemsFromRequirements(requirements) {
   }));
 }
 
+// What scenario execution of a PR may use from an approved spec: per feature
+// with a checkable outcome, its variables, outcomes and scenario rows (input
+// values, the harness-computed expected values, the rules and review items
+// they belong to). Gap rows have no expected value: the code's answer is
+// observed and reported. Null when nothing is checkable.
+function scenarioInput(spec) {
+  const features = spec.features.map((f) => {
+    const outcomes = f.outcomes.map((o) => {
+      const type = outcomeType(o);
+      const rules = (spec.model.features.find((x) => x.id === f.id) || { rules: [] }).rules;
+      const values = ['enum', 'boolean'].includes(type) ? [...new Set(rules.flatMap((r) => r.results.filter((x) => x.outcome === o.id && !NOT_APPLICABLE.test(String(x.value).trim())).map((x) => parseLiteral(o, x.value))).filter(Boolean))] : null;
+      return { id: o.id, description: o.description, type, step: o.step || null, ...(values ? { values } : {}) };
+    });
+    if (!outcomes.some((o) => o.type !== 'text')) return null;
+    const labelOf = new Map(f.decision_table.map((r) => [r.rule, r.label]));
+    const rows = f.scenarios
+      .filter((s) => s.expected_values || s.kind === 'gap')
+      .map((s) => ({
+        id: s.id,
+        kind: s.kind,
+        values: s.values,
+        rules: s.rules,
+        labels: s.rules.map((r) => labelOf.get(r)),
+        expected: s.expected_values || null,
+        items: spec.review_items.filter((i) => i.scenarios.includes(s.id)).map((i) => i.id),
+        ...(s.boundary ? { boundary: true } : {}),
+      }));
+    if (!rows.some((r) => r.expected)) return null;
+    return { id: f.id, name: f.name, variables: f.variables.map((v) => ({ id: v.id, description: v.description, type: v.type, unit: v.unit })), outcomes, rows };
+  }).filter(Boolean);
+  return features.length ? { schema_version: '1.0', ticket: spec.ticket, features } : null;
+}
+
 function renderSpecMarkdown(spec) {
   const cell = (s) => String(s == null ? '' : s).replace(/\|/g, '\\|').replace(/\n/g, ' ');
   const out = [`# Spec — ${spec.ticket}`, ''];
@@ -552,10 +723,15 @@ function renderSpecMarkdown(spec) {
     for (const v of f.variables) for (const c of v.classes) out.push(`| ${v.id} | ${v.type}${v.unit ? ` (${v.unit})` : ''} | ${cell(c.label)} | ${c.validity} | ${cell(c.range)} | ${cell(c.example)} |`);
     const vars = f.variables.map((v) => v.id);
     const outs = f.outcomes.map((o) => o.id);
+    const typed = f.outcomes.filter((o) => outcomeType(o) !== 'text');
+    if (typed.length) out.push('', `Checked by running the code: ${typed.map((o) => `${o.id} (${o.type}${o.step ? `, step ${o.step}` : ''})`).join(', ')}. Expected values after ⇒ are computed by the harness from the rules.`);
     out.push('', '### Decision table', '', `| Rule | ${vars.join(' | ')} | → ${outs.join(' | ')} | AC | Label |`, `|${'---|'.repeat(vars.length + outs.length + 3)}`);
     for (const r of f.decision_table) out.push(`| ${r.rule} | ${vars.map((v) => cell(r.conditions[v].join(', '))).join(' | ')} | ${outs.map((o) => cell(r.results[o])).join(' | ')} | ${r.acs.join(', ')} | ${r.label} |`);
     out.push('', '### Scenarios', '', `| ID | ${vars.join(' | ')} | Expected | Rule |`, `|${'---|'.repeat(vars.length + 3)}`);
-    for (const sc of f.scenarios) out.push(`| ${sc.id}${sc.boundary ? ' (boundary)' : ''} | ${vars.map((v) => cell(sc.values[v])).join(' | ')} | ${cell(sc.expected)} | ${sc.rules.join(', ') || '—'} |`);
+    for (const sc of f.scenarios) {
+      const checked = sc.expected_values ? ` ⇒ ${Object.entries(sc.expected_values).map(([k, v]) => `${k}=${v}`).join(', ')}` : '';
+      out.push(`| ${sc.id}${sc.boundary ? ' (boundary)' : sc.edge ? ' (edge)' : ''} | ${vars.map((v) => cell(sc.values[v])).join(' | ')} | ${cell(sc.expected + checked)} | ${sc.rules.join(', ') || '—'} |`);
+    }
     out.push('');
   }
   out.push('## Review items', '', '| ID | Kind | Risk | Label | Item |', '|---|---|---|---|---|');
@@ -563,4 +739,4 @@ function renderSpecMarkdown(spec) {
   return `${out.join('\n')}\n`;
 }
 
-module.exports = { buildSpec, checkModel, itemsFromRequirements, renderSpecMarkdown, pairwiseRows, compressPatterns, generalizePatterns, rangeOf, representative, EXHAUSTIVE_LIMIT };
+module.exports = { buildSpec, scenarioInput, parseLiteral, formatOutcome, outcomeType, checkModel, itemsFromRequirements, renderSpecMarkdown, pairwiseRows, compressPatterns, generalizePatterns, rangeOf, representative, EXHAUSTIVE_LIMIT };

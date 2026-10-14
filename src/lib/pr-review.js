@@ -12,11 +12,12 @@ const { parsePatch } = require('./patch');
 const { buildEvidencePack } = require('./evidence-pack');
 const { validateAgainst, outputSchema } = require('./schema');
 const { buildUnits, singleAgentUnits, renderPlanMarkdown } = require('./plan');
-const { freezeContext, loadContext, verifyContext } = require('./freeze');
+const { freezeContext, loadContext, verifyContext, readInput } = require('./freeze');
 const { runLooseJob } = require('./loose-job');
 const { redactSecrets, scanInjection, addedLines, textLines } = require('./guard');
 const { runBatch, finish, runModelJob } = require('./driver');
 const { runRepro } = require('./repro');
+const { runScenarios } = require('./scenarios');
 const { carryOver } = require('./carry-over');
 const { collectStatic } = require('./static-evidence');
 const { prSize, fileRisks, scoreUnits, suggestSplit } = require('./pr-size');
@@ -215,6 +216,7 @@ function freezePhase({ runDir, run, info, tickets, planned }) {
   if (planned.requirements) inputs.push({ id: 'requirements', kind, content: `${JSON.stringify(planned.requirements, null, 2)}\n` });
   if (planned.items) inputs.push({ id: 'review-items', kind, content: `${JSON.stringify(planned.items, null, 2)}\n` });
   if (tickets.specMarkdown) inputs.push({ id: 'spec', kind, content: tickets.specMarkdown });
+  if (tickets.scenarios) inputs.push({ id: 'scenarios', kind, content: `${JSON.stringify(tickets.scenarios, null, 2)}\n` });
   if (tickets.evidence) inputs.push({ id: 'ticket-evidence', kind: 'untrusted', content: tickets.evidence });
   const context = freezeContext({
     runDir,
@@ -231,7 +233,7 @@ function freezePhase({ runDir, run, info, tickets, planned }) {
   return context;
 }
 
-async function reviewPr({ repo, pr, ticket, executor, preflight, models = {}, workers, singleRole, singleAgent = false, skipSeams, skipRebuttals, skipSynthesis, refresh, noRepro, reproRunner, testCommand, log = () => {}, prepared, ciApi = null, impactedRunner }) {
+async function reviewPr({ repo, pr, ticket, executor, preflight, models = {}, workers, singleRole, singleAgent = false, skipSeams, skipRebuttals, skipSynthesis, refresh, noRepro, noScenarios, reproRunner, scenarioRunner, testCommand, log = () => {}, prepared, ciApi = null, impactedRunner }) {
   // The single-agent baseline has no seams, red team or synthesis by definition.
   if (singleAgent) [skipSeams, skipRebuttals, skipSynthesis] = [true, true, true];
   const { runDir, run, info } = prepare({ repo, pr, prepared });
@@ -284,12 +286,12 @@ async function reviewPr({ repo, pr, ticket, executor, preflight, models = {}, wo
   fresh.phases.batch = { status: validation.status, at: nowIso() };
   writeJsonAtomic(path.join(runDir, 'run.json'), fresh);
 
+  // Local reviews take the test command of the configured repo at that path.
+  const repoCfg = prepared
+    ? (prepared.local && Object.values(github.reposConfig().repos).find((r) => r && r.checkout && samePath(r.checkout, prepared.local.dir))) || {}
+    : github.reposConfig().repos[repo] || {};
   // Phase 3.5: executed reproduction of blocking findings (CONFIRMED = L3).
   if (!noRepro && validation.status !== 'INVALIDATED') {
-    // Local reviews take the test command of the configured repo at that path.
-    const repoCfg = prepared
-      ? (prepared.local && Object.values(github.reposConfig().repos).find((r) => r && r.checkout && samePath(r.checkout, prepared.local.dir))) || {}
-      : github.reposConfig().repos[repo] || {};
     if (!reproRunner) await ensureSandboxEnvironment({ runDir, identity: fresh.identity, log });
     const results = await runRepro({
       runDir,
@@ -306,6 +308,19 @@ async function reviewPr({ repo, pr, ticket, executor, preflight, models = {}, wo
     fresh.phases.repro = { status: 'EXECUTED_PASS', at: nowIso(), results: results.map((r) => ({ finding: r.finding_id, status: r.status, fix_verified: r.fix ? r.fix.verified : null })) };
   } else {
     fresh.phases.repro = { status: 'SKIPPED', at: nowIso(), reason: noRepro ? 'disabled (--no-repro)' : 'context invalidated' };
+  }
+  // Phase 3.6: the approved spec's scenarios through the reviewed code
+  // (behavioural evidence; intent drift is decided in finish).
+  const invalidated = validation.status === 'INVALIDATED';
+  const hasScenarios = readInput(runDir, loadContext(runDir), 'scenarios') != null;
+  if (!noScenarios && hasScenarios && !invalidated) {
+    const runner = scenarioRunner || reproRunner;
+    if (!runner) await ensureSandboxEnvironment({ runDir, identity: fresh.identity, log });
+    const results = await runScenarios({ runDir, executor, models, runner, testCommand: testCommand || repoCfg.test_command || null, log, prompts, runModelJob, makeSources });
+    validation = finish(runDir, { skipSeams, skipRebuttals, skipSynthesis });
+    fresh.phases.scenarios = { status: 'EXECUTED_PASS', at: nowIso(), results: results.map((r) => ({ feature: r.feature, status: r.status, adapter: r.trust ? r.trust.status : null })), intent: validation.scenarios ? validation.scenarios.intent : null };
+  } else {
+    fresh.phases.scenarios = { status: 'SKIPPED', at: nowIso(), reason: noScenarios ? 'disabled (--no-scenarios)' : !hasScenarios ? 'no approved spec with machine-checkable outcomes' : 'context invalidated' };
   }
   writeJsonAtomic(path.join(runDir, 'run.json'), fresh);
   const report = writeReport(runDir, validation, fresh.identity);

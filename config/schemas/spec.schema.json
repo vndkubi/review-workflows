@@ -72,7 +72,12 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "description"],
-      "properties": { "id": { "$ref": "#/$defs/name" }, "description": { "$ref": "#/$defs/text" } }
+      "properties": {
+        "id": { "$ref": "#/$defs/name" },
+        "description": { "$ref": "#/$defs/text" },
+        "type": { "enum": ["boolean", "enum", "integer", "decimal", "text"] },
+        "step": { "type": "string" }
+      }
     },
     "rule": {
       "type": "object",
@@ -99,7 +104,7 @@
             "type": "object",
             "additionalProperties": false,
             "required": ["outcome", "value"],
-            "properties": { "outcome": { "$ref": "#/$defs/name" }, "value": { "$ref": "#/$defs/text" } }
+            "properties": { "outcome": { "$ref": "#/$defs/name" }, "value": { "$ref": "#/$defs/text" }, "expr": { "type": "string" } }
           }
         },
         "acs": { "type": "array", "items": { "$ref": "#/$defs/acId" } },

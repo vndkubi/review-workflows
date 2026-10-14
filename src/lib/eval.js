@@ -20,7 +20,7 @@ const { words, SEVERITY_RANK } = require('./cluster');
 const git = require('./git');
 
 const LINE_SLACK = 3;
-const FLAGS = ['singleRole', 'singleAgent', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'noRepro'];
+const FLAGS = ['singleRole', 'singleAgent', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'noRepro', 'noScenarios'];
 // Named configurations, to compare on the same cases (same model and inputs):
 // what the multi-agent waves add over one reviewer, and what execution adds.
 const CONFIGS = {

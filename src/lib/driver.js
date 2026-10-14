@@ -14,6 +14,7 @@ const { findingClusters } = require('./cluster');
 const { computeOutcome, BLOCKING } = require('./outcome');
 const prompts = require('./prompts');
 const { loadReproRecords } = require('./repro');
+const scenarios = require('./scenarios');
 const { outputSchema, stripNulls } = require('./schema');
 
 const STATUS = {
@@ -559,31 +560,54 @@ function finish(runDir, optOuts = {}) {
   const run = readJson(runFile);
   const grading = gradingInputs(runDir, context);
   const dir = revisionDir(runDir, context.context_id);
-  const drift = verifyContext(runDir, context);
+  const contextDrift = verifyContext(runDir, context);
   const state = collectState(runDir, context, run.review, grading);
   const reproState = loadReproRecords(runDir, context);
   const outcome = computeOutcome({ packets: state.packets, jobs: state.jobs, clusters: state.clusters, rebuttals: state.rebuttals, items: grading.items, repro: reproState.records });
   // A repro record whose artifacts changed is not evidence of anything.
   outcome.gaps.push(...reproState.errors);
+  // Executed scenarios of the approved spec: drift per review item, decided
+  // here from the validated records. Report-only: a drift on a money or
+  // security item leaves the review incomplete, it does not add a finding.
+  const scenarioState = scenarios.loadScenarioRecords(runDir, context);
+  outcome.gaps.push(...scenarioState.errors);
+  const scenarioInput = readInput(runDir, context, 'scenarios');
+  const impacted = (readJsonIfExists(path.join(runDir, 'static.json'), {}) || {}).impacted_tests;
+  const testsGreen = impacted && impacted.results && impacted.results.length ? impacted.results.every((r) => ['passing', 'new_test_passing', 'fixed'].includes(r.verdict)) : null;
+  const drift = scenarioInput ? scenarios.computeDrift({ input: JSON.parse(scenarioInput), records: scenarioState.records, items: grading.items, testsGreen }) : [];
+  for (const d of drift) {
+    if (d.verdict === 'DRIFT' && ['money', 'security'].includes(d.risk)) outcome.gaps.push(`${d.item} (${d.risk} risk): executed scenarios contradict the approved spec (DRIFT, ${d.evidence_level}) — ${d.reason}`);
+  }
+  const driftByItem = new Map(drift.map((d) => [d.item, d]));
+  for (const it of outcome.items) if (driftByItem.has(it.id)) it.drift = driftByItem.get(it.id);
   outcome.complete = outcome.gaps.length === 0;
+  if (!outcome.complete && outcome.recommendation === 'no_blocking_findings') outcome.recommendation = 'needs_investigation';
   const synth = synthesisCheck(runDir, context, state, outcome);
   const injection = readJsonIfExists(path.join(runDir, 'injection.json'), { hits: [] }).hits;
   const usage = sumUsage(readJsonIfExists(path.join(dir, 'receipts.json'), {}));
   // Planning happens before the freeze; its cost is reported, not hidden.
   usage.plan = sumUsage(readJsonIfExists(path.join(runDir, 'plan-work', 'receipts.json'), {}));
   const gate = readJsonIfExists(path.join(runDir, 'gates', 'REVIEW.json'));
-  const status = drift.length ? 'INVALIDATED' : outcome.complete && (!synth.present || synth.valid) ? 'EXECUTED_PASS' : 'EXECUTED_FAIL';
+  const status = contextDrift.length ? 'INVALIDATED' : outcome.complete && (!synth.present || synth.valid) ? 'EXECUTED_PASS' : 'EXECUTED_FAIL';
   const validation = {
     schema_version: '1.0',
     context_id: context.context_id,
     context_digest: context.context_digest,
     validated_at: nowIso(),
     status,
-    drift,
+    drift: contextDrift,
     complete: outcome.complete,
     recommendation: outcome.recommendation,
     gaps: outcome.gaps,
     items: outcome.items,
+    scenarios: scenarioInput
+      ? {
+          features: [...scenarioState.records.values()].map((r) => ({ feature: r.feature, status: r.status, reason: r.reason || null, trust: r.trust, rows: (r.rows || []).length, truncated: Boolean(r.truncated) })),
+          // ALIGNED needs K3 (not built): it stays 0 until then.
+          intent: Object.fromEntries(['ALIGNED', 'CALIBRATED', 'DRIFT', 'UNKNOWN'].map((v) => [v.toLowerCase(), drift.filter((d) => d.verdict === v).length])),
+          gap_observations: scenarios.gapObservations(scenarioState.records),
+        }
+      : null,
     warnings: injection.map((h) => ({ kind: `prompt-injection:${h.kind}`, where: `${h.where}:${h.line}`, text: h.text })),
     jobs: state.jobs,
     clusters: state.clusters,

@@ -97,6 +97,38 @@ function renderFinding(f, meta, rebuttal) {
   return out.join('\n');
 }
 
+// Executed scenarios of the approved spec, and the drift decided from them.
+function renderIntent(validation) {
+  const sc = validation.scenarios;
+  const items = (validation.items || []).filter((r) => r.drift);
+  const out = [`## Intent: approved spec scenarios run through the code (aligned ${sc.intent.aligned} · calibrated ${sc.intent.calibrated} · drift ${sc.intent.drift} · unknown ${sc.intent.unknown})`, ''];
+  out.push('Expected values come from the approved rules, computed by the harness; a model wrote only the adapter that calls the code and recorded what it returned. Report-only: a drift is not a finding. An adapter is CALIBRATED when it passes calibration, K1 variance (its output moves where the expected value moves) and K2 repeat (the same rows in reverse order give the same results); only then is a row match or a drift reported. ALIGNED is reserved for adapters that also pass K3, which is not built yet.', '');
+  for (const f of sc.features) {
+    const t = f.trust;
+    const c = t && t.calibration;
+    const adapter = !t ? '' : t.status === 'CALIBRATED' ? ' · adapter **CALIBRATED** (calibration, K1 variance and K2 repeat passed; ALIGNED needs K3)' : ` · adapter **${t.status}**: ${t.reasons.join('; ')}`;
+    out.push(`- ${f.feature}: **${f.status}**${f.reason ? ` — ${f.reason}` : ''}${c ? ` · ${c.head_matches}/${c.checkable} rows match on head, ${c.base_matches} on base` : ''}${adapter}${f.truncated ? ' · rows truncated' : ''}`);
+    for (const d of (t && t.k2.differing) || []) out.push(`  - ${d.id}: in order ${d.first} · reversed ${d.reversed}`);
+  }
+  const fmt = (o) => (o ? Object.entries(o).map(([k, v]) => `${k}=${v}`).join(', ') : '—');
+  const drift = items.filter((r) => r.drift.verdict === 'DRIFT');
+  if (drift.length) {
+    out.push('', '### Drift', '');
+    for (const r of drift) {
+      const d = r.drift;
+      out.push(`- **${r.id}** (${r.risk} risk, ${d.label} rule, ${d.evidence_level}${d.control ? ', control: base' : ''})${d.tests_green ? ' — the impacted tests are green: they encode the drift or miss it' : ''}: ${d.reason}`);
+      for (const row of d.rows.filter((x) => x.verdict === 'MISMATCH')) out.push(`  - ${row.id}: expected ${fmt(row.expected)} · head ${fmt(row.observed)} · base ${row.base || 'not run'}`);
+    }
+  }
+  const unknown = items.filter((r) => r.drift.verdict === 'UNKNOWN');
+  if (unknown.length) out.push('', '### Not decided by execution', '', ...unknown.map((r) => `- ${r.id}: ${r.drift.reason}`));
+  if (sc.gap_observations.length) {
+    out.push('', '### Where the spec is silent, the code does', '');
+    for (const g of sc.gap_observations.slice(0, 30)) out.push(`- ${g.id} (${g.items.join(', ') || g.feature}): ${fmt(g.observed)}`);
+  }
+  return out;
+}
+
 function renderReport(runDir, validation, identity) {
   const { findings, rebuttal, synthesis } = loadArtifacts(runDir, validation);
   const metas = [...validation.findings].sort(
@@ -138,14 +170,15 @@ function renderReport(runDir, validation, identity) {
     const tally = {};
     for (const r of validation.items) tally[r.result] = (tally[r.result] || 0) + 1;
     out.push('', `## Review items (${Object.entries(tally).map(([k, n]) => `${k} ${n}`).join(' · ')})`, '');
-    out.push('| Item | Kind | Risk | Result | Expected | Reviewer notes |', '|---|---|---|---|---|---|');
+    out.push('| Item | Kind | Risk | Result | Executed | Expected | Reviewer notes |', '|---|---|---|---|---|---|---|');
     const cell = (s) => String(s || '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
     for (const r of validation.items) {
       const item = texts.get(r.id) || {};
       const notes = r.verdicts.map((v) => `${v.unit_id}/${v.role}: ${v.verdict} — ${v.note}`).join('; ');
-      out.push(`| ${r.id} | ${r.kind} | ${r.risk} | **${r.result}** | ${cell(item.expected)} | ${cell(notes).slice(0, 400)} |`);
+      out.push(`| ${r.id} | ${r.kind} | ${r.risk} | **${r.result}** | ${r.drift ? r.drift.verdict : '—'} | ${cell(item.expected)} | ${cell(notes).slice(0, 400)} |`);
     }
   }
+  if (validation.scenarios) out.push('', ...renderIntent(validation));
   if (synthesis) {
     out.push('', '## Overview', '');
     for (const flow of synthesis.overview) out.push(`- **${flow.flow}** — ${flow.change}${flow.finding_ids.length ? ` (${flow.finding_ids.join(', ')})` : ''}`);

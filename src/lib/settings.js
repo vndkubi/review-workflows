@@ -49,7 +49,7 @@ const ENV_SETTINGS = [
   ['ARW_NOTIFY_ON', 'automation', 'enum', 'findings', 'Notify for every review, only with findings, or only with P1/P2 (or a failed review).', ['all', 'findings', 'blocking']],
   ['ARW_DASHBOARD_URL', 'automation', 'url', '', 'Base URL of this dashboard, for links in notifications.'],
   ['REPRO_TIMEOUT_MS', 'repro', 'number', '900000', 'Timeout per repro test run (ms).', null, [30000, 3600000]],
-  ['ARW_SANDBOX', 'repro', 'enum', 'off', 'Where repro and impacted tests run. docker: a container with the images below. bootstrap: offline in an environment set up per review (image found from the source, dependencies resolved at base, in-house libraries built; see the Sandbox page).', ['off', 'docker', 'bootstrap']],
+  ['ARW_SANDBOX', 'repro', 'enum', 'off', 'Where repro tests, spec scenarios and impacted tests run. docker: a container with the images below. bootstrap: offline in an environment set up per review (image found from the source, dependencies resolved at base, in-house libraries built; see the Sandbox page).', ['off', 'docker', 'bootstrap']],
   ['ARW_SANDBOX_RESOLVE_NETWORK', 'repro', 'string', '', 'Docker network for the dependency resolution step of bootstrap (the only step with network). Empty = bridge.'],
   ['ARW_SANDBOX_IMAGE_MAVEN', 'repro', 'string', '', 'Image for Maven runs. Empty = maven:3.9-eclipse-temurin-17.'],
   ['ARW_SANDBOX_IMAGE_GRADLE', 'repro', 'string', '', 'Image for Gradle runs. Empty = gradle:8-jdk17.'],

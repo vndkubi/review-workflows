@@ -178,7 +178,7 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
       const args = ['review', '--repo', repo, '--pr', String(pr)];
       if (body.ticket) args.push('--ticket', checkKey(body.ticket));
       if (body.workers) args.push('--workers', String(Math.max(1, Math.min(8, Number(body.workers) || 4))));
-      for (const flag of ['singleRole', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'noRepro', 'refresh']) {
+      for (const flag of ['singleRole', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'noRepro', 'noScenarios', 'refresh']) {
         if (body[flag]) args.push(`--${flag.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`);
       }
       return queue.enqueue({ kind: 'review', title: `${repo}#${pr}`, args, target: { type: 'pr', id: `${repo.replace('/', '__')}__${pr}` } });
@@ -199,7 +199,7 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
       }
       const args = ['review', '--local', dir, '--base', base, '--mode', mode];
       if (body.workers) args.push('--workers', String(Math.max(1, Math.min(8, Number(body.workers) || 4))));
-      for (const flag of ['singleRole', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'noRepro']) {
+      for (const flag of ['singleRole', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'noRepro', 'noScenarios']) {
         if (body[flag]) args.push(`--${flag.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`);
       }
       return queue.enqueue({ kind: 'review', title: `local ${path.basename(dir)} (${mode})`, args, target: { type: 'pr', id } });

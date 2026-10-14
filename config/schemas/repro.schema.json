@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "arw/repro.schema.json",
-  "title": "A reproduction test a model proposes; the harness writes, runs and judges it",
+  "title": "Tests a model proposes (a reproduction test, a scenario adapter); the harness writes, runs and judges them",
   "$defs": {
     "text": { "type": "string", "pattern": "\\S" },
     "reproTest": {
@@ -14,6 +14,17 @@
         "selector": { "type": "string", "pattern": "^[A-Za-z0-9_.:/\\-\\[\\]]+$" },
         "content": { "$ref": "#/$defs/text" },
         "fails_because": { "$ref": "#/$defs/text" }
+      }
+    },
+    "scenarioAdapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["language", "path", "content", "calls"],
+      "properties": {
+        "language": { "enum": ["java", "python"] },
+        "path": { "$ref": "#/$defs/text" },
+        "content": { "$ref": "#/$defs/text" },
+        "calls": { "$ref": "#/$defs/text" }
       }
     }
   }

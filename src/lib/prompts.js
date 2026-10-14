@@ -309,6 +309,8 @@ function specPrompt({ ticket, requirements, evidenceBlocks, feedback, repair }) 
   - integer/decimal/date: ranges with min/max as strings ("1000000", "0.5", "2026-01-31") and BOTH min_inclusive and max_inclusive set explicitly. The ranges must cover the whole line from -infinity to +infinity with no gap and no overlap: add classes with validity "invalid" for values the business does not accept (negative amounts, dates in the past...). Put a boundary exactly where the ticket's wording puts it ("1,000,000 or more" -> min "1000000" inclusive; "more than 30 days" -> min "30" exclusive).
   - required inputs also get a class with special "missing" (and "malformed" when parsing is involved), validity "invalid".
 - outcomes: what the decision produces (discount, fee, status, error).
+- outcome type (optional, default "text"): give an outcome a type when its value can be checked by running the code — "integer" or "decimal" (amounts, counts; a decimal may set step, e.g. "0.01"), "boolean", or "enum" (a fixed set of codes/statuses). The harness then computes the expected value of every scenario row and runs the code to compare. Leave "text" for prose results.
+- for a typed outcome, each rule's result value is a literal of that type ("0", "100000", "true", "REJECTED") or "n/a" where the outcome does not apply (e.g. the input is rejected). When the value depends on the inputs, keep a readable value AND add "expr": an arithmetic expression over the feature's integer/decimal variables with + - * / ( ) and min, max, round(x[, digits]) (half away from zero), floor, ceil, abs — e.g. value "10%, at most 100,000" with expr "min(total * 0.1, 100000)". An integer outcome must come out whole: wrap the expression in round/floor/ceil as the ticket says.
 - rules: conditions list the variables and classes they apply to (an omitted variable means "any class"); results give a value for EVERY outcome of the feature. Write rules for what the ticket states. You may add the obvious complement rules (e.g. "otherwise no discount") but label them INFERRED.
 - label CONFIRMED only when source.quote is copied verbatim from the ticket evidence and states that rule; otherwise INFERRED with an empty quote. The harness verifies quotes.
 - Do NOT invent rules for invalid or missing inputs the ticket is silent about: leave them uncovered so the harness raises them as questions.
@@ -323,4 +325,37 @@ function specPrompt({ ticket, requirements, evidenceBlocks, feedback, repair }) 
     .join('\n\n');
 }
 
-module.exports = { packetPrompt, rebuttalPrompt, synthesisPrompt, reproPrompt, planPrompt, requirementsPrompt, auditPrompt, analysisPrompt, specPrompt, wrapUntrusted, globalRules, numbered };
+// The adapter job sees inputs and outcome names only: no expected value, no
+// spec or review items, so it cannot shape what it observes to the oracle.
+function scenarioAdapterPrompt(context, { feature, rows, targets, repair }) {
+  const java = `ArwScenarioAdapter${feature.id}`;
+  const py = `arw_scenario_adapter_${feature.id.toLowerCase()}`;
+  const sample = rows.slice(0, 8).map((r) => Object.fromEntries(feature.variables.map((v) => [v.id, r.values[v.id] === '(missing)' ? null : r.values[v.id]])));
+  const lines = [
+    `JOB: write ONE scenario adapter for feature ${feature.id} ("${feature.name}").`,
+    `RUN CONTEXT
+- working directory: the source checkout at head ${context.source.head_sha}; base (merge-base) is ${context.source.base_sha}
+- the diff: git diff ${context.source.base_sha} ${context.source.head_sha}`,
+    `WHAT THE HARNESS DOES: it calls your adapter once per scenario row with that row's input values, records what it returns, and compares the result with the business rules itself. You never see the expected results and you write no assertion. Run on the head and on the base commit; it must compile on the head.`,
+    `INPUT VARIABLES (map keys; every value is a String, or null when the input is missing):\n${JSON.stringify(feature.variables, null, 1)}`,
+    `OUTCOMES TO RETURN (map keys; values as text — numbers as plain digits, booleans as true/false${feature.outcomes.some((o) => o.values) ? ', enum values as listed' : ''}):\n${JSON.stringify(feature.outcomes.filter((o) => o.type !== 'text'), null, 1)}`,
+    `SAMPLE INPUT ROWS (${rows.length} rows in total):\n${JSON.stringify(sample, null, 1)}`,
+    targets.length ? `CHANGED CODE: the adapter must call at least one of these (changed by the pull request, or a caller of changed code): ${targets.slice(0, 30).join(', ')}` : '',
+    `THE ADAPTER MUST
+- Java: path src/test/java/<package of the code it calls>/${java}.java (inside the Maven/Gradle module that holds that code), declaring that package and
+  public class ${java} { public static java.util.Map<String, Object> observe(java.util.Map<String, String> in) throws Exception { ... } }
+  Python: path <test directory next to the code's tests>/${py}.py with a top-level "def observe(inputs):" returning a dict.
+- convert each input String to the type the code takes (BigDecimal, int, LocalDate, enum, boolean), build the objects the code needs with plain constructors or the repository's own test helpers, call the real business code through its public entry point, and put every outcome in the returned map;
+- when the code rejects an input (throws, returns an error result), return the outcome value the business uses for that (for example the error code) if an outcome expresses it; otherwise let the exception propagate — the harness records it;
+- use no network, database, clock, randomness or sleeps; no mocks of the code under test (mocking an external dependency it needs is fine);
+- keep no state from one call to the next: the harness runs the rows more than once and in a different order, and each call must return what the code gives for that row alone;
+- contain no assertion, no fail() and no expected values: it observes, the harness judges;
+- in "calls" name the method(s) it calls.
+Use the framework and conventions of the repository (read a neighbouring test first). Do not change production code. Do not run anything.`,
+  ];
+  return [GLOBAL_RULES_BASE.split('\n\nEVIDENCE')[0], lines.filter(Boolean).join('\n\n'), `JSON SCHEMA (root = scenarioAdapter):\n${schemaFor('repro', 'scenarioAdapter')}`, repairBlock(repair)]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+module.exports = { scenarioAdapterPrompt, packetPrompt, rebuttalPrompt, synthesisPrompt, reproPrompt, planPrompt, requirementsPrompt, auditPrompt, analysisPrompt, specPrompt, wrapUntrusted, globalRules, numbered };

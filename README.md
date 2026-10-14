@@ -110,6 +110,52 @@ its duplicates) into **CONFIRMED (L3)**; without one it is only REPRODUCED. Each
 are stored with SHA-256 hashes, and validation re-checks them: an edited log turns the finding back into
 SUSPECTED and makes the review incomplete.
 
+## Scenario execution and intent drift
+
+Reproduction only tests what a reviewer already suspected. Scenario execution runs the **approved spec**
+through the code whether or not anyone suspected a problem.
+
+1. In the spec, an outcome may have a type (`integer`, `decimal` with an optional `step`, `boolean`, `enum`).
+   Each rule then gives a literal, `"n/a"`, or an expression the person approving the spec can read:
+   `"value": "10%, at most 100,000", "expr": "min(total * 0.1, 100000)"` (`+ - * /`, `min`, `max`,
+   `round(x[, digits])` half away from zero, `floor`, `ceil`, `abs`). The harness, not a model, computes the
+   expected value of every scenario row. It also adds rows at both edges of each class an expression reads,
+   and well above an open-ended class, where caps and rounding show. `spec.md` shows each computed value after ⇒.
+2. In the review, a model writes only an **adapter**, `observe(inputs) → outcomes`, that calls the changed code.
+   It never sees an expected value and may not assert. The harness generates the test that feeds the adapter
+   every row and records what it returns (JUnit 4/5 or a plain Python test). It runs that test twice on the
+   head (the second time with the rows in reverse order) and once on the base commit, and compares the
+   results itself. Logs and observations of every run are hash-bound and re-checked on validation, as repro
+   records are.
+3. The adapter is checked before its results count. Code computes, from the recorded observations:
+
+| Control | Passes when | Fails as |
+|---|---|---|
+| calibration | at most half of the rows raise errors in it, and at least one row matches the spec on the head or the base | UNKNOWN |
+| K1 variance | every outcome whose expected value takes ≥ 2 values across the executed rows also takes ≥ 2 observed values (no extra run) | UNKNOWN (insensitive adapter) |
+| K2 repeat | the reversed head run gives the same result as the first, row by row (an error counts by its class) | FLAKY, with the differing rows |
+
+   An adapter that passes all three is **CALIBRATED**. Calibration alone is not enough: an adapter that calls the
+   code, discards the result and returns a constant equal to one row's expected value passes it, and fails K1.
+   The record stores the controls; validation recomputes them and rejects a record that disagrees.
+4. Per rule or boundary review item, code decides:
+
+| Verdict | When |
+|---|---|
+| ALIGNED | reserved for adapters that also pass K3 (not built yet): nothing reaches it today |
+| CALIBRATED | every executable row of the item matches on the head, with a CALIBRATED adapter |
+| DRIFT | with a CALIBRATED adapter, a row contradicts the approved rule; **L3** when the base gives the expected value (a regression), otherwise L2 |
+| UNKNOWN | text outcome, unapproved spec, blocked or failed build, or an adapter that is not CALIBRATED |
+
+An adapter that is wrong everywhere, constant, or order-dependent gives UNKNOWN, never DRIFT. A missing test
+is never drift. "Where the spec is silent" observations are shown only from a CALIBRATED adapter.
+
+This is **report-only**: a drift adds no finding. A drift on a money or security item leaves the review
+incomplete (`needs_investigation`). The report and the dashboard's Items tab show, for each item, what was
+expected, what the head returned and what the base returned. They also show what the code does for
+combinations the spec leaves open. They flag a drift that the impacted tests did not catch ("tests green").
+Turn it off with `--no-scenarios`. It runs PR code as repro does, in the same sandbox.
+
 ## Sandbox discovery: what a repository needs to build
 
 ```
@@ -497,6 +543,7 @@ runs/prs/<owner>__<repo>__<n>/
     context.json         frozen source + input hashes (+ tool hash)
     inputs/*.txt         evidence pack, requirements, scenarios, policies, agent charters
     packets/<role>/<unit>.json, rebuttals/<finding>.json, synthesis.json
+    repro/, scenarios/   executed evidence: test or adapter, generated test, logs, observations (hash-bound)
     receipts.json        one entry per model call: mode, tokens, time, errors
     attempts/<job>-<n>/  prompt.txt, events.jsonl, raw-candidate.txt
     validation.json      the model-free verdict
@@ -522,3 +569,6 @@ Java + Python fixture repo, with a scripted executor standing in for codex. Test
 ## Not built yet
 
 - Multi-user access (the dashboard is single-user, loopback only).
+- Scenario execution: drift does not block a review yet (report-only, by choice). Expressions cover arithmetic
+  only, with no dates and no lookups. Cap points that fall inside one class are found only through the extra
+  edge rows.
