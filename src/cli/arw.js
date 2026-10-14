@@ -47,6 +47,11 @@ Automation:
   arw watch [--once] [--interval 300]   review new PRs and new pushes of repos with "watch": true
   (notifications: ARW_SLACK_WEBHOOK / ARW_NOTIFY_WEBHOOK, sent when a review finishes)
 
+Sandbox (PR code in containers):
+  arw sandbox discover <owner/name | dir>... [--rev <rev>] [--json]
+                    build system, Java version, coordinates, dependencies, proposed image;
+                    read from git objects, nothing executed
+
 Other:
   arw ui [--port 8787] [--no-open]   local dashboard (loopback only)
   arw clean [--older-than 14] [--runs] [--no-worktrees] [--no-attempts] [--apply]
@@ -424,6 +429,16 @@ function cmdClean(argv) {
   return 0;
 }
 
+function cmdSandbox(argv) {
+  const args = parseArgs(argv, ['json']);
+  const [action, ...targets] = args._;
+  if (action !== 'discover' || !targets.length) throw new Error('usage: arw sandbox discover <owner/name | dir>... [--rev <rev>] [--json]');
+  const { discoverRepo, renderDiscovery, checkoutOf } = require('../lib/discovery');
+  const results = targets.map((t) => discoverRepo({ ...checkoutOf(t), rev: args.rev || 'HEAD' }));
+  console.log(args.json ? JSON.stringify(results.length === 1 ? results[0] : results, null, 2) : results.map(renderDiscovery).join('\n\n'));
+  return 0;
+}
+
 async function cmdUi(argv) {
   const args = parseArgs(argv, ['noOpen']);
   const { startDashboard } = require('../web/server');
@@ -466,6 +481,8 @@ async function main(argv) {
       return cmdDoctor();
     case 'ui':
       return cmdUi(rest);
+    case 'sandbox':
+      return cmdSandbox(rest);
     case 'clean':
       return cmdClean(rest);
     default:

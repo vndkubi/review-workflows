@@ -103,11 +103,36 @@ duplicate cluster:
    - does not compile, or errors → `INCONCLUSIVE`
    - no build tool → `ENVIRONMENT_BLOCKED`
 4. On `RED_PROVEN` the finding's own fix (`fix.asis → fix.tobe`) is applied and the test runs again. A
-   pass marks the fix as verified.
+   pass marks the fix as verified. If it does not pass, the same test runs on the base commit.
 
-Only `RED_PROVEN` turns a finding (and its duplicates) into **CONFIRMED (L3)**. Each run's log and the test
-file are stored with SHA-256 hashes, and validation re-checks them: an edited log turns the finding back into
+`RED_PROVEN` with a control (the fix makes the test pass, or the base commit passes it) turns a finding (and
+its duplicates) into **CONFIRMED (L3)**; without one it is only REPRODUCED. Each run's log and the test file
+are stored with SHA-256 hashes, and validation re-checks them: an edited log turns the finding back into
 SUSPECTED and makes the review incomplete.
+
+## Sandbox discovery: what a repository needs to build
+
+```
+arw sandbox discover <owner/name | dir>... [--rev <rev>] [--json]
+```
+
+Reads the build metadata of a revision from git objects (never the working tree, nothing executed) and
+reports, each with `path:line` evidence that matches the revision:
+
+- **Build system**: Maven (the module tree from the root POM, parents inside the repository, properties,
+  `pluginManagement`) and Gradle (literal values only: build scripts are code, anything computed is not seen).
+- **Java**: the version it compiles for (`release`/`target`/`source`, compiler properties, Spring Boot's
+  `java.version`) and the JDK it builds with: an explicit toolchain, then CI (`setup-java`, CI images,
+  Jenkins `jdk`), then `.java-version`/`.sdkmanrc`/`.tool-versions`, otherwise the declared target. A
+  Dockerfile or a framework default counts only when nothing else does. Labelled DECLARED, INFERRED or
+  UNKNOWN; contradictions (a JDK older than the target, a JDK that can no longer compile for it, an enforcer
+  minimum) are listed.
+- **Coordinates**: what the repository produces (parent POMs included) and what it depends on, with versions
+  resolved through properties and `dependencyManagement` where they are in the repository.
+- **A proposed sandbox**: image and commands, marked not verified (a bootstrap run has to prove it).
+
+Checked on three public repositories (jhipster sample, hadoop, elasticsearch): 0.4–0.8 s each, every one of
+8,581 evidence lines matches `git show`.
 
 ## Why it is built this way
 
