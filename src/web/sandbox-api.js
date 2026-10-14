@@ -31,6 +31,38 @@ function sourceDir(raw) {
   return path.resolve(dir);
 }
 
+// What a repository depends on, by where it would come from: a configured
+// repository builds it (`configured`), a configured repository produces
+// another version (`other_version`: from a Maven repository), it looks like
+// an in-house library no configured repository produces (`missing`: same
+// group as the repository, or a SNAPSHOT), or a Maven repository
+// (`external`).
+function librariesOf(disc, dir) {
+  const others = [];
+  for (const r of configured().filter((x) => x.exists && path.resolve(x.checkout).toLowerCase() !== path.resolve(dir).toLowerCase())) {
+    try {
+      others.push(require('../lib/discovery').discoverRepo({ checkout: r.checkout, repo: r.name }));
+    } catch {
+      /* listed on the page as not discovered */
+    }
+  }
+  const graph = require('../lib/build-graph').buildGraph([disc, ...others]);
+  const own = [...new Set(disc.produces.map((p) => p.groupId).filter(Boolean))];
+  const related = (g) => own.some((o) => g === o || g.startsWith(`${o}.`) || o.startsWith(`${g}.`));
+  const seen = new Set();
+  const out = [];
+  for (const d of disc.dependencies) {
+    const key = `${d.groupId}:${d.artifactId}`;
+    if (seen.has(key) || !d.groupId || !d.artifactId) continue;
+    seen.add(key);
+    const built = graph.edges.find((e) => e.consumer === disc.repo && e.artifact === key);
+    const other = graph.unmatched.find((e) => e.consumer === disc.repo && e.artifact === key);
+    const kind = built ? 'configured' : other ? 'other_version' : related(d.groupId) || /-SNAPSHOT$/.test(d.version || '') ? 'missing' : 'external';
+    out.push({ artifact: key, version: d.version, scope: d.scope, kind, repo: built ? built.dependency : other ? other.dependency : null, produced: other ? other.produced : null, evidence: d.evidence });
+  }
+  return out;
+}
+
 function recordSummary(r) {
   return { fingerprint: r.fingerprint, repo: r.repo, revision: r.revision, status: r.status, reason: r.reason || null, image: r.image, at: r.at, elapsed_ms: r.elapsed_ms, tests: r.tests || null, artifacts: (r.artifacts || []).length, inputs: r.inputs || [] };
 }
@@ -89,11 +121,32 @@ function routes({ queue }) {
       const dir = sourceDir(body.dir);
       const configuredAs = configured().find((r) => r.checkout && path.resolve(r.checkout).toLowerCase() === path.resolve(dir).toLowerCase());
       const name = configuredAs ? configuredAs.name : discovery().suggestName(dir);
+      let disc;
       try {
-        return { dir, configured_as: configuredAs ? configuredAs.name : null, suggested_name: name, discovery: discovery().discoverRepo({ checkout: dir, repo: name }) };
+        disc = discovery().discoverRepo({ checkout: dir, repo: name });
       } catch (err) {
         throw data.httpError(400, err.message);
       }
+      return { dir, configured_as: configuredAs ? configuredAs.name : null, suggested_name: name, discovery: disc, libraries: librariesOf(disc, dir) };
+    }],
+    // A library's source folder, added to the repositories so the setup of
+    // what depends on it builds it first. It must produce the artifact.
+    ['POST', /^\/api\/sandbox\/libraries$/, (m, q, body) => {
+      const dir = sourceDir(body.dir);
+      const name = String(body.name || '').trim() || discovery().suggestName(dir);
+      if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(name)) throw data.httpError(400, 'name must be owner/repository');
+      let disc;
+      try {
+        disc = discovery().discoverRepo({ checkout: dir, repo: name });
+      } catch (err) {
+        throw data.httpError(400, err.message);
+      }
+      const produced = disc.produces.map((p) => `${p.groupId}:${p.artifactId}`);
+      if (body.artifact && !produced.includes(String(body.artifact))) {
+        throw data.httpError(400, `${dir} produces ${produced.slice(0, 5).join(', ') || 'nothing detected'}, not ${body.artifact}`);
+      }
+      const res = require('../lib/settings').addRepo(name, dir);
+      return { name, added: res.added, produces: produced };
     }],
     // One step: detect, pull the images, build and test it and what it needs.
     ['POST', /^\/api\/sandbox\/setup$/, (m, q, body) => {

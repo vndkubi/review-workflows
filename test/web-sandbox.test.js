@@ -113,6 +113,21 @@ test('sandbox endpoints', async (t) => {
     assert.equal((await call(port, 'POST', '/api/sandbox/setup', { body: { dir: folder, register: true, name: 'acme/payment-lib' }, headers: auth })).status, 409);
   });
 
+  await t.test('detect lists the libraries; an in-house one without source gets added from its folder', async () => {
+    const rates = repo('rates-lib', pom('rates-lib', 8));
+    const app = repo('invoice-app', pom('invoice-app', 11, 'rates-lib'));
+    let d = await call(port, 'POST', '/api/sandbox/detect', { body: { dir: app }, headers: auth });
+    assert.deepEqual(d.json.libraries.map((l) => [l.artifact, l.kind]), [['com.company:rates-lib', 'missing']], 'same group, no configured repository builds it');
+    const wrong = await call(port, 'POST', '/api/sandbox/libraries', { body: { dir: lib, artifact: 'com.company:rates-lib' }, headers: auth });
+    assert.equal(wrong.status, 400);
+    assert.match(wrong.json.error, /produces com.company:payment-lib, not com.company:rates-lib/);
+    assert.equal((await call(port, 'POST', '/api/sandbox/libraries', { body: { dir: rates, artifact: 'com.company:rates-lib' } })).status, 403);
+    const added = await call(port, 'POST', '/api/sandbox/libraries', { body: { dir: rates, artifact: 'com.company:rates-lib' }, headers: auth });
+    assert.deepEqual([added.json.name, added.json.added], ['local/rates-lib', true]);
+    d = await call(port, 'POST', '/api/sandbox/detect', { body: { dir: app }, headers: auth });
+    assert.deepEqual(d.json.libraries.map((l) => [l.artifact, l.kind, l.repo]), [['com.company:rates-lib', 'configured', 'local/rates-lib']]);
+  });
+
   await t.test('addRepo registers one folder and keeps the others', () => {
     const settings = require('../src/lib/settings');
     const folder = repo('ledger', pom('ledger', 11));
@@ -120,7 +135,7 @@ test('sandbox endpoints', async (t) => {
     assert.equal(settings.addRepo('acme/ledger', folder).added, false, 'the same folder again is a no-op');
     assert.throws(() => settings.addRepo('acme/ledger', lib), /already configured/);
     const repos = JSON.parse(fs.readFileSync(process.env.ARW_REPOS_FILE, 'utf8')).repos;
-    assert.deepEqual(Object.keys(repos).sort(), ['acme/ledger', 'acme/payment-lib', 'acme/payment-server']);
+    assert.deepEqual(Object.keys(repos).sort(), ['acme/ledger', 'acme/payment-lib', 'acme/payment-server', 'local/rates-lib']);
   });
 
   await t.test('bootstrap is a queued CLI job, for configured repositories, with the token', async () => {

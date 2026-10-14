@@ -201,7 +201,10 @@ repository, the build graph, and the verification records with their logs and JU
 brings the configured repositories it needs. **Set up from a source folder** does it in one step: give a
 path to a git checkout, Detect shows what it needs (build, JDK and its evidence, image), Set up pulls a
 missing image, optionally adds the folder to the repositories, and bootstraps it with what it depends on
-(`arw sandbox setup <dir> --register [--name owner/name]` on the command line). Measured with real containers: a PR that breaks payment-server's `BillingTest` is
+(`arw sandbox setup <dir> --register [--name owner/name]` on the command line). Detect also lists the
+libraries it depends on: built from source by a configured repository, from a Maven repository, or in-house
+but without source (same group, or a SNAPSHOT) — give that library's source folder there (Add library: it
+must produce that artifact) and the setup builds it first. Measured with real containers: a PR that breaks payment-server's `BillingTest` is
 reported as "FAILS ON HEAD, passed on base" (`expected:<100> but was:<101>`), 154 s cold (payment-lib built,
 both resolved), 23 s for the next review.
 

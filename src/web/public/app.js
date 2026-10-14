@@ -1566,6 +1566,40 @@ function recordsTable(recs) {
     h('span', { class: 'small' }, testsText(r.tests)), h('span', { class: 'mono small' }, r.image || ''), h('a', { href: `#/sandbox/${r.fingerprint}` }, r.fingerprint.slice(0, 12))]));
 }
 
+// The libraries a detected folder depends on, by where they would come
+// from; in-house ones no configured repository builds get a field for their
+// source folder (added to the repositories, then detected again).
+function librariesView(d, redetect) {
+  const libs = d.libraries || [];
+  const by = (k) => libs.filter((l) => l.kind === k);
+  const addLibrary = (input, artifact) => async () => {
+    try {
+      const res = await api('POST', '/api/sandbox/libraries', { dir: input.value, artifact });
+      toast(res.added ? `Added ${res.name}` : `${res.name} was already added`);
+      redetect();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  const folderInput = (ph) => h('input', { type: 'text', class: 'wide', placeholder: ph, 'aria-label': ph });
+  const rows = [
+    ...by('configured').map((l) => [h('span', { class: 'mono small' }, l.artifact), l.version || '?', h('span', {}, h('span', { class: 'badge ok' }, 'built from source'), ` ${l.repo}`), '']),
+    ...by('missing').map((l) => {
+      const input = folderInput(`source folder of ${l.artifact.split(':')[1]}`);
+      return [h('span', { class: 'mono small' }, l.artifact), l.version || '?', h('span', { class: 'badge bad' }, 'no source: in-house?'), h('div', { class: 'row' }, input, h('button', { class: 'btn', onclick: addLibrary(input, l.artifact) }, 'Add library'))];
+    }),
+    ...by('other_version').map((l) => [h('span', { class: 'mono small' }, l.artifact), l.version || '?', h('span', { class: 'small' }, `Maven repository (${l.repo} builds ${l.produced})`), '']),
+  ];
+  const other = folderInput('another library\'s source folder');
+  const external = by('external');
+  return h('div', { class: 'panel' },
+    h('h3', {}, 'Libraries it depends on'),
+    by('missing').length ? h('div', { class: 'notice' }, `${by('missing').length} look in-house (same group, or a SNAPSHOT) and no repository here builds them. Give their source folder; otherwise the setup tries to download them and will most likely fail.`) : null,
+    rows.length ? table(['Library', 'Version', 'Comes from', ''], rows) : h('p', { class: 'small muted' }, 'No in-house library detected.'),
+    external.length ? h('details', {}, h('summary', { class: 'small' }, `${external.length} from Maven repositories`), h('ul', { class: 'small mono' }, external.map((l) => h('li', {}, `${l.artifact}:${l.version || '?'} (${l.scope})`)))) : null,
+    h('div', { class: 'row mt' }, other, h('button', { class: 'btn', onclick: addLibrary(other, null) }, 'Add library')));
+}
+
 // One step from a source folder: detect what it needs, show it, then set
 // up the sandbox (pull images, resolve, build and test, keep the record).
 function setupPanel(s) {
@@ -1580,6 +1614,7 @@ function setupPanel(s) {
       const p = d.discovery.proposal;
       put(out,
         discoveryView(d.discovery),
+        librariesView(d, detect),
         h('div', { class: 'row mt' },
           d.configured_as ? h('span', { class: 'small' }, 'Configured as ', h('strong', {}, d.configured_as)) : [h('label', { class: 'small' }, 'Name ', name), h('label', { class: 'small' }, register, ' add to repositories (reviews of it use the sandbox)')],
           h('span', { class: 'spacer' }),
