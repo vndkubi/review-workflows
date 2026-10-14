@@ -20,7 +20,7 @@ const { runRepro } = require('./repro');
 const { carryOver } = require('./carry-over');
 const { collectStatic } = require('./static-evidence');
 const { prSize, fileRisks, scoreUnits, suggestSplit } = require('./pr-size');
-const { runImpactedTests, renderImpacted } = require('./impacted-tests');
+const { runImpactedTests, renderImpacted, enabled: impactedEnabled } = require('./impacted-tests');
 const { makeSources } = require('./validate');
 const { writeReport } = require('./report');
 const { extractTicketKey } = require('./jira');
@@ -97,6 +97,15 @@ function relatedRepos(repoCfg) {
   }).filter(Boolean);
 }
 
+// Prepares the review's sandbox environment once (ARW_SANDBOX=bootstrap only).
+async function ensureSandboxEnvironment({ runDir, identity, log }) {
+  if (require('./sandbox').mode() !== 'bootstrap') return null;
+  const b = require('./bootstrap');
+  if (fs.existsSync(path.join(runDir, 'sandbox-env.json'))) return b.loadReviewEnvironment(runDir);
+  const repo = identity.repo || path.basename(identity.checkout);
+  return b.prepareReviewEnvironment({ runDir, repo, checkout: identity.checkout, source: identity.source_checkout || (identity.local ? identity.local.dir : null), base: identity.base_sha, head: identity.head_sha, log });
+}
+
 async function planPhase({ runDir, run, info, executor, models, log, singleRole, singleAgent = false, tickets, incremental = false, ciApi = null, impactedRunner }) {
   const { checkout, head_sha: head, base_sha: base } = run.identity;
   const changed = git.changedFiles(checkout, base, head);
@@ -107,6 +116,9 @@ async function planPhase({ runDir, run, info, executor, models, log, singleRole,
   // CI results, linter hits and test impact: frozen with the pack as leads.
   const statics = collectStatic({ repo: run.identity.repo, checkout, base, head, changed, reviewable: pack.reviewable.filter((f) => f.status !== 'D').map((f) => f.path), parsed, local: run.identity.local, repoCfg, api: ciApi, impact: pack.impact, log });
   const { markdown: staticMarkdown, ...staticRecord } = statics;
+  // ARW_SANDBOX=bootstrap: the environment PR code runs in, prepared before
+  // the first run (dependencies resolved at base; repositories it needs built).
+  if (!impactedRunner && impactedEnabled(repoCfg)) await ensureSandboxEnvironment({ runDir, identity: run.identity, log });
   // Opt-in: the impacted tests, run at base and head (executes PR code).
   staticRecord.impacted_tests = await runImpactedTests({ runDir, checkout, base, head, impact: statics.tests, repoCfg, runner: impactedRunner, log });
   staticRecord.impact = pack.impact; // call graph of the changed declarations, for reachability hints
@@ -278,6 +290,7 @@ async function reviewPr({ repo, pr, ticket, executor, preflight, models = {}, wo
     const repoCfg = prepared
       ? (prepared.local && Object.values(github.reposConfig().repos).find((r) => r && r.checkout && samePath(r.checkout, prepared.local.dir))) || {}
       : github.reposConfig().repos[repo] || {};
+    if (!reproRunner) await ensureSandboxEnvironment({ runDir, identity: fresh.identity, log });
     const results = await runRepro({
       runDir,
       executor,

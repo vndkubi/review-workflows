@@ -22,8 +22,15 @@ function dockerBin() {
   return process.env.ARW_DOCKER || 'docker';
 }
 
+// ARW_SANDBOX=docker: containers with the configured images (and ARW_SANDBOX_M2);
+// ARW_SANDBOX=bootstrap: containers prepared per repository by bootstrap
+// (discovered image, dependency cache resolved at base, staged artifacts).
+function mode() {
+  return ['docker', 'bootstrap'].includes(process.env.ARW_SANDBOX) ? process.env.ARW_SANDBOX : 'host';
+}
+
 function enabled() {
-  return process.env.ARW_SANDBOX === 'docker';
+  return mode() !== 'host';
 }
 
 function imageFor(toolchain) {
@@ -52,7 +59,7 @@ function checkMount(m) {
 
 // `image`, `network` and `mounts` override the defaults for one run
 // (bootstrap); with `mounts`, ARW_SANDBOX_M2 is not mounted.
-function dockerArgs({ command, argv = null, cwd, toolchain, name, image = null, network = null, mounts = null }) {
+function dockerArgs({ command, argv = null, cwd, toolchain, name, image = null, network = null, mounts = null, env = null }) {
   image = image || imageFor(toolchain);
   if (!image) throw new Error(`no sandbox image for ${toolchain}: set ARW_SANDBOX_IMAGE_${String(toolchain).toUpperCase()} (for pytest, an image with pytest installed)`);
   const args = ['run', '--rm', '--name', name, '--network', network || process.env.ARW_SANDBOX_NETWORK || 'none', '--memory', process.env.ARW_SANDBOX_MEMORY || '4g', '--cpus', process.env.ARW_SANDBOX_CPUS || '2', '--pids-limit', '512', '--security-opt', 'no-new-privileges', '-v', `${cwd}:/work`, '-w', '/work'];
@@ -60,6 +67,10 @@ function dockerArgs({ command, argv = null, cwd, toolchain, name, image = null, 
   // A local Maven repository for builds without network (read-only unless
   // ARW_SANDBOX_M2_RW=1; Maven may need to write tracking files).
   else if (process.env.ARW_SANDBOX_M2) args.push('-v', `${process.env.ARW_SANDBOX_M2}:/m2${process.env.ARW_SANDBOX_M2_RW === '1' ? '' : ':ro'}`, '-e', 'MAVEN_OPTS=-Dmaven.repo.local=/m2');
+  for (const [k, v] of Object.entries(env || {})) {
+    if (!/^[A-Z][A-Z0-9_]*$/.test(k) || /[\r\n]/.test(String(v))) throw new Error(`bad container environment ${k}`);
+    args.push('-e', `${k}=${v}`);
+  }
   if (typeof process.getuid === 'function') args.push('--user', `${process.getuid()}:${process.getgid()}`, '-e', 'HOME=/tmp');
   if (argv) args.push(image, ...argv.map((a) => toContainer(String(a), cwd)));
   else args.push(image, 'sh', '-c', toContainer(command, cwd));
@@ -86,7 +97,7 @@ function daemonError() {
 
 // Same contract as repro's shellRunner: { exit_code, timed_out, spawn_error, elapsed_ms }.
 // No docker means ENVIRONMENT_BLOCKED, never a run on the host.
-function dockerRunner({ command, argv = null, cwd, logFile, timeoutMs, toolchain, image = null, network = null, mounts = null }) {
+function dockerRunner({ command, argv = null, cwd, logFile, timeoutMs, toolchain, image = null, network = null, mounts = null, env = null }) {
   return new Promise((resolve) => {
     const started = Date.now();
     const name = `arw-${crypto.randomBytes(6).toString('hex')}`;
@@ -94,7 +105,7 @@ function dockerRunner({ command, argv = null, cwd, logFile, timeoutMs, toolchain
     try {
       const unavailable = daemonError();
       if (unavailable) throw new Error(unavailable);
-      args = dockerArgs({ command, argv, cwd, toolchain, name, image, network, mounts });
+      args = dockerArgs({ command, argv, cwd, toolchain, name, image, network, mounts, env });
     } catch (err) {
       fs.writeFileSync(logFile, `${err.message}\n`);
       resolve({ exit_code: null, spawn_error: err.message, elapsed_ms: 0 });
@@ -140,6 +151,8 @@ function dockerRunner({ command, argv = null, cwd, logFile, timeoutMs, toolchain
 // can move; pin with name@sha256:<digest> to make them exact.
 function manifest() {
   if (!enabled()) return { mode: 'host' };
+  // Bootstrap environments record their own image and inputs per run.
+  if (mode() === 'bootstrap') return { mode: 'bootstrap', docker: dockerBin(), resolve_network: process.env.ARW_SANDBOX_RESOLVE_NETWORK || 'bridge', memory: process.env.ARW_SANDBOX_MEMORY || '4g', cpus: process.env.ARW_SANDBOX_CPUS || '2', pytest_image: imageFor('pytest'), python: process.env.ARW_PYTHON || 'python' };
   return {
     mode: 'docker',
     docker: dockerBin(),
@@ -152,4 +165,4 @@ function manifest() {
   };
 }
 
-module.exports = { enabled, imageFor, dockerArgs, dockerRunner, toContainer, manifest, daemonError, DEFAULT_IMAGES, _resetDaemon: () => { daemon = { ok: false, at: 0, error: null }; } };
+module.exports = { enabled, mode, imageFor, dockerArgs, dockerRunner, toContainer, manifest, daemonError, DEFAULT_IMAGES, _resetDaemon: () => { daemon = { ok: false, at: 0, error: null }; } };

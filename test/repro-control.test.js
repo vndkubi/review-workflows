@@ -145,3 +145,27 @@ test('PR code that rewrites the worktree .git file cannot make the harness run a
   assert.ok(calls.length >= 1);
   assert.ok(validation.findings.find((x) => x.id === 'T1-technical-F1'));
 });
+
+test('ARW_SANDBOX=bootstrap without docker: the review prepares (and records) a blocked environment, the reproduction is ENVIRONMENT_BLOCKED, nothing runs on the host', async () => {
+  const saved = { ...process.env };
+  process.env.ARW_SANDBOX = 'bootstrap';
+  process.env.ARW_DOCKER = path.join(tmpDir('arw-control-nodocker-'), 'no-docker');
+  require('../src/lib/sandbox')._resetDaemon();
+  try {
+    const r = repo();
+    const prepared = { info: { title: 'grace period', body: '', headRefName: 'g', baseRefName: 'main', url: null }, checkout: r.dir, head: r.head, base: r.base };
+    const { validation, runDir } = await reviewPr({ repo: 'acme/fees', pr: 5, executor: executor('if days < 31:'), prepared, workers: 1, skipSynthesis: true, testCommand: null });
+    const env = JSON.parse(fs.readFileSync(path.join(runDir, 'sandbox-env.json'), 'utf8'));
+    assert.equal(env.status, 'BLOCKED');
+    assert.match(env.reason, /Maven only/);
+    const f = validation.findings.find((x) => x.id === 'T1-technical-F1');
+    assert.equal(f.repro.status, 'ENVIRONMENT_BLOCKED');
+    assert.notEqual(f.label, 'CONFIRMED');
+    const rec = JSON.parse(fs.readFileSync(path.join(revisionDir(runDir, loadContext(runDir).context_id), 'repro', 'T1-technical-F1.json'), 'utf8'));
+    assert.match(rec.runs[0].spawn_error, /docker is not available/);
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+    require('../src/lib/sandbox')._resetDaemon();
+  }
+});

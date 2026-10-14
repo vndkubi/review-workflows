@@ -125,6 +125,28 @@ function listRecords() {
   return fs.readdirSync(dir).filter((n) => n.endsWith('.json')).map((n) => readJsonIfExists(path.join(dir, n))).filter(Boolean).sort((a, b) => String(a.at).localeCompare(String(b.at)));
 }
 
+// Copies the artifacts of verified records into a Maven repository layout
+// (read-only for the build); returns an error when one changed since.
+function stageArtifacts(inputs, stagedDir) {
+  for (const i of inputs) {
+    for (const a of i.record.artifacts) {
+      const from = path.join(home(), 'records', i.record.fingerprint, ...a.path.split('/'));
+      const bytes = fs.existsSync(from) ? fs.readFileSync(from) : null;
+      if (!bytes || sha256(bytes) !== a.sha256) return `${i.repo} artifact ${a.path} changed since it was verified`;
+      const to = path.join(stagedDir, ...a.path.split('/').slice(1)); // drop the leading "artifacts/"
+      ensureDir(path.dirname(to));
+      fs.writeFileSync(to, bytes, { flag: 'wx' });
+    }
+  }
+  return null;
+}
+
+// What a resolution depends on: the build files, the image, the staged POMs
+// (they bring transitive dependencies; jars do not), the command.
+function resolveKeyOf({ srcDir, buildFiles, imageId, staged, argv }) {
+  return sha256Value({ files: buildFiles.map((f) => [f, sha256(fs.readFileSync(path.join(srcDir, ...f.split('/'))))]), image_id: imageId, staged: staged.filter((a) => a.path.endsWith('.pom')), recipe: argv });
+}
+
 // ---------- one repository ----------
 // disc: its DiscoveryResult; inputs: [{ repo, record }] of what it consumes.
 async function bootstrapNode({ disc, inputs = [], image = null, runner, imageId = imageIdOf, force = false, keep = false, timeoutMs = 30 * 60 * 1000, log = () => {} }) {
@@ -184,23 +206,15 @@ async function bootstrapNode({ disc, inputs = [], image = null, runner, imageId 
     const notes = snap.skipped.length ? [`${snap.skipped.length} archive entries not extracted (${[...new Set(snap.skipped.map((s) => s.why))].join(', ')})`] : [];
     // Artifacts it consumes, copied from verified records into a read-only tree.
     const stagedDir = path.join(task, 'staged');
-    for (const i of inputs) {
-      for (const a of i.record.artifacts) {
-        const from = path.join(home(), 'records', i.record.fingerprint, ...a.path.split('/'));
-        const bytes = fs.readFileSync(from);
-        if (sha256(bytes) !== a.sha256) return finish({ status: 'BLOCKED', reason: `${i.repo} artifact ${a.path} changed since it was verified` });
-        const to = path.join(stagedDir, ...a.path.split('/').slice(1)); // drop the leading "artifacts/"
-        ensureDir(path.dirname(to));
-        fs.writeFileSync(to, bytes, { flag: 'wx' });
-      }
-    }
+    const stageError = stageArtifacts(inputs, stagedDir);
+    if (stageError) return finish({ status: 'BLOCKED', reason: stageError });
     const mounts = (extra) => [...(staged.length ? [{ host: stagedDir, container: '/staged', readonly: true }] : []), ...extra];
     const cache = ensureDir(path.join(home(), 'm2-cache', keyOf(disc.repo)));
 
     // 2. Resolve (network), unless these build files were resolved before.
     //    Staged POMs count (they bring transitive dependencies), jars do not.
     const buildFiles = files.filter((f) => /(^|\/)pom\.xml$|^\.mvn\//.test(f));
-    const resolveKey = sha256Value({ files: buildFiles.map((f) => [f, sha256(fs.readFileSync(path.join(task, 'src', ...f.split('/'))))]), image_id: id, staged: staged.filter((a) => a.path.endsWith('.pom')), recipe: recipe.resolve });
+    const resolveKey = resolveKeyOf({ srcDir: path.join(task, 'src'), buildFiles, imageId: id, staged, argv: recipe.resolve });
     const resolvedFile = path.join(cache, '.arw-resolved.json');
     const resolved = readJsonIfExists(resolvedFile, { keys: [] });
     const runStep = async (step, argv, network, stepMounts) => {
@@ -328,4 +342,162 @@ function renderBootstrap(out) {
   return lines.join('\n');
 }
 
-module.exports = { bootstrapNode, bootstrapGraph, renderBootstrap, loadRecord, listRecords, recipeFor, probeTests, home, USABLE };
+// ---------- the environment of a review ----------
+// For ARW_SANDBOX=bootstrap: where the impacted tests and the reproduction
+// tests of one PR run. Prepared once per review (runDir/sandbox-env.json):
+//   - the image discovered for the PR head;
+//   - the repositories it depends on (other configured repositories, at
+//     their checkout's HEAD), bootstrapped or reused, artifacts staged;
+//   - this repository's dependency cache resolved at the BASE revision (the
+//     only step with network; the PR's own code never runs with network).
+// Every Maven run of the review then runs offline in it. A dependency the PR
+// adds is not in it: such a run is ENVIRONMENT_BLOCKED, not a failure.
+const OFFLINE_MISSING = /has not been downloaded from it before|in offline mode/;
+
+function envFile(runDir) {
+  return path.join(runDir, 'sandbox-env.json');
+}
+
+function configuredRepos(exceptRepo, exceptCheckout) {
+  const repos = require('./github').reposConfig().repos || {};
+  const same = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+  return Object.entries(repos).filter(([name, r]) => r && r.checkout && fs.existsSync(r.checkout) && name !== exceptRepo && !(exceptCheckout && same(r.checkout, exceptCheckout))).map(([name, r]) => ({ repo: name, checkout: r.checkout }));
+}
+
+async function prepareReviewEnvironment({ runDir, repo, checkout, source = null, base, head, others = null, runner = null, imageId = imageIdOf, timeoutMs = 30 * 60 * 1000, log = () => {} }) {
+  const { discoverRepo } = require('./discovery');
+  runner = runner || require('./sandbox').dockerRunner;
+  const started = Date.now();
+  const write = (env) => {
+    writeJsonAtomic(envFile(runDir), { ...env, at: nowIso(), elapsed_ms: Date.now() - started });
+    return readJsonIfExists(envFile(runDir));
+  };
+  const blocked = (reason, extra = {}) => {
+    log(`sandbox environment BLOCKED: ${reason}`);
+    return write({ status: 'BLOCKED', reason, repo, base, head, ...extra });
+  };
+  const headDisc = discoverRepo({ checkout, rev: head, repo });
+  const baseDisc = discoverRepo({ checkout, rev: base, repo });
+  if (!headDisc.build_systems.includes('maven')) return blocked(`bootstrap environments are Maven only (found ${headDisc.build_systems.join(', ') || 'no build'})`);
+  const image = headDisc.proposal && headDisc.proposal.image;
+  if (!image) return blocked('the Java version of the PR head is unknown');
+  const id = imageId(image);
+  if (!id) return blocked(`image ${image} is not available locally (docker pull it first)`);
+
+  // Repositories this one needs built from source (at the version they produce).
+  const otherDiscs = [];
+  for (const o of others || configuredRepos(repo, source || checkout)) {
+    try {
+      otherDiscs.push(discoverRepo({ checkout: o.checkout, repo: o.repo }));
+    } catch (err) {
+      log(`sandbox: ${o.repo} not discovered (${err.message})`);
+    }
+  }
+  const graph = buildGraph([baseDisc, ...otherDiscs]);
+  const needed = new Set();
+  const visit = (r) => {
+    for (const d of (graph.nodes.find((n) => n.repo === r) || { depends_on: [] }).depends_on) {
+      if (!needed.has(d)) {
+        needed.add(d);
+        visit(d);
+      }
+    }
+  };
+  visit(repo);
+  const problems = graph.problems.filter((p) => (p.repos || []).some((r) => r === repo || needed.has(r)));
+  if (problems.length) return blocked(problems.map((p) => p.detail).join('; '));
+  let producers = [];
+  if (needed.size) {
+    const out = await bootstrapGraph({ discoveries: otherDiscs.filter((d) => needed.has(d.repo)), runner, imageId, log });
+    producers = out.results;
+    if (out.status !== 'READY') return blocked(`a repository it depends on is not usable: ${out.results.filter((r) => !USABLE.has(r.status)).map((r) => `${r.repo} ${r.status}`).join(', ')}`, { producers: producers.map((r) => ({ repo: r.repo, revision: r.revision, status: r.status, fingerprint: r.fingerprint || null })) });
+  }
+  const inputs = producers.map((r) => ({ repo: r.repo, record: r }));
+  const staged = inputs.flatMap((i) => i.record.artifacts.map((a) => ({ repo: i.repo, path: a.path, sha256: a.sha256 })));
+
+  const envDir = path.join(runDir, 'sandbox');
+  fs.rmSync(envDir, { recursive: true, force: true });
+  const stagedDir = path.join(envDir, 'staged');
+  const stageError = stageArtifacts(inputs, stagedDir);
+  if (stageError) return blocked(stageError);
+  const m2 = ensureDir(path.join(envDir, 'm2'));
+  const cache = ensureDir(path.join(home(), 'm2-cache', keyOf(repo)));
+
+  // Resolve at the base revision (trusted), unless done before.
+  const srcDir = path.join(envDir, 'base-src');
+  snapshot(checkout, base, srcDir);
+  const files = git.git(checkout, ['ls-tree', '-r', '--name-only', '-z', base]).split('\0').filter(Boolean);
+  const argv = recipeFor(baseDisc, { image, staged: staged.length > 0, probes: probeTests(files, baseDisc.modules) }).resolve;
+  const key = resolveKeyOf({ srcDir, buildFiles: files.filter((f) => /(^|\/)pom\.xml$|^\.mvn\//.test(f)), imageId: id, staged, argv });
+  const resolvedFile = path.join(cache, '.arw-resolved.json');
+  let step = 'skipped (resolved before)';
+  try {
+    if (!readJsonIfExists(resolvedFile, { keys: [] }).keys.includes(key)) {
+      const { acquireLockFile } = require('./driver');
+      const release = acquireLockFile(path.join(cache, '.arw-cache.lock'), 'resolve');
+      try {
+        const logFile = path.join(envDir, 'resolve.log');
+        const res = await runner({ command: argv.join(' '), argv, cwd: srcDir, logFile, timeoutMs, toolchain: 'maven', image, network: process.env.ARW_SANDBOX_RESOLVE_NETWORK || 'bridge', mounts: [...(staged.length ? [{ host: stagedDir, container: '/staged', readonly: true }] : []), { host: cache, container: '/m2' }] });
+        log(`sandbox: resolve at base exit ${res.exit_code}`);
+        if (res.spawn_error || res.timed_out) return blocked(`resolve: ${res.spawn_error || 'timed out'}`);
+        if (res.exit_code !== 0) return blocked(`dependency resolution at the base revision failed (see ${path.relative(runDir, logFile)})`);
+        writeJsonAtomic(resolvedFile, { keys: [...readJsonIfExists(resolvedFile, { keys: [] }).keys, key].slice(-50) });
+        step = 'ran';
+      } finally {
+        release();
+      }
+    }
+  } finally {
+    fs.rmSync(srcDir, { recursive: true, force: true });
+  }
+  const env = { status: 'READY', repo, base, head, image, image_id: id, java: headDisc.java.jdk, cache, staged_dir: staged.length ? stagedDir : null, m2, staged, producers: producers.map((r) => ({ repo: r.repo, revision: r.revision, status: r.status, fingerprint: r.fingerprint, cache: r.cache })), resolve: { key, step } };
+  env.digest = sha256Value({ image_id: id, staged, resolve_key: key }).slice(0, 24);
+  log(`sandbox environment READY: ${image}${producers.length ? `, ${producers.length} repositor${producers.length === 1 ? 'y' : 'ies'} staged` : ''}, resolve ${step}`);
+  return write(env);
+}
+
+// The prepared environment, checked again: the image and the staged
+// artifacts must be what they were (the reproduction runs later).
+function loadReviewEnvironment(runDir, { imageId = imageIdOf } = {}) {
+  const env = readJsonIfExists(envFile(runDir));
+  if (!env || env.status !== 'READY') return env;
+  const drift = (reason) => ({ ...env, status: 'BLOCKED', reason: `environment changed since it was prepared: ${reason}` });
+  if (imageId(env.image) !== env.image_id) return drift(`image ${env.image}`);
+  for (const a of env.staged) {
+    const f = path.join(env.staged_dir, ...a.path.split('/').slice(1));
+    if (!fs.existsSync(f) || sha256(fs.readFileSync(f)) !== a.sha256) return drift(`staged ${a.path}`);
+  }
+  if (!fs.existsSync(env.cache) || !fs.existsSync(env.m2)) return drift('dependency cache missing');
+  return env;
+}
+
+// A runner for impacted and reproduction tests: Maven runs go offline into
+// the environment; other toolchains go to the plain container runner. Never
+// the host.
+function environmentRunner(env, { docker = null, other = null } = {}) {
+  const sandbox = require('./sandbox');
+  return async (opts) => {
+    if (opts.toolchain !== 'maven' && opts.toolchain !== 'custom') return (other || sandbox.dockerRunner)(opts);
+    if (!env || env.status !== 'READY') {
+      const why = `sandbox environment ${env ? `blocked: ${env.reason}` : 'not prepared'}`;
+      fs.writeFileSync(opts.logFile, `${why}\n`);
+      return { exit_code: null, spawn_error: why, elapsed_ms: 0, environment: env ? env.digest || null : null };
+    }
+    const tail = [...(env.staged_dir ? ['/staged'] : []), '/m2cache'].join(',');
+    const mounts = [...(env.staged_dir ? [{ host: env.staged_dir, container: '/staged', readonly: true }] : []), { host: env.cache, container: '/m2cache', readonly: true }, { host: env.m2, container: '/m2' }];
+    const res = await (docker || sandbox.dockerRunner)({ ...opts, image: env.image, network: 'none', mounts, env: { MAVEN_ARGS: '-o', MAVEN_OPTS: `-Dmaven.repo.local=/m2 -Dmaven.repo.local.tail=${tail}` } });
+    const text = fs.existsSync(opts.logFile) ? fs.readFileSync(opts.logFile, 'utf8') : '';
+    if (res.exit_code !== 0 && !res.spawn_error && OFFLINE_MISSING.test(text)) {
+      return { ...res, spawn_error: 'a dependency is not in the environment (resolved at the base revision: does the PR add one?)', environment: env.digest };
+    }
+    return { ...res, environment: env.digest };
+  };
+}
+
+// The summary that goes into review evidence.
+function environmentSummary(env) {
+  if (!env) return null;
+  return { status: env.status, reason: env.reason || null, image: env.image || null, image_id: env.image_id || null, digest: env.digest || null, base: env.base, producers: env.producers || [], resolve: env.resolve || null };
+}
+
+module.exports = { prepareReviewEnvironment, loadReviewEnvironment, environmentRunner, environmentSummary, bootstrapNode, bootstrapGraph, renderBootstrap, loadRecord, listRecords, recipeFor, probeTests, home, USABLE };

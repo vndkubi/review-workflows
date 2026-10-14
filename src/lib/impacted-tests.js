@@ -144,7 +144,7 @@ async function runGroup({ wt, group, rev, runner, logDir, label, timeoutMs }) {
     const caseStatus = mine.some((c) => c.status === 'fail' || c.status === 'error') ? 'fail' : mine.every((c) => c.status === 'skipped') ? 'skipped' : 'pass';
     byTest[t.path] = { status: caseStatus === 'pass' && runProblem ? runProblem : caseStatus, case_status: caseStatus, cases: mine.length, failing: mine.filter((c) => c.status === 'fail' || c.status === 'error').map((c) => ({ name: c.name, message: c.message })).slice(0, 5) };
   }
-  return { ran: true, command, exit_code: res.exit_code, timed_out: Boolean(res.timed_out), spawn_error: res.spawn_error || null, elapsed_ms: res.elapsed_ms, byTest };
+  return { ran: true, command, exit_code: res.exit_code, timed_out: Boolean(res.timed_out), spawn_error: res.spawn_error || null, elapsed_ms: res.elapsed_ms, environment: res.environment || null, byTest };
 }
 
 function verdict(base, head) {
@@ -156,7 +156,7 @@ function verdict(base, head) {
 }
 
 async function runImpactedTests({ runDir, checkout, base, head, impact, repoCfg, runner = null, log = () => {} }) {
-  runner = runner || defaultRunner();
+  runner = runner || defaultRunner(runDir);
   if (!enabled(repoCfg)) return null;
   const tests = [...new Set([...impact.sources.flatMap((s) => s.tests.map((t) => t.path)), ...impact.tests_changed])].slice(0, envInt('ARW_IMPACTED_TESTS_MAX', 10));
   if (!tests.length) return { ran: [], results: [], note: 'no impacted tests found' };
@@ -184,13 +184,17 @@ async function runImpactedTests({ runDir, checkout, base, head, impact, repoCfg,
   git.git(checkout, ['worktree', 'remove', '--force', wt], { allowFail: true });
   // Impacted tests run before the context is frozen: the record says where
   // they ran, and that record is frozen with the rest of the machine evidence.
-  return { ran: ran.map(({ byTest, ...r }) => r), results, execution: require('./sandbox').manifest() };
+  const sandbox = require('./sandbox');
+  const environment = sandbox.mode() === 'bootstrap' ? require('./bootstrap').environmentSummary(require('./bootstrap').loadReviewEnvironment(runDir)) : null;
+  return { ran: ran.map(({ byTest, ...r }) => r), results, execution: sandbox.manifest(), environment };
 }
 
 function renderImpacted(r) {
   if (!r) return '';
   const lines = ['', '### Impacted tests run at base and head'];
   if (r.note) lines.push(`- ${r.note}`);
+  const env = r.environment;
+  if (env) lines.push(env.status === 'READY' ? `- ran in sandbox environment ${env.digest} (${env.image}; dependencies resolved at base${env.producers.length ? `; built from source: ${env.producers.map((p) => `${p.repo}@${String(p.revision).slice(0, 12)}`).join(', ')}` : ''})` : `- sandbox environment BLOCKED: ${env.reason} (no test ran on the host)`);
   const word = { newly_failing: 'FAILS ON HEAD, passed on base (broken by this change)', still_failing: 'fails on base and head', fixed: 'failed on base, passes on head', passing: 'passes on base and head', new_test_passing: 'new test, passes', new_test_failing: 'new test, FAILS', failing: 'fails on head' };
   for (const x of r.results) {
     lines.push(`- ${x.test}: ${word[x.verdict] || x.verdict}`);

@@ -121,3 +121,42 @@ test('real containers: JDK 8 library, JDK 11 server, four runs', { skip: ready()
   out = await go('run 4: library broken');
   assert.deepEqual(out.results.map((r) => [r.repo, r.status]), [['payment-lib', 'BUILD_FAILED'], ['payment-server', 'BLOCKED']]);
 });
+
+test('real containers: a review of payment-server runs its impacted tests offline in the prepared environment', { skip: ready(), timeout: 30 * 60 * 1000 }, async () => {
+  const { prepareReviewEnvironment } = require('../src/lib/bootstrap');
+  const { runImpactedTests, renderImpacted } = require('../src/lib/impacted-tests');
+  const saved = process.env.ARW_SANDBOX;
+  process.env.ARW_SANDBOX = 'bootstrap';
+  try {
+    const lib = repo('payment-lib', { 'pom.xml': LIB_POM, 'src/main/java/com/company/pay/Fees.java': FEES('return days <= 30 ? 0 : (days - 30) * 2;'), 'src/test/java/com/company/pay/FeesTest.java': FEES_TEST });
+    const server = repo('payment-server', { 'pom.xml': SERVER_POM, 'src/main/java/com/company/server/Billing.java': BILLING(''), 'src/test/java/com/company/server/BillingTest.java': BILLING_TEST });
+    const base = sh(server, ['rev-parse', 'HEAD']);
+    commit(server, 'src/main/java/com/company/server/Billing.java', BILLING(' + 1')); // the PR breaks the on-time price
+    const head = sh(server, ['rev-parse', 'HEAD']);
+    const impact = { sources: [{ path: 'src/main/java/com/company/server/Billing.java', tests: [{ path: 'src/test/java/com/company/server/BillingTest.java' }] }], tests_changed: [] };
+    const review = async (h) => {
+      const runDir = tmpDir('arw-bootd-review-');
+      const t0 = Date.now();
+      const env = await prepareReviewEnvironment({ runDir, repo: 'payment-server', checkout: server, base, head: h, others: [{ repo: 'payment-lib', checkout: lib }], log: (m) => process.stderr.write(`  ${m}\n`) });
+      const r = await runImpactedTests({ runDir, checkout: server, base, head: h, impact, repoCfg: { run_impacted_tests: true } });
+      process.stderr.write(`--- review (${Math.round((Date.now() - t0) / 1000)} s)${renderImpacted(r)}`);
+      return { env, r };
+    };
+    const { env, r } = await review(head);
+    assert.equal(env.status, 'READY', env.reason);
+    assert.deepEqual(env.producers.map((p) => p.repo), ['payment-lib']);
+    assert.equal(r.results[0].verdict, 'newly_failing', JSON.stringify(r, null, 2));
+    assert.match(r.results[0].head.failing[0].message, /expected:<100> but was:<101>/);
+    assert.ok(r.ran.every((g) => g.environment === env.digest), 'every run is bound to the environment');
+
+    // A PR that adds a dependency the base never resolved: blocked, not failed.
+    commit(server, 'pom.xml', SERVER_POM.replace('  </dependencies>', '    <dependency>\n      <groupId>org.apache.commons</groupId>\n      <artifactId>commons-text</artifactId>\n      <version>1.12.0</version>\n    </dependency>\n  </dependencies>'));
+    const newDep = await review(sh(server, ['rev-parse', 'HEAD']));
+    const headRun = newDep.r.ran.find((g) => g.rev === 'head');
+    assert.match(headRun.spawn_error, /not in the environment/);
+    assert.notEqual(newDep.r.results[0].verdict, 'newly_failing');
+  } finally {
+    if (saved === undefined) delete process.env.ARW_SANDBOX;
+    else process.env.ARW_SANDBOX = saved;
+  }
+});

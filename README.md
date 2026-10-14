@@ -181,6 +181,24 @@ Measured with real containers (`ARW_DOCKER_TESTS=1`, test/bootstrap-docker.test.
 | 3. library changed | build + test | build + test | 36 s |
 | 4. library broken | BUILD_FAILED | BLOCKED, not run | 12 s |
 
+**In a review** (`ARW_SANDBOX=bootstrap`), the impacted tests and the reproduction tests run in an environment
+prepared once per review (`<run>/sandbox-env.json`):
+
+- the image discovered for the PR head;
+- the configured repositories this one needs built from source (by the build graph), bootstrapped or reused,
+  their artifacts staged read-only;
+- this repository's dependency cache resolved at the **base** revision: the only step with network, so the
+  PR's own code never runs with network;
+- every Maven run offline in it (`MAVEN_ARGS=-o`, local repository and read-only tails through `MAVEN_OPTS`,
+  so a configured `test_command` gets it too).
+
+Results carry the environment's digest; the reproduction re-checks the image and the staged artifacts before
+it runs. A dependency the PR adds is not in the environment: that run is ENVIRONMENT_BLOCKED ("does the PR add
+one?"), not a test failure. A blocked environment blocks the runs; nothing falls back to the host, and the
+static review goes on. Measured with real containers: a PR that breaks payment-server's `BillingTest` is
+reported as "FAILS ON HEAD, passed on base" (`expected:<100> but was:<101>`), 154 s cold (payment-lib built,
+both resolved), 23 s for the next review.
+
 ## Why it is built this way
 
 | Rule | Where it is enforced |

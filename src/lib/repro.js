@@ -62,9 +62,16 @@ function gradleWrapper() {
   return process.platform === 'win32' && !require('./sandbox').enabled() ? 'gradlew.bat' : './gradlew';
 }
 
-// The runner for PR code: a container with ARW_SANDBOX=docker, else the host shell.
-function defaultRunner() {
-  return require('./sandbox').enabled() ? require('./sandbox').dockerRunner : shellRunner;
+// The runner for PR code: with ARW_SANDBOX=bootstrap the review's prepared
+// environment (runDir/sandbox-env.json; blocked when there is none), with
+// ARW_SANDBOX=docker a container, else the host shell.
+function defaultRunner(runDir = null) {
+  const sandbox = require('./sandbox');
+  if (sandbox.mode() === 'bootstrap') {
+    const b = require('./bootstrap');
+    return b.environmentRunner(runDir ? b.loadReviewEnvironment(runDir) : null);
+  }
+  return sandbox.enabled() ? sandbox.dockerRunner : shellRunner;
 }
 
 // What may be put into a shell command line from a test: a path or a
@@ -450,7 +457,7 @@ function reproTargets(validation, findingsById) {
 }
 
 async function runRepro({ runDir, executor, models = {}, runner = null, log = () => {}, testCommand, prompts, runModelJob, makeSources }) {
-  const execRun = runner || defaultRunner();
+  const execRun = runner || defaultRunner(runDir);
   const context = loadContext(runDir);
   const drift = verifyContext(runDir, context);
   if (drift.length) throw new Error(`context no longer holds: ${drift.join('; ')}`);
@@ -529,7 +536,7 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
       fs.appendFileSync(logFile, `\n${trailer(res)}\n`);
       const xml = confine.readConfined(wt, junit);
       const junitData = xml ? parseJunit(xml) : null;
-      const run = { phase, command, exit_code: res.exit_code, elapsed_ms: res.elapsed_ms, timed_out: Boolean(res.timed_out), spawn_error: res.spawn_error || null, junit: junitData };
+      const run = { phase, command, exit_code: res.exit_code, elapsed_ms: res.elapsed_ms, timed_out: Boolean(res.timed_out), spawn_error: res.spawn_error || null, junit: junitData, environment: res.environment || null };
       run.status = classify(run);
       run.log = { path: logRel, sha256: sha256(fs.readFileSync(logFile)) };
       if (xml) {
