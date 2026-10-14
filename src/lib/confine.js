@@ -94,13 +94,13 @@ function rewriteFile(root, abs, content) {
 }
 
 // Content of a regular file abs under root, or null when it is missing or
-// reached through a link.
-function readConfined(root, abs) {
+// reached through a link (a Buffer with { encoding: null }).
+function readConfined(root, abs, { encoding = 'utf8' } = {}) {
   try {
     if (checkParts(root, partsUnder(root, abs)) !== partsUnder(root, abs).length) return null;
     const fd = fs.openSync(abs, fs.constants.O_RDONLY | NOFOLLOW);
     try {
-      return fs.readFileSync(fd, 'utf8');
+      return fs.readFileSync(fd, encoding);
     } finally {
       fs.closeSync(fd);
     }

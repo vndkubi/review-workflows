@@ -65,7 +65,11 @@ function reclaimStale(lock, seen) {
 // lock left by a process that is gone is reclaimed (once), only if it is
 // still the lock that was judged stale (reclaimStale).
 function acquireLock(runDir) {
-  const lock = path.join(ensureDir(reviewDir(runDir)), 'driver.lock');
+  return acquireLockFile(path.join(ensureDir(reviewDir(runDir)), 'driver.lock'), 'driver');
+}
+
+// The same, for any lock file (bootstrap: a dependency cache, a build key).
+function acquireLockFile(lock, what = 'process') {
   const token = crypto.randomBytes(8).toString('hex');
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
@@ -101,9 +105,9 @@ function acquireLock(runDir) {
           alive = e.code === 'EPERM'; // exists, owned by someone else
         }
       }
-      if (alive || attempt === 1) throw new Error(`another driver (pid ${held.pid}) holds ${lock}`);
+      if (alive || attempt === 1) throw new Error(`another ${what} (pid ${held.pid}) holds ${lock}`);
       // Stale: its process is gone. A null `seen` means the lock vanished: just retry.
-      if (seen !== null && !reclaimStale(lock, seen)) throw new Error(`another driver is taking over ${lock} (if none is running, delete ${lock}.reclaim)`);
+      if (seen !== null && !reclaimStale(lock, seen)) throw new Error(`another ${what} is taking over ${lock} (if none is running, delete ${lock}.reclaim)`);
     }
   }
   // Release only our own lock, recognised by its token.
@@ -613,4 +617,4 @@ function finish(runDir, optOuts = {}) {
   return validation;
 }
 
-module.exports = { runBatch, finish, collectState, runModelJob, acquireLock, reclaimStale, ContextDrift, STATUS, packetRel };
+module.exports = { runBatch, finish, collectState, runModelJob, acquireLock, acquireLockFile, reclaimStale, ContextDrift, STATUS, packetRel };

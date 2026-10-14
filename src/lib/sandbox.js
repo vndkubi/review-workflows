@@ -42,13 +42,24 @@ function toContainer(command, hostDir) {
 // docker run arguments for one run (exported for tests). With argv the
 // image runs that program directly, no shell; a configured test_command
 // (a string) still runs through sh -c.
-function dockerArgs({ command, argv = null, cwd, toolchain, name }) {
-  const image = imageFor(toolchain);
+// Extra mounts a caller (bootstrap) may add: absolute paths on both sides,
+// never the docker socket or the container root.
+function checkMount(m) {
+  if (!m || !path.isAbsolute(String(m.host)) || !/^\/[A-Za-z0-9_./-]+$/.test(String(m.container)) || m.container === '/' || m.container === '/work') throw new Error(`bad mount ${JSON.stringify(m)}`);
+  if (/docker\.sock|[\\/]var[\\/]run[\\/]docker/i.test(m.host)) throw new Error(`refusing to mount ${m.host}`);
+  return `${m.host}:${m.container}${m.readonly ? ':ro' : ''}`;
+}
+
+// `image`, `network` and `mounts` override the defaults for one run
+// (bootstrap); with `mounts`, ARW_SANDBOX_M2 is not mounted.
+function dockerArgs({ command, argv = null, cwd, toolchain, name, image = null, network = null, mounts = null }) {
+  image = image || imageFor(toolchain);
   if (!image) throw new Error(`no sandbox image for ${toolchain}: set ARW_SANDBOX_IMAGE_${String(toolchain).toUpperCase()} (for pytest, an image with pytest installed)`);
-  const args = ['run', '--rm', '--name', name, '--network', process.env.ARW_SANDBOX_NETWORK || 'none', '--memory', process.env.ARW_SANDBOX_MEMORY || '4g', '--cpus', process.env.ARW_SANDBOX_CPUS || '2', '--pids-limit', '512', '--security-opt', 'no-new-privileges', '-v', `${cwd}:/work`, '-w', '/work'];
+  const args = ['run', '--rm', '--name', name, '--network', network || process.env.ARW_SANDBOX_NETWORK || 'none', '--memory', process.env.ARW_SANDBOX_MEMORY || '4g', '--cpus', process.env.ARW_SANDBOX_CPUS || '2', '--pids-limit', '512', '--security-opt', 'no-new-privileges', '-v', `${cwd}:/work`, '-w', '/work'];
+  if (mounts) for (const m of mounts) args.push('-v', checkMount(m));
   // A local Maven repository for builds without network (read-only unless
   // ARW_SANDBOX_M2_RW=1; Maven may need to write tracking files).
-  if (process.env.ARW_SANDBOX_M2) args.push('-v', `${process.env.ARW_SANDBOX_M2}:/m2${process.env.ARW_SANDBOX_M2_RW === '1' ? '' : ':ro'}`, '-e', 'MAVEN_OPTS=-Dmaven.repo.local=/m2');
+  else if (process.env.ARW_SANDBOX_M2) args.push('-v', `${process.env.ARW_SANDBOX_M2}:/m2${process.env.ARW_SANDBOX_M2_RW === '1' ? '' : ':ro'}`, '-e', 'MAVEN_OPTS=-Dmaven.repo.local=/m2');
   if (typeof process.getuid === 'function') args.push('--user', `${process.getuid()}:${process.getgid()}`, '-e', 'HOME=/tmp');
   if (argv) args.push(image, ...argv.map((a) => toContainer(String(a), cwd)));
   else args.push(image, 'sh', '-c', toContainer(command, cwd));
@@ -75,7 +86,7 @@ function daemonError() {
 
 // Same contract as repro's shellRunner: { exit_code, timed_out, spawn_error, elapsed_ms }.
 // No docker means ENVIRONMENT_BLOCKED, never a run on the host.
-function dockerRunner({ command, argv = null, cwd, logFile, timeoutMs, toolchain }) {
+function dockerRunner({ command, argv = null, cwd, logFile, timeoutMs, toolchain, image = null, network = null, mounts = null }) {
   return new Promise((resolve) => {
     const started = Date.now();
     const name = `arw-${crypto.randomBytes(6).toString('hex')}`;
@@ -83,7 +94,7 @@ function dockerRunner({ command, argv = null, cwd, logFile, timeoutMs, toolchain
     try {
       const unavailable = daemonError();
       if (unavailable) throw new Error(unavailable);
-      args = dockerArgs({ command, argv, cwd, toolchain, name });
+      args = dockerArgs({ command, argv, cwd, toolchain, name, image, network, mounts });
     } catch (err) {
       fs.writeFileSync(logFile, `${err.message}\n`);
       resolve({ exit_code: null, spawn_error: err.message, elapsed_ms: 0 });

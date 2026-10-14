@@ -146,6 +146,41 @@ produces `3.6.0-SNAPSHOT`, so hadoop is not built first; that is a note. Two rep
 coordinate, a cycle, or a library compiled for a newer Java than its consumer builds with are reported as
 problems (exit code 2), never resolved by guessing.
 
+```
+arw sandbox bootstrap <owner/name | dir>[@rev]... [--force] [--keep] [--allow-test-failures] [--image <image>]
+arw sandbox records [<repo>...]
+```
+
+Builds and tests the repositories in graph order, each in its own containers (Maven only so far), and keeps
+what was verified under `runs/sandbox/` (`ARW_SANDBOX_HOME`):
+
+1. a **source snapshot** of the exact revision from `git archive`: no `.git`, symlinks skipped, entries that
+   would land outside refused; the checkout is never touched;
+2. **resolve, with network**: Maven fills this repository's dependency cache (one test class per module runs
+   so the test provider is fetched; nothing is installed). It runs the revision's build plugins with network,
+   so bootstrap is for revisions you trust. Skipped when the same build files (and staged POMs) were
+   resolved before;
+3. **build and test, without network**: `mvn -o install` into a task-private local repository; the cache and
+   the artifacts of the repositories it depends on are read-only (`maven.repo.local.tail`);
+4. the produced jars and POMs are copied out, hashed, and stored with a **verification record**: status
+   (`TESTS_PASSED`, `TESTS_FAILED` — built, tests failed —, `ARTIFACT_BUILT`, `BUILD_FAILED`,
+   `RESOLVE_FAILED`, `RESOLUTION_INCOMPLETE`, `ENVIRONMENT_BLOCKED`), JUnit reports and logs as hashed evidence.
+
+A record is keyed by a fingerprint of the source tree, the recipe (image id, commands), the digests of the
+artifacts it consumed and the execution policy. Same fingerprint and intact files: reused, nothing runs.
+An environment failure is never reused. A repository whose dependencies have no usable record is BLOCKED and
+does not run; a library whose tests failed is not used unless `--allow-test-failures`.
+
+Measured with real containers (`ARW_DOCKER_TESTS=1`, test/bootstrap-docker.test.js): payment-lib on
+`maven:3.9-eclipse-temurin-8`, payment-server on `-11` using it.
+
+| Run | payment-lib | payment-server | Time |
+|---|---|---|---|
+| 1. cold | resolve + build + test | resolve + build + test | 134 s |
+| 2. server changed | reused | build + test | 19 s |
+| 3. library changed | build + test | build + test | 36 s |
+| 4. library broken | BUILD_FAILED | BLOCKED, not run | 12 s |
+
 ## Why it is built this way
 
 | Rule | Where it is enforced |

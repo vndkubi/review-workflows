@@ -54,6 +54,10 @@ Sandbox (PR code in containers):
   arw sandbox graph [<owner/name | dir>...] [--json]
                     which repository builds an artifact another one needs, build order,
                     cycles and conflicts (default: all configured repositories)
+  arw sandbox bootstrap <owner/name | dir>[@rev]... [--force] [--keep] [--allow-test-failures]
+                    build and test in dependency order in containers (resolve with network,
+                    build offline), keep verified artifacts and reuse them; trusted revisions only
+  arw sandbox records [<repo>...] [--json]     verification records
 
 Other:
   arw ui [--port 8787] [--no-open]   local dashboard (loopback only)
@@ -432,8 +436,8 @@ function cmdClean(argv) {
   return 0;
 }
 
-function cmdSandbox(argv) {
-  const args = parseArgs(argv, ['json']);
+async function cmdSandbox(argv) {
+  const args = parseArgs(argv, ['json', 'force', 'keep', 'allowTestFailures']);
   const [action, ...targets] = args._;
   const { discoverRepo, renderDiscovery, checkoutOf } = require('../lib/discovery');
   if (action === 'graph') {
@@ -444,6 +448,26 @@ function cmdSandbox(argv) {
     const g = buildGraph(all.map((t) => discoverRepo(checkoutOf(t))));
     console.log(args.json ? JSON.stringify(g, null, 2) : renderGraph(g));
     return g.problems.length ? 2 : 0;
+  }
+  if (action === 'bootstrap') {
+    if (!targets.length) throw new Error('usage: arw sandbox bootstrap <owner/name | dir>[@rev]... [--force] [--keep] [--allow-test-failures] [--image <image>] [--json]');
+    const { bootstrapGraph, renderBootstrap } = require('../lib/bootstrap');
+    // owner/name@rev or dir@rev pins a revision (default: HEAD of the checkout).
+    const discoveries = targets.map((t) => {
+      const at = t.lastIndexOf('@');
+      const [name, rev] = at > 1 ? [t.slice(0, at), t.slice(at + 1)] : [t, 'HEAD'];
+      return discoverRepo({ ...checkoutOf(name), rev });
+    });
+    const images = args.image && discoveries.length === 1 ? { [discoveries[0].repo]: args.image } : {};
+    const out = await bootstrapGraph({ discoveries, images, force: Boolean(args.force), keep: Boolean(args.keep), allowTestFailures: Boolean(args.allowTestFailures), log });
+    console.log(args.json ? JSON.stringify(out, null, 2) : renderBootstrap(out));
+    return out.status === 'READY' ? 0 : 2;
+  }
+  if (action === 'records') {
+    const { listRecords } = require('../lib/bootstrap');
+    const recs = listRecords().filter((r) => !targets.length || targets.includes(r.repo));
+    console.log(args.json ? JSON.stringify(recs, null, 2) : recs.map((r) => `${r.at}  ${r.fingerprint}  ${r.repo} @ ${String(r.revision).slice(0, 12)}  ${r.status}  ${r.image}`).join('\n') || 'no records');
+    return 0;
   }
   if (action !== 'discover' || !targets.length) throw new Error('usage: arw sandbox discover <owner/name | dir>... [--rev <rev>] [--json]  |  arw sandbox graph [<owner/name | dir>...] [--json]');
   const results = targets.map((t) => discoverRepo({ ...checkoutOf(t), rev: args.rev || 'HEAD' }));
