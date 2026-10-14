@@ -92,7 +92,39 @@ test('sandbox endpoints', async (t) => {
     assert.equal((await call(port, 'GET', `/api/sandbox/records/${fp}/file?path=artifacts/com/company/payment-lib/1.0/payment-lib-1.0.jar`)).status, 404, 'binary artifacts are not served as text');
   });
 
+  await t.test('detect from any source folder (token required), then set up in one job', async () => {
+    const folder = repo('billing-svc', pom('billing-svc', 17));
+    assert.equal((await call(port, 'POST', '/api/sandbox/detect', { body: { dir: folder } })).status, 403);
+    assert.equal((await call(port, 'POST', '/api/sandbox/detect', { body: { dir: 'relative/x' }, headers: auth })).status, 400);
+    assert.equal((await call(port, 'POST', '/api/sandbox/detect', { body: { dir: tmpDir('arw-wsb-nogit-') }, headers: auth })).status, 400);
+    const d = await call(port, 'POST', '/api/sandbox/detect', { body: { dir: folder }, headers: auth });
+    assert.deepEqual([d.json.configured_as, d.json.suggested_name, d.json.discovery.java.jdk, d.json.discovery.proposal.image], [null, 'local/billing-svc', 17, 'maven:3.9-eclipse-temurin-17']);
+    const known = await call(port, 'POST', '/api/sandbox/detect', { body: { dir: server }, headers: auth });
+    assert.equal(known.json.configured_as, 'acme/payment-server');
+
+    queued.length = 0;
+    await call(port, 'POST', '/api/sandbox/setup', { body: { dir: folder, register: true, name: 'acme/billing-svc' }, headers: auth });
+    assert.deepEqual(queued[0].args, ['sandbox', 'setup', path.resolve(folder), '--register', '--name', 'acme/billing-svc']);
+    await call(port, 'POST', '/api/sandbox/setup', { body: { dir: server }, headers: auth });
+    assert.deepEqual(queued[1].args, ['sandbox', 'setup', 'acme/payment-server'], 'a configured folder is set up by its name');
+    await call(port, 'POST', '/api/sandbox/setup', { body: { repo: 'acme/payment-lib' }, headers: auth });
+    assert.deepEqual(queued[2].args, ['sandbox', 'setup', 'acme/payment-lib']);
+    assert.equal((await call(port, 'POST', '/api/sandbox/setup', { body: { dir: folder, register: true, name: 'no slash' }, headers: auth })).status, 400);
+    assert.equal((await call(port, 'POST', '/api/sandbox/setup', { body: { dir: folder, register: true, name: 'acme/payment-lib' }, headers: auth })).status, 409);
+  });
+
+  await t.test('addRepo registers one folder and keeps the others', () => {
+    const settings = require('../src/lib/settings');
+    const folder = repo('ledger', pom('ledger', 11));
+    assert.equal(settings.addRepo('acme/ledger', folder).added, true);
+    assert.equal(settings.addRepo('acme/ledger', folder).added, false, 'the same folder again is a no-op');
+    assert.throws(() => settings.addRepo('acme/ledger', lib), /already configured/);
+    const repos = JSON.parse(fs.readFileSync(process.env.ARW_REPOS_FILE, 'utf8')).repos;
+    assert.deepEqual(Object.keys(repos).sort(), ['acme/ledger', 'acme/payment-lib', 'acme/payment-server']);
+  });
+
   await t.test('bootstrap is a queued CLI job, for configured repositories, with the token', async () => {
+    queued.length = 0;
     assert.equal((await call(port, 'POST', '/api/sandbox/bootstrap', { body: { repos: ['acme/payment-server'] } })).status, 403);
     assert.equal((await call(port, 'POST', '/api/sandbox/bootstrap', { body: { repos: ['evil/repo'] }, headers: auth })).status, 404);
     assert.equal((await call(port, 'POST', '/api/sandbox/bootstrap', { body: { repos: ['acme/payment-lib@x y'] }, headers: auth })).status, 400);

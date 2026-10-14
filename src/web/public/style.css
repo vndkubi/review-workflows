@@ -66,7 +66,7 @@ h3 { font-size: 14px; margin: 14px 0 6px; }
 .side-item .line2 { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .side-empty { color: var(--muted); font-size: 12px; padding: 4px 14px; }
 
-.btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; font: inherit; font-size: 13px; }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; font: inherit; font-size: 13px; white-space: nowrap; }
 .btn:hover { background: var(--panel-2); text-decoration: none; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .btn.danger { color: var(--bad); }

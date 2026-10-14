@@ -228,3 +228,18 @@ test('force rebuilds only the repositories named, not what they need', async () 
   assert.deepEqual(out.results.map((x) => [x.repo, x.cache]), [['payment-lib', 'hit'], ['payment-server', 'miss']]);
   assert.deepEqual(calls.map((c) => [c.repo, c.step]), [['payment-server', 'build']]);
 });
+
+test('a missing image is pulled when asked (setup), otherwise the run is blocked with how to fix it', async () => {
+  const r = payments();
+  commit(r.lib, 'src/Main.java', 'class Fees { int pulled; }\n');
+  const present = new Set();
+  const pulled = [];
+  const opts = { imageId: (image) => (present.has(image) ? `sha256:${image.length}` : null) };
+  const blocked = await bootstrapGraph({ discoveries: [discover(r.lib)], runner: fakeMaven([]), ...opts });
+  assert.match(blocked.results[0].reason, /not available locally \(docker pull it, or set up with --pull\)/);
+  const failing = await bootstrapGraph({ discoveries: [discover(r.lib)], runner: fakeMaven([]), pull: true, pullImage: () => 'manifest unknown', ...opts });
+  assert.match(failing.results[0].reason, /docker pull maven:3\.9-eclipse-temurin-8 failed: manifest unknown/);
+  const out = await bootstrapGraph({ discoveries: [discover(r.lib)], runner: fakeMaven([]), pull: true, pullImage: (image) => { pulled.push(image); present.add(image); return null; }, ...opts });
+  assert.deepEqual(pulled, ['maven:3.9-eclipse-temurin-8']);
+  assert.equal(out.results[0].status, 'TESTS_PASSED');
+});

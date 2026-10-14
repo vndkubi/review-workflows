@@ -285,4 +285,18 @@ function readAll() {
   return { env: readEnvSettings(), repos: readRepos(), mcp: readMcp(), models: modelSuggestions(), files: { env: ENV_FILE(), repos: REPOS_FILE(), mcp: MCP_FILE() } };
 }
 
-module.exports = { ENV_SETTINGS, readAll, readEnvSettings, writeEnvSettings, readRepos, writeRepos, readMcp, writeMcp, parseEnvFile, modelSuggestions };
+// Adds one repository (sandbox setup from a source folder), keeping the
+// others as they are. The same name at the same checkout is a no-op.
+function addRepo(name, checkout) {
+  const current = readJsonIfExists(REPOS_FILE(), { repos: {} }).repos || {};
+  const same = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+  if (current[name]) {
+    if (current[name].checkout && same(current[name].checkout, checkout)) return { repos: current, added: false };
+    throw Object.assign(new Error(`${name} is already configured at ${current[name].checkout}`), { status: 409 });
+  }
+  const list = Object.entries(current).map(([n, r]) => ({ name: n, ...r }));
+  list.push({ name, checkout });
+  return { ...writeRepos(list), added: true };
+}
+
+module.exports = { ENV_SETTINGS, readAll, readEnvSettings, writeEnvSettings, readRepos, writeRepos, addRepo, readMcp, writeMcp, parseEnvFile, modelSuggestions };

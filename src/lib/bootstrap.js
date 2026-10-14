@@ -42,6 +42,18 @@ const keyOf = (repo) => String(repo).replace(/[^A-Za-z0-9_.-]+/g, '__');
 // Statuses a consumer may build on.
 const USABLE = new Set(['TESTS_PASSED', 'ARTIFACT_BUILT']);
 
+// docker pull, for an image name of the form discovery proposes or a user
+// gave (registry/name:tag or @sha256:digest). Returns an error or null.
+const IMAGE_NAME = /^[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9._-]+)?(@sha256:[0-9a-f]{64})?$/;
+function pullImageOf(image, log = () => {}) {
+  if (!IMAGE_NAME.test(image)) return `not an image name: ${image}`;
+  const { spawnSync } = require('node:child_process');
+  log(`pulling ${image}`);
+  const res = spawnSync(process.env.ARW_DOCKER || 'docker', ['pull', '-q', image], { encoding: 'utf8', timeout: 30 * 60 * 1000, windowsHide: true });
+  if (res.status === 0) return null;
+  return String((res.error && res.error.message) || res.stderr || `exit ${res.status}`).trim().split('\n')[0];
+}
+
 function imageIdOf(image) {
   const { execFileSync } = require('node:child_process');
   const bin = process.env.ARW_DOCKER || 'docker';
@@ -149,14 +161,19 @@ function resolveKeyOf({ srcDir, buildFiles, imageId, staged, argv }) {
 
 // ---------- one repository ----------
 // disc: its DiscoveryResult; inputs: [{ repo, record }] of what it consumes.
-async function bootstrapNode({ disc, inputs = [], image = null, runner, imageId = imageIdOf, force = false, keep = false, timeoutMs = 30 * 60 * 1000, log = () => {} }) {
+async function bootstrapNode({ disc, inputs = [], image = null, runner, imageId = imageIdOf, pull = false, pullImage = pullImageOf, force = false, keep = false, timeoutMs = 30 * 60 * 1000, log = () => {} }) {
   const started = Date.now();
   const base = { repo: disc.repo, revision: disc.revision };
   if (!disc.build_systems.includes('maven')) return { ...base, status: 'ENVIRONMENT_BLOCKED', reason: disc.build_systems.length ? `bootstrap supports Maven only (found ${disc.build_systems.join(', ')})` : 'no build system found' };
   image = image || (disc.proposal && disc.proposal.image);
   if (!image) return { ...base, status: 'ENVIRONMENT_BLOCKED', reason: 'Java version unknown and no --image given' };
-  const id = imageId(image);
-  if (!id) return { ...base, status: 'ENVIRONMENT_BLOCKED', reason: `image ${image} is not available locally (docker pull it first)` };
+  let id = imageId(image);
+  if (!id && pull) {
+    const err = pullImage(image, log);
+    if (err) return { ...base, status: 'ENVIRONMENT_BLOCKED', reason: `docker pull ${image} failed: ${err}` };
+    id = imageId(image);
+  }
+  if (!id) return { ...base, status: 'ENVIRONMENT_BLOCKED', reason: `image ${image} is not available locally (docker pull it, or set up with --pull)` };
 
   const tree = git.git(disc.checkout, ['rev-parse', `${disc.revision}^{tree}`]).trim();
   const staged = inputs.flatMap((i) => i.record.artifacts.map((a) => ({ repo: i.repo, path: a.path, sha256: a.sha256 })));
@@ -301,7 +318,7 @@ async function bootstrapNode({ disc, inputs = [], image = null, runner, imageId 
 // discoveries: DiscoveryResult[]. force: true (all) or the repositories to
 // build again even with a reusable record. Builds in order; a repository whose
 // dependencies have no usable record is BLOCKED and does not run.
-async function bootstrapGraph({ discoveries, runner = null, images = {}, allowTestFailures = false, force = false, keep = false, imageId, log = () => {} }) {
+async function bootstrapGraph({ discoveries, runner = null, images = {}, allowTestFailures = false, force = false, keep = false, imageId, pull = false, pullImage, log = () => {} }) {
   runner = runner || require('./sandbox').dockerRunner;
   const graph = buildGraph(discoveries);
   if (graph.problems.length) return { graph, results: [], status: 'BLOCKED', reason: graph.problems.map((p) => p.detail).join('; ') };
@@ -318,7 +335,7 @@ async function bootstrapGraph({ discoveries, runner = null, images = {}, allowTe
       log(`${repo}: BLOCKED (${result.reason})`);
     } else {
       const inputs = node.depends_on.map((d) => ({ repo: d, record: done.get(d) }));
-      result = await bootstrapNode({ disc: byRepo.get(repo), inputs, image: images[repo] || null, runner, force: force === true || (Array.isArray(force) && force.includes(repo)), keep, log, ...(imageId ? { imageId } : {}) });
+      result = await bootstrapNode({ disc: byRepo.get(repo), inputs, image: images[repo] || null, runner, force: force === true || (Array.isArray(force) && force.includes(repo)), keep, log, pull, ...(imageId ? { imageId } : {}), ...(pullImage ? { pullImage } : {}) });
     }
     done.set(repo, result);
     results.push(result);

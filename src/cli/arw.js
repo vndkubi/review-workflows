@@ -57,6 +57,9 @@ Sandbox (PR code in containers):
   arw sandbox bootstrap <owner/name | dir>[@rev]... [--force] [--keep] [--allow-test-failures]
                     build and test in dependency order in containers (resolve with network,
                     build offline), keep verified artifacts and reuse them; trusted revisions only
+  arw sandbox setup <owner/name | dir> [--register] [--name owner/name] [--no-pull]
+                    one step from a source folder: detect, pull the images, build and test it
+                    and what it depends on; --register adds the folder to the repositories
   arw sandbox records [<repo>...] [--json]     verification records
 
 Other:
@@ -437,7 +440,7 @@ function cmdClean(argv) {
 }
 
 async function cmdSandbox(argv) {
-  const args = parseArgs(argv, ['json', 'force', 'keep', 'allowTestFailures']);
+  const args = parseArgs(argv, ['json', 'force', 'keep', 'allowTestFailures', 'pull', 'noPull', 'register']);
   const [action, ...targets] = args._;
   const { discoverRepo, renderDiscovery, checkoutOf } = require('../lib/discovery');
   if (action === 'graph') {
@@ -449,8 +452,25 @@ async function cmdSandbox(argv) {
     console.log(args.json ? JSON.stringify(g, null, 2) : renderGraph(g));
     return g.problems.length ? 2 : 0;
   }
-  if (action === 'bootstrap') {
-    if (!targets.length) throw new Error('usage: arw sandbox bootstrap <owner/name | dir>[@rev]... [--force] [--keep] [--allow-test-failures] [--image <image>] [--json]');
+  // setup: one source (configured or a folder): detect, pull the images it
+  // needs, then bootstrap it with what it depends on. --register adds a
+  // folder to config/repos.json (as --name, or owner/name from its remote).
+  if (action === 'setup') {
+    if (targets.length !== 1) throw new Error('usage: arw sandbox setup <owner/name | dir> [--register] [--name owner/name] [--no-pull] [--force] [--json]');
+    const configured = github.reposConfig().repos || {};
+    if (!configured[targets[0]] && args.register) {
+      const dir = path.resolve(targets[0]);
+      const name = typeof args.name === 'string' ? args.name : require('../lib/discovery').suggestName(dir);
+      const res = require('../lib/settings').addRepo(name, dir);
+      log(res.added ? `registered ${name} -> ${dir}` : `${name} is already registered`);
+      targets[0] = name;
+    }
+    const disc = discoverRepo(checkoutOf(targets[0]));
+    if (!args.json) console.log(`${renderDiscovery(disc)}\n`);
+    args.pull = !args.noPull;
+  }
+  if (action === 'bootstrap' || action === 'setup') {
+    if (!targets.length) throw new Error('usage: arw sandbox bootstrap <owner/name | dir>[@rev]... [--pull] [--force] [--keep] [--allow-test-failures] [--image <image>] [--json]');
     const { bootstrapGraph, renderBootstrap } = require('../lib/bootstrap');
     // owner/name@rev or dir@rev pins a revision (default: HEAD of the checkout).
     const discoveries = targets.map((t) => {
@@ -475,7 +495,7 @@ async function cmdSandbox(argv) {
     if (needed.size) log(`also bootstrapping what they need: ${[...needed].join(', ')}`);
     discoveries.push(...others.filter((d) => needed.has(d.repo)));
     // --force rebuilds the repositories named, not what they need.
-    const out = await bootstrapGraph({ discoveries, images, force: args.force ? [...named] : false, keep: Boolean(args.keep), allowTestFailures: Boolean(args.allowTestFailures), log });
+    const out = await bootstrapGraph({ discoveries, images, force: args.force ? [...named] : false, keep: Boolean(args.keep), allowTestFailures: Boolean(args.allowTestFailures), pull: Boolean(args.pull), log });
     console.log(args.json ? JSON.stringify(out, null, 2) : renderBootstrap(out));
     return out.status === 'READY' ? 0 : 2;
   }

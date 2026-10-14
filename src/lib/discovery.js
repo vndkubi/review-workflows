@@ -401,6 +401,15 @@ function discoverRepo({ checkout, rev = 'HEAD', repo = null }) {
   return out;
 }
 
+// A name for a source folder: owner/name from its origin remote, else
+// local/<folder>.
+function suggestName(checkout) {
+  const url = (git.git(checkout, ['remote', 'get-url', 'origin'], { allowFail: true }) || '').trim();
+  const m = /[/:]([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+?)(?:\.git)?\/?$/.exec(url);
+  if (m) return `${m[1]}/${m[2]}`;
+  return `local/${path.basename(path.resolve(checkout)).replace(/[^A-Za-z0-9._-]+/g, '-')}`;
+}
+
 // A configured repository ("owner/name" in config/repos.json) or a directory.
 function checkoutOf(target) {
   const entry = require('./github').reposConfig().repos[target];
@@ -434,4 +443,4 @@ function renderDiscovery(r) {
   return lines.join('\n');
 }
 
-module.exports = { discoverRepo, renderDiscovery, checkoutOf, parseJava, javaOfImage, decideJava, minTargetOf };
+module.exports = { discoverRepo, renderDiscovery, checkoutOf, suggestName, parseJava, javaOfImage, decideJava, minTargetOf };

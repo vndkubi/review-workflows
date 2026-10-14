@@ -1566,6 +1566,36 @@ function recordsTable(recs) {
     h('span', { class: 'small' }, testsText(r.tests)), h('span', { class: 'mono small' }, r.image || ''), h('a', { href: `#/sandbox/${r.fingerprint}` }, r.fingerprint.slice(0, 12))]));
 }
 
+// One step from a source folder: detect what it needs, show it, then set
+// up the sandbox (pull images, resolve, build and test, keep the record).
+function setupPanel(s) {
+  const dir = h('input', { type: 'text', class: 'wide', placeholder: 'D:/src/payment-server (a git checkout)', 'aria-label': 'Source folder' });
+  const out = h('div', {});
+  const detect = async () => {
+    put(out, h('p', { class: 'muted small' }, 'Detecting…'));
+    try {
+      const d = await api('POST', '/api/sandbox/detect', { dir: dir.value });
+      const name = h('input', { type: 'text', value: d.suggested_name, disabled: Boolean(d.configured_as), 'aria-label': 'Repository name' });
+      const register = h('input', { type: 'checkbox', checked: true, disabled: Boolean(d.configured_as) });
+      const p = d.discovery.proposal;
+      put(out,
+        discoveryView(d.discovery),
+        h('div', { class: 'row mt' },
+          d.configured_as ? h('span', { class: 'small' }, 'Configured as ', h('strong', {}, d.configured_as)) : [h('label', { class: 'small' }, 'Name ', name), h('label', { class: 'small' }, register, ' add to repositories (reviews of it use the sandbox)')],
+          h('span', { class: 'spacer' }),
+          p ? h('button', { class: 'btn primary', onclick: () => startJob(api('POST', '/api/sandbox/setup', d.configured_as ? { repo: d.configured_as } : { dir: d.dir, register: register.checked, name: name.value }), `Set up ${d.configured_as || name.value}`) }, `Set up sandbox (${p.image})`)
+            : h('span', { class: 'badge bad' }, 'nothing to set up: build or Java version not detected')),
+        h('p', { class: 'small muted' }, 'Set up pulls the image if it is missing, resolves dependencies with network, then builds and runs the tests offline in a container — for code you trust. Repositories it depends on are set up first.'));
+    } catch (err) {
+      put(out, h('div', { class: 'notice bad' }, err.message));
+    }
+  };
+  return h('section', { class: 'panel' },
+    h('h2', {}, 'Set up from a source folder'),
+    h('div', { class: 'row' }, dir, h('button', { class: 'btn primary', onclick: detect }, 'Detect')),
+    out);
+}
+
 async function renderSandbox(arg) {
   if (arg) return renderSandboxRecord(arg);
   const s = await api('GET', '/api/sandbox');
@@ -1579,6 +1609,7 @@ async function renderSandbox(arg) {
     h('div', { class: 'stats' }, stat(s.mode, 'mode'), stat(s.docker ? 'unavailable' : 'ok', 'docker'), stat(s.repos.length, 'repositories')),
     s.docker ? h('div', { class: 'notice' }, s.docker) : null,
     job ? livePanel(job) : null,
+    setupPanel(s),
     ...section('Repositories',
       s.repos.length ? table(['Repository', 'Checkout', 'Latest record', '', ''], s.repos.map((r) => [
         r.name, h('span', { class: 'mono small', title: r.checkout || '' }, r.checkout ? r.checkout.replace(/\\/g, '/').split('/').slice(-2).join('/') : '—'),
@@ -1591,7 +1622,7 @@ async function renderSandbox(arg) {
             put(discovered, h('div', { class: 'notice bad' }, err.message));
           }
         } }, 'Discover') : h('span', { class: 'badge bad' }, 'checkout missing'),
-        r.exists ? bootstrapButton([r.name], 'Bootstrap') : null,
+        r.exists ? h('button', { class: 'btn', title: 'Detect, pull the images, build and test it and what it needs', onclick: () => startJob(api('POST', '/api/sandbox/setup', { repo: r.name }), `Set up ${r.name}`) }, 'Set up') : null,
       ])) : h('div', { class: 'notice' }, 'No repositories configured (Settings → Repositories).'),
       discovered),
     ...section('Build graph',

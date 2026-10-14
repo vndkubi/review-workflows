@@ -23,6 +23,14 @@ function repoOrThrow(name) {
 
 const REV = /^[A-Za-z0-9._/-]{1,100}$/;
 
+// An absolute path to a git checkout.
+function sourceDir(raw) {
+  const dir = String(raw || '').trim();
+  if (!dir || !path.isAbsolute(dir) || /[\r\n\0]/.test(dir)) throw data.httpError(400, 'dir must be an absolute path to a git repository');
+  if (!fs.existsSync(dir) || !require('../lib/git').git(dir, ['rev-parse', '--git-dir'], { allowFail: true })) throw data.httpError(400, `${dir} is not a git repository`);
+  return path.resolve(dir);
+}
+
 function recordSummary(r) {
   return { fingerprint: r.fingerprint, repo: r.repo, revision: r.revision, status: r.status, reason: r.reason || null, image: r.image, at: r.at, elapsed_ms: r.elapsed_ms, tests: r.tests || null, artifacts: (r.artifacts || []).length, inputs: r.inputs || [] };
 }
@@ -74,6 +82,45 @@ function routes({ queue }) {
       const abs = path.join(b().home(), 'records', m[1], ...rel.split('/'));
       const buf = fs.readFileSync(abs);
       return { path: rel, size: buf.length, truncated: buf.length > MAX_FILE, text: buf.subarray(Math.max(0, buf.length - MAX_FILE)).toString('utf8') };
+    }],
+    // A source folder anywhere on this machine: detect what it needs (git
+    // objects only, nothing runs). POST, so it needs the page's token.
+    ['POST', /^\/api\/sandbox\/detect$/, (m, q, body) => {
+      const dir = sourceDir(body.dir);
+      const configuredAs = configured().find((r) => r.checkout && path.resolve(r.checkout).toLowerCase() === path.resolve(dir).toLowerCase());
+      const name = configuredAs ? configuredAs.name : discovery().suggestName(dir);
+      try {
+        return { dir, configured_as: configuredAs ? configuredAs.name : null, suggested_name: name, discovery: discovery().discoverRepo({ checkout: dir, repo: name }) };
+      } catch (err) {
+        throw data.httpError(400, err.message);
+      }
+    }],
+    // One step: detect, pull the images, build and test it and what it needs.
+    ['POST', /^\/api\/sandbox\/setup$/, (m, q, body) => {
+      let target;
+      const args = ['sandbox', 'setup'];
+      if (body.repo) {
+        target = repoOrThrow(String(body.repo)).name;
+        args.push(target);
+      } else {
+        const dir = sourceDir(body.dir);
+        const configuredAs = configured().find((r) => r.checkout && path.resolve(r.checkout).toLowerCase() === path.resolve(dir).toLowerCase());
+        if (configuredAs) {
+          target = configuredAs.name;
+          args.push(target);
+        } else if (body.register) {
+          const name = String(body.name || '').trim();
+          if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(name)) throw data.httpError(400, 'name must be owner/repository');
+          if (configured().some((r) => r.name === name)) throw data.httpError(409, `${name} is already configured for another folder`);
+          target = name;
+          args.push(dir, '--register', '--name', name);
+        } else {
+          target = path.basename(dir);
+          args.push(dir);
+        }
+      }
+      if (body.force) args.push('--force');
+      return queue.enqueue({ kind: 'setup', title: target, args, target: { type: 'sandbox', id: 'sandbox' } });
     }],
     ['POST', /^\/api\/sandbox\/bootstrap$/, (m, q, body) => {
       const repos = Array.isArray(body.repos) ? body.repos.map(String) : [];
