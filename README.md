@@ -134,6 +134,18 @@ reports, each with `path:line` evidence that matches the revision:
 Checked on three public repositories (jhipster sample, hadoop, elasticsearch): 0.4–0.8 s each, every one of
 8,581 evidence lines matches `git show`.
 
+```
+arw sandbox graph [<owner/name | dir>...] [--json]      (default: every configured repository)
+```
+
+Which repository produces an artifact another one depends on (by `groupId:artifactId`), the build order, and
+which repositories can build side by side (a payment-lib on Java 8 before a payment-server on Java 11). A
+dependency is a reason to build the other repository first only when it wants the version that source
+produces: on the real clones elasticsearch depends on hadoop `2.8.5` releases while the hadoop source
+produces `3.6.0-SNAPSHOT`, so hadoop is not built first; that is a note. Two repositories producing the same
+coordinate, a cycle, or a library compiled for a newer Java than its consumer builds with are reported as
+problems (exit code 2), never resolved by guessing.
+
 ## Why it is built this way
 
 | Rule | Where it is enforced |

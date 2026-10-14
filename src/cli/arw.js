@@ -51,6 +51,9 @@ Sandbox (PR code in containers):
   arw sandbox discover <owner/name | dir>... [--rev <rev>] [--json]
                     build system, Java version, coordinates, dependencies, proposed image;
                     read from git objects, nothing executed
+  arw sandbox graph [<owner/name | dir>...] [--json]
+                    which repository builds an artifact another one needs, build order,
+                    cycles and conflicts (default: all configured repositories)
 
 Other:
   arw ui [--port 8787] [--no-open]   local dashboard (loopback only)
@@ -432,8 +435,17 @@ function cmdClean(argv) {
 function cmdSandbox(argv) {
   const args = parseArgs(argv, ['json']);
   const [action, ...targets] = args._;
-  if (action !== 'discover' || !targets.length) throw new Error('usage: arw sandbox discover <owner/name | dir>... [--rev <rev>] [--json]');
   const { discoverRepo, renderDiscovery, checkoutOf } = require('../lib/discovery');
+  if (action === 'graph') {
+    // Default: every configured repository with a checkout.
+    const all = targets.length ? targets : Object.entries(github.reposConfig().repos).filter(([, r]) => r.checkout && fs.existsSync(r.checkout)).map(([name]) => name);
+    if (!all.length) throw new Error('usage: arw sandbox graph [<owner/name | dir>...] [--json]  (no repositories configured)');
+    const { buildGraph, renderGraph } = require('../lib/build-graph');
+    const g = buildGraph(all.map((t) => discoverRepo(checkoutOf(t))));
+    console.log(args.json ? JSON.stringify(g, null, 2) : renderGraph(g));
+    return g.problems.length ? 2 : 0;
+  }
+  if (action !== 'discover' || !targets.length) throw new Error('usage: arw sandbox discover <owner/name | dir>... [--rev <rev>] [--json]  |  arw sandbox graph [<owner/name | dir>...] [--json]');
   const results = targets.map((t) => discoverRepo({ ...checkoutOf(t), rev: args.rev || 'HEAD' }));
   console.log(args.json ? JSON.stringify(results.length === 1 ? results[0] : results, null, 2) : results.map(renderDiscovery).join('\n\n'));
   return 0;
