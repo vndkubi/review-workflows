@@ -195,7 +195,10 @@ prepared once per review (`<run>/sandbox-env.json`):
 Results carry the environment's digest; the reproduction re-checks the image and the staged artifacts before
 it runs. A dependency the PR adds is not in the environment: that run is ENVIRONMENT_BLOCKED ("does the PR add
 one?"), not a test failure. A blocked environment blocks the runs; nothing falls back to the host, and the
-static review goes on. Measured with real containers: a PR that breaks payment-server's `BillingTest` is
+static review goes on. The dashboard's **Sandbox** page shows the mode and docker status, discovery per
+repository, the build graph, and the verification records with their logs and JUnit reports; bootstrap and
+"Verify again" (`--force` for that repository only) run as jobs with a live log. Bootstrapping one repository
+brings the configured repositories it needs. Measured with real containers: a PR that breaks payment-server's `BillingTest` is
 reported as "FAILS ON HEAD, passed on base" (`expected:<100> but was:<101>`), 154 s cold (payment-lib built,
 both resolved), 23 s for the next review.
 

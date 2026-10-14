@@ -90,3 +90,12 @@ test('arw sandbox graph: text and exit code 2 on problems', () => {
   assert.match(res.stdout, /build order/);
   assert.match(res.stdout, /problem: payment-lib compiles for Java 17/);
 });
+
+test('what a repository needs built first, transitively (bootstrap of one repository brings them)', () => {
+  const { dependencyClosure } = require('../src/lib/build-graph');
+  const r = payments();
+  const g = buildGraph([r.server, r.common, r.lib, r.other].map(discover));
+  assert.deepEqual([...dependencyClosure(g, ['payment-server'])].sort(), ['payment-common', 'payment-lib']);
+  assert.deepEqual([...dependencyClosure(g, ['payment-lib'])], []);
+  assert.deepEqual([...dependencyClosure(g, ['payment-server', 'payment-common'])], ['payment-lib'], 'a target is not its own dependency');
+});

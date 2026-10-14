@@ -77,6 +77,22 @@ function buildGraph(discoveries) {
   return { nodes, edges, unmatched, external, levels: cycle ? null : levels, order: cycle ? null : levels.flat(), problems, notes };
 }
 
+// The repositories `targets` need built first, transitively (by the graph's
+// build edges), not including the targets themselves.
+function dependencyClosure(graph, targets) {
+  const needed = new Set();
+  const visit = (r) => {
+    for (const d of (graph.nodes.find((n) => n.repo === r) || { depends_on: [] }).depends_on) {
+      if (!needed.has(d) && !targets.includes(d)) {
+        needed.add(d);
+        visit(d);
+      }
+    }
+  };
+  for (const t of targets) visit(t);
+  return needed;
+}
+
 // Kahn's algorithm in levels: each level only depends on earlier ones, so a
 // level's repositories can build side by side. On a cycle, one cycle.
 function levelsOf(deps) {
@@ -128,4 +144,4 @@ function renderGraph(g) {
   return lines.join('\n');
 }
 
-module.exports = { buildGraph, levelsOf, findCycle, renderGraph };
+module.exports = { buildGraph, dependencyClosure, levelsOf, findCycle, renderGraph };

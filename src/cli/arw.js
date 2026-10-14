@@ -459,7 +459,23 @@ async function cmdSandbox(argv) {
       return discoverRepo({ ...checkoutOf(name), rev });
     });
     const images = args.image && discoveries.length === 1 ? { [discoveries[0].repo]: args.image } : {};
-    const out = await bootstrapGraph({ discoveries, images, force: Boolean(args.force), keep: Boolean(args.keep), allowTestFailures: Boolean(args.allowTestFailures), log });
+    // The configured repositories they need built first come along (at their checkout's HEAD).
+    const { buildGraph, dependencyClosure } = require('../lib/build-graph');
+    const named = new Set(discoveries.map((d) => d.repo));
+    const others = [];
+    for (const [name, r] of Object.entries(github.reposConfig().repos || {})) {
+      if (named.has(name) || !r.checkout || !fs.existsSync(r.checkout) || discoveries.some((d) => path.resolve(d.checkout).toLowerCase() === path.resolve(r.checkout).toLowerCase())) continue;
+      try {
+        others.push(discoverRepo({ checkout: r.checkout, repo: name }));
+      } catch (err) {
+        log(`${name}: not discovered (${err.message})`);
+      }
+    }
+    const needed = dependencyClosure(buildGraph([...discoveries, ...others]), [...named]);
+    if (needed.size) log(`also bootstrapping what they need: ${[...needed].join(', ')}`);
+    discoveries.push(...others.filter((d) => needed.has(d.repo)));
+    // --force rebuilds the repositories named, not what they need.
+    const out = await bootstrapGraph({ discoveries, images, force: args.force ? [...named] : false, keep: Boolean(args.keep), allowTestFailures: Boolean(args.allowTestFailures), log });
     console.log(args.json ? JSON.stringify(out, null, 2) : renderBootstrap(out));
     return out.status === 'READY' ? 0 : 2;
   }

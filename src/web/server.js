@@ -309,6 +309,7 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
       if (decision === 'rejected' && !String(body.note || '').trim()) throw data.httpError(400, 'say what is wrong: the note is fed back to the next spec attempt');
       return recordGate(dir, 'SPEC', decision, { by: who, note: String(body.note || '') });
     }],
+    ...require('./sandbox-api').routes({ queue }),
   ];
 
   function checkKey(key) {

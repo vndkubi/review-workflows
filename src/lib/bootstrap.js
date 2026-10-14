@@ -298,7 +298,8 @@ async function bootstrapNode({ disc, inputs = [], image = null, runner, imageId 
 }
 
 // ---------- a graph of repositories ----------
-// discoveries: DiscoveryResult[]. Builds in order; a repository whose
+// discoveries: DiscoveryResult[]. force: true (all) or the repositories to
+// build again even with a reusable record. Builds in order; a repository whose
 // dependencies have no usable record is BLOCKED and does not run.
 async function bootstrapGraph({ discoveries, runner = null, images = {}, allowTestFailures = false, force = false, keep = false, imageId, log = () => {} }) {
   runner = runner || require('./sandbox').dockerRunner;
@@ -317,7 +318,7 @@ async function bootstrapGraph({ discoveries, runner = null, images = {}, allowTe
       log(`${repo}: BLOCKED (${result.reason})`);
     } else {
       const inputs = node.depends_on.map((d) => ({ repo: d, record: done.get(d) }));
-      result = await bootstrapNode({ disc: byRepo.get(repo), inputs, image: images[repo] || null, runner, force, keep, log, ...(imageId ? { imageId } : {}) });
+      result = await bootstrapNode({ disc: byRepo.get(repo), inputs, image: images[repo] || null, runner, force: force === true || (Array.isArray(force) && force.includes(repo)), keep, log, ...(imageId ? { imageId } : {}) });
     }
     done.set(repo, result);
     results.push(result);
@@ -394,16 +395,7 @@ async function prepareReviewEnvironment({ runDir, repo, checkout, source = null,
     }
   }
   const graph = buildGraph([baseDisc, ...otherDiscs]);
-  const needed = new Set();
-  const visit = (r) => {
-    for (const d of (graph.nodes.find((n) => n.repo === r) || { depends_on: [] }).depends_on) {
-      if (!needed.has(d)) {
-        needed.add(d);
-        visit(d);
-      }
-    }
-  };
-  visit(repo);
+  const needed = require('./build-graph').dependencyClosure(graph, [repo]);
   const problems = graph.problems.filter((p) => (p.repos || []).some((r) => r === repo || needed.has(r)));
   if (problems.length) return blocked(problems.map((p) => p.detail).join('; '));
   let producers = [];

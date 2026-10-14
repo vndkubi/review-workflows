@@ -152,7 +152,7 @@ async function refreshJobs() {
 }
 
 function targetHash(t) {
-  return t.type === 'pr' ? `#/pr/${t.id}` : t.type === 'ticket' ? `#/ticket/${t.key}` : t.type === 'eval' ? '#/evals' : '#/settings';
+  return t.type === 'pr' ? `#/pr/${t.id}` : t.type === 'ticket' ? `#/ticket/${t.key}` : t.type === 'eval' ? '#/evals' : t.type === 'sandbox' ? '#/sandbox' : '#/settings';
 }
 
 async function startJob(promise, label) {
@@ -185,6 +185,7 @@ async function render() {
     else if (view === 'new-ticket') renderNewTicket();
     else if (view === 'insights') await renderInsights();
     else if (view === 'evals') await renderEvals(arg ? decodeURIComponent(arg) : null);
+    else if (view === 'sandbox') await renderSandbox(arg ? decodeURIComponent(arg) : null);
     else if (view === 'jobs') renderJobs();
     else if (view === 'job') renderJob(arg);
     else if (view === 'settings' || view === 'system') await renderSettings();
@@ -523,7 +524,11 @@ function staticView(s) {
   const it = s.impacted_tests;
   if (it && it.results && it.results.length) {
     const cls = { newly_failing: 'bad', new_test_failing: 'bad', still_failing: 'warn', failing: 'bad', fixed: 'ok', passing: 'ok', new_test_passing: 'ok' };
-    out.push(...section('Impacted tests at base → head', table(['Test', 'Base', 'Head', 'Verdict', 'Failures on head'], it.results.map((r) => [
+    const env = it.environment;
+    const envNode = !env ? null : env.status === 'READY'
+      ? h('p', { class: 'small' }, 'Ran offline in sandbox environment ', h('span', { class: 'mono' }, env.digest), ` (${env.image}; dependencies resolved at base${env.producers.length ? `; built from source: ${env.producers.map((x) => `${x.repo}@${String(x.revision).slice(0, 12)}`).join(', ')}` : ''})`)
+      : h('div', { class: 'notice' }, `Sandbox environment BLOCKED: ${env.reason} — no test ran on the host.`);
+    out.push(...section('Impacted tests at base → head', envNode, table(['Test', 'Base', 'Head', 'Verdict', 'Failures on head'], it.results.map((r) => [
       h('span', { class: 'mono small' }, r.test), r.base ? r.base.status : 'absent', r.head ? r.head.status : 'absent',
       h('span', { class: `badge ${cls[r.verdict] || 'warn'}` }, r.verdict.replace(/_/g, ' ')),
       h('div', { class: 'small' }, ((r.head && r.head.failing) || []).map((f) => h('div', {}, h('strong', {}, f.name), ` ${f.message || ''}`)))]))));
@@ -1051,7 +1056,8 @@ function reproDetail(d, rec) {
     h('div', { class: 'row' }, h('span', { class: 'label' }, 'Reproduction'), statusBadge(rec.status),
       rec.fix && rec.fix.verified === true ? h('span', { class: 'badge ok' }, 'fix verified') : rec.fix && rec.fix.verified === false ? h('span', { class: 'badge bad' }, 'fix does not pass') : null,
       rec.toolchain ? h('span', { class: 'small muted' }, rec.toolchain) : null,
-      rec.reason ? h('span', { class: 'small muted' }, rec.reason) : null),
+      rec.reason ? h('span', { class: 'small muted' }, rec.reason) : null,
+      (rec.runs || []).some((r) => r.environment) ? h('span', { class: 'small muted' }, 'sandbox environment ', h('span', { class: 'mono' }, rec.runs.find((r) => r.environment).environment)) : null),
     rec.test ? h('p', { class: 'small' }, h('code', {}, rec.test.selector), ` — ${rec.test.fails_because}`) : null,
     (rec.runs || []).length ? table(['Run', 'Result', 'JUnit', 'Time', 'Log'], rec.runs.map((r) => [
       r.phase, statusBadge(r.status === 'red' ? 'RED' : r.status === 'green' ? 'GREEN' : r.status),
@@ -1503,6 +1509,134 @@ async function renderSettings() {
         h('span', { class: 'small muted' }, 'git, gh, codex (a real call that must read a file), repositories and the ticket source.')),
       diag),
     h('p', { class: 'small muted' }, `Files: ${s.files.env} · ${s.files.repos} · ${s.files.mcp}`),
+  );
+}
+
+// ---------- sandbox ----------
+// Discovery, build graph, verification records and bootstrap jobs. Discovery
+// and the graph read git objects only; bootstrap runs the CLI as a job.
+const SANDBOX_MODES = {
+  host: 'PR code runs on this machine (in a worktree, secrets removed from the environment).',
+  docker: 'PR code runs in containers with the configured images (ARW_SANDBOX=docker).',
+  bootstrap: 'PR code runs offline in a per-review environment: discovered image, dependencies resolved at base, repositories it needs built (ARW_SANDBOX=bootstrap).',
+};
+
+function cite(e) {
+  return e ? h('span', { class: 'mono small' }, `${e.path}:${e.line}`, e.quote ? h('span', { class: 'muted' }, `  ${e.quote}`) : null) : null;
+}
+
+function bootstrapButton(repos, label, { force = false, primary = false } = {}) {
+  return h('button', { class: `btn${primary ? ' primary' : ''}`, onclick: () => startJob(api('POST', '/api/sandbox/bootstrap', { repos, force }), `Bootstrap ${repos.join(', ')}`) }, label);
+}
+
+function discoveryView(r) {
+  const j = r.java;
+  return h('div', { class: 'panel' },
+    h('div', { class: 'row' }, h('strong', {}, r.repo), h('span', { class: 'mono small muted' }, `@ ${r.revision.slice(0, 12)}`), h('span', { class: 'badge' }, r.build_systems.join(', ') || 'no build'),
+      j.jdk == null ? statusBadge('UNKNOWN') : h('span', { class: `badge ${j.label === 'DECLARED' ? 'ok' : 'warn'}` }, `JDK ${j.jdk} · ${j.label}`),
+      j.target ? h('span', { class: 'small muted' }, `compiles for ${j.target}, decided by ${j.decided_by}`) : null),
+    j.conflicts.map((c) => h('div', { class: 'notice bad small' }, c)),
+    j.notes.map((n) => h('div', { class: 'notice small' }, n)),
+    r.signals.length ? h('details', {}, h('summary', { class: 'small' }, `${r.signals.length} Java signal(s)`),
+      table(['Kind', 'Java', 'From', 'Module', 'Evidence'], r.signals.slice(0, 60).map((s) => [s.kind, String(s.version), s.from, s.module || '', h('div', {}, s.evidence.map((e) => h('div', {}, cite(e))))]))) : null,
+    h('details', {}, h('summary', { class: 'small' }, `produces ${r.produces.length} · depends on ${r.dependencies.length}`),
+      table(['Produces', 'Module'], r.produces.slice(0, 50).map((p) => [h('span', { class: 'mono small' }, `${p.groupId}:${p.artifactId}:${p.version}`), p.module || '(root)'])),
+      table(['Depends on', 'Scope', 'Note', 'Evidence'], r.dependencies.slice(0, 80).map((d) => [h('span', { class: 'mono small' }, `${d.groupId}:${d.artifactId}:${d.version || '?'}`), d.scope, d.version_note || '', cite(d.evidence)]))),
+    r.proposal ? h('p', { class: 'small' }, 'Proposed sandbox (not verified until bootstrapped): ', h('code', {}, r.proposal.image), ' · test ', h('code', {}, r.proposal.commands.test.join(' '))) : null,
+    r.unknowns.length ? h('ul', { class: 'small muted' }, r.unknowns.map((u) => h('li', {}, `unknown: ${u}`))) : null);
+}
+
+function graphView(g) {
+  return [
+    g.problems.map((p) => h('div', { class: 'notice bad small' }, `${p.kind}: ${p.detail}`)),
+    g.levels ? h('ol', {}, g.levels.map((l) => h('li', {}, l.map((repo) => h('span', { class: 'chip' }, repo)), l.length > 1 ? h('span', { class: 'small muted' }, ' (in parallel)') : null))) : h('p', { class: 'muted' }, 'No build order: see the problems above.'),
+    g.edges.length ? table(['Built first', 'Used by', 'Artifact', 'Evidence'], g.edges.map((e) => [e.dependency, e.consumer, h('span', { class: 'mono small' }, `${e.artifact}:${e.wanted}`), cite(e.evidence)])) : h('p', { class: 'small muted' }, 'No configured repository builds an artifact another one needs at the version it produces.'),
+    g.notes.length ? h('details', {}, h('summary', { class: 'small' }, `${g.notes.length} note(s)`), h('ul', { class: 'small' }, g.notes.map((n) => h('li', {}, n)))) : null,
+    (g.skipped || []).map((s) => h('div', { class: 'notice small' }, `${s.repo} not discovered: ${s.error}`)),
+  ];
+}
+
+function testsText(t) {
+  return t ? `${t.total - t.failed - t.errors - t.skipped}/${t.total} passed` : '';
+}
+
+function recordsTable(recs) {
+  return table(['When', 'Repository', 'Revision', 'Status', 'Tests', 'Image', 'Record'], recs.map((r) => [
+    h('span', { class: 'small muted' }, fmtTime(r.at)), r.repo, h('span', { class: 'mono small' }, String(r.revision).slice(0, 12)), statusBadge(r.status),
+    h('span', { class: 'small' }, testsText(r.tests)), h('span', { class: 'mono small' }, r.image || ''), h('a', { href: `#/sandbox/${r.fingerprint}` }, r.fingerprint.slice(0, 12))]));
+}
+
+async function renderSandbox(arg) {
+  if (arg) return renderSandboxRecord(arg);
+  const s = await api('GET', '/api/sandbox');
+  const job = activeJobFor('sandbox', 'sandbox');
+  const discovered = h('div', {});
+  const graph = h('div', {});
+  const ready = s.repos.filter((r) => r.exists).map((r) => r.name);
+  put($main,
+    h('h1', {}, 'Sandbox'),
+    h('p', { class: 'muted' }, SANDBOX_MODES[s.mode] || s.mode),
+    h('div', { class: 'stats' }, stat(s.mode, 'mode'), stat(s.docker ? 'unavailable' : 'ok', 'docker'), stat(s.repos.length, 'repositories')),
+    s.docker ? h('div', { class: 'notice' }, s.docker) : null,
+    job ? livePanel(job) : null,
+    ...section('Repositories',
+      s.repos.length ? table(['Repository', 'Checkout', 'Latest record', '', ''], s.repos.map((r) => [
+        r.name, h('span', { class: 'mono small', title: r.checkout || '' }, r.checkout ? r.checkout.replace(/\\/g, '/').split('/').slice(-2).join('/') : '—'),
+        r.latest ? h('span', {}, statusBadge(r.latest.status), ' ', h('a', { href: `#/sandbox/${r.latest.fingerprint}`, class: 'small' }, `${String(r.latest.revision).slice(0, 12)} · ${fmtTime(r.latest.at)}`)) : h('span', { class: 'small muted' }, 'never bootstrapped'),
+        r.exists ? h('button', { class: 'btn', onclick: async () => {
+          put(discovered, h('p', { class: 'muted small' }, `Discovering ${r.name}…`));
+          try {
+            put(discovered, discoveryView(await api('GET', `/api/sandbox/discover?repo=${encodeURIComponent(r.name)}`)));
+          } catch (err) {
+            put(discovered, h('div', { class: 'notice bad' }, err.message));
+          }
+        } }, 'Discover') : h('span', { class: 'badge bad' }, 'checkout missing'),
+        r.exists ? bootstrapButton([r.name], 'Bootstrap') : null,
+      ])) : h('div', { class: 'notice' }, 'No repositories configured (Settings → Repositories).'),
+      discovered),
+    ...section('Build graph',
+      h('div', { class: 'row' },
+        h('button', { class: 'btn', onclick: async () => {
+          put(graph, h('p', { class: 'muted small' }, 'Discovering every configured repository…'));
+          try {
+            put(graph, graphView(await api('GET', '/api/sandbox/graph')));
+          } catch (err) {
+            put(graph, h('div', { class: 'notice bad' }, err.message));
+          }
+        } }, 'Show graph'),
+        ready.length ? bootstrapButton(ready, 'Bootstrap all in order', { primary: true }) : null,
+        h('span', { class: 'small muted' }, 'Bootstrap resolves dependencies with network and runs the repositories\' builds: for revisions you trust.')),
+      graph),
+    ...section('Verification records', h('div', { id: 'sandbox-records' }, h('p', { class: 'muted small' }, 'Loading…'))),
+  );
+  const recs = await api('GET', '/api/sandbox/records');
+  put(document.getElementById('sandbox-records'), recs.length ? recordsTable(recs.slice(0, 50)) : h('p', { class: 'muted small' }, 'No records yet.'));
+}
+
+async function renderSandboxRecord(fp) {
+  const r = await api('GET', `/api/sandbox/records/${encodeURIComponent(fp)}`);
+  const fileUrl = (p) => `/api/sandbox/records/${encodeURIComponent(fp)}/file?path=${encodeURIComponent(p)}`;
+  const job = activeJobFor('sandbox', 'sandbox');
+  put($main,
+    h('a', { href: '#/sandbox' }, '← sandbox'),
+    h('h1', {}, `${r.repo} @ ${String(r.revision).slice(0, 12)}`),
+    h('div', { class: 'row' }, statusBadge(r.status), r.intact ? h('span', { class: 'badge ok' }, 'files intact') : h('span', { class: 'badge bad' }, 'files changed: will not be reused'),
+      h('span', { class: 'small muted' }, `${fmtTime(r.at)} · ${fmtMs(r.elapsed_ms)}`), h('span', { class: 'spacer' }),
+      bootstrapButton([`${r.repo}@${r.revision}`], 'Verify again', { force: true })),
+    job ? livePanel(job) : null,
+    r.reason ? h('div', { class: 'notice' }, r.reason) : null,
+    h('dl', { class: 'kv mt' },
+      h('dt', {}, 'Fingerprint'), h('dd', { class: 'mono' }, r.fingerprint),
+      h('dt', {}, 'Image'), h('dd', { class: 'mono' }, `${r.image} ${String(r.image_id || '').slice(0, 19)}`),
+      h('dt', {}, 'Source tree'), h('dd', { class: 'mono' }, r.tree || '—'),
+      h('dt', {}, 'Resolve'), h('dd', {}, r.resolve || '—'),
+      h('dt', {}, 'Tests'), h('dd', {}, testsText(r.tests) || '—')),
+    (r.tests && r.tests.failing.length) ? section('Failing tests', h('ul', { class: 'small' }, r.tests.failing.map((f) => h('li', {}, f)))) : null,
+    r.inputs.length ? section('Built on', table(['Repository', 'Status', 'Record'], r.inputs.map((i) => [i.repo, statusBadge(i.status), h('a', { href: `#/sandbox/${i.fingerprint}` }, i.fingerprint.slice(0, 12))]))) : null,
+    section('Commands', h('div', { class: 'small' }, h('div', {}, 'resolve (network): ', h('code', {}, (r.recipe && r.recipe.resolve || []).join(' '))), h('div', {}, 'build (no network): ', h('code', {}, (r.recipe && r.recipe.build || []).join(' '))))),
+    r.artifacts.length ? section('Artifacts', table(['File', 'SHA-256', 'Size'], r.artifacts.map((a) => [h('span', { class: 'mono small' }, a.path.replace(/^artifacts\//, '')), h('span', { class: 'mono small' }, a.sha256.slice(0, 16)), fmtNum(a.size)]))) : null,
+    section('Evidence', table(['File', 'SHA-256', ''], r.evidence.map((e) => [h('span', { class: 'mono small' }, e.path), h('span', { class: 'mono small' }, e.sha256.slice(0, 16)), fileToggle(fileUrl(e.path), 'view')]))),
+    (r.notes || []).length ? h('ul', { class: 'small muted' }, r.notes.map((n) => h('li', {}, n))) : null,
   );
 }
 

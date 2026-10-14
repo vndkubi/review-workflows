@@ -219,3 +219,12 @@ test('source snapshot: no .git, no links, executable bits kept, unsafe archive e
   assert.ok(!fs.existsSync(path.join(path.dirname(out), 'evil.txt')));
   assert.equal(fs.readFileSync(path.join(out, 'ok', 'fine.txt'), 'utf8'), 'fine');
 });
+
+test('force rebuilds only the repositories named, not what they need', async () => {
+  const r = payments();
+  await run(r, []);
+  const calls = [];
+  const out = await run(r, calls, { force: ['payment-server'] });
+  assert.deepEqual(out.results.map((x) => [x.repo, x.cache]), [['payment-lib', 'hit'], ['payment-server', 'miss']]);
+  assert.deepEqual(calls.map((c) => [c.repo, c.step]), [['payment-server', 'build']]);
+});
