@@ -223,3 +223,15 @@ test('dashboard server', async (t) => {
     }
   });
 });
+
+// Incident: GET /api/github/prs for a repository gh cannot see threw the gh
+// process error, whose `status` is the exit code (1); the server used it as
+// the HTTP status, writeHead threw and the dashboard died with its jobs.
+test('a failing route never uses a process exit code as the HTTP status', () => {
+  const { httpStatusOf } = require('../src/web/server');
+  const gh = Object.assign(new Error('Command failed: gh pr list'), { status: 1 });
+  assert.equal(httpStatusOf(gh), 500);
+  assert.equal(httpStatusOf(Object.assign(new Error('x'), { status: 404 })), 404);
+  assert.equal(httpStatusOf(new Error('x')), 500);
+  assert.equal(httpStatusOf(Object.assign(new Error('x'), { status: 700 })), 500);
+});

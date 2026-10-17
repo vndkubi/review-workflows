@@ -63,6 +63,14 @@ const SECURITY_HEADERS = {
   'Cache-Control': 'no-store',
 };
 
+// An error's HTTP status: only a real 4xx/5xx set by httpError. A child
+// process error carries its exit code in `status` (1), which writeHead
+// rejects by throwing and taking the server down.
+function httpStatusOf(err) {
+  const s = err && err.status;
+  return Number.isInteger(s) && s >= 400 && s <= 599 ? s : 500;
+}
+
 function send(res, status, body, type = 'application/json; charset=utf-8') {
   const payload = type.startsWith('application/json') ? JSON.stringify(body) : body;
   res.writeHead(status, { 'Content-Type': type, ...SECURITY_HEADERS });
@@ -168,7 +176,13 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
 
     ['GET', /^\/api\/github\/prs$/, (m, q) => {
       const repo = knownRepo(q.get('repo') || '');
-      const out = execFileSync('gh', ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '40', '--json', 'number,title,author,headRefName,updatedAt,isDraft'], { encoding: 'utf8', windowsHide: true });
+      let out;
+      try {
+        out = execFileSync('gh', ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '40', '--json', 'number,title,author,headRefName,updatedAt,isDraft'], { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (err) {
+        const why = String(err.stderr || err.message).trim().split(/\r?\n/)[0];
+        throw data.httpError(502, `GitHub could not list the pull requests of ${repo} (${why}). For a repository that is not on GitHub, review local changes instead.`);
+      }
       return JSON.parse(out);
     }],
 
@@ -391,7 +405,7 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
       }
       return send(res, 404, { error: 'not found' });
     } catch (err) {
-      const status = err.status || 500;
+      const status = httpStatusOf(err);
       return send(res, status, { error: status === 500 ? `internal error: ${err.message}` : err.message });
     }
   });
@@ -442,4 +456,4 @@ function startDashboard({ port = 8787, open = true } = {}) {
   });
 }
 
-module.exports = { createServer, startDashboard, ROOT };
+module.exports = { createServer, startDashboard, httpStatusOf, ROOT };
