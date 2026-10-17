@@ -190,6 +190,25 @@ function prDriverLog(id) {
   }
 }
 
+// The viewpoint matrix for the dashboard: rows in checklist order with
+// their text, columns in unit order, and each cell's evidence from the
+// packet that answered it. null for a run from before the matrix.
+function viewpointView(checks, packets, checklistText) {
+  if (!checks || !checks.length) return null;
+  const text = new Map();
+  for (const m of String(checklistText || '').matchAll(/^\s*-\s*(CK-[A-Z]+-[0-9]+):\s*(.*)$/gm)) if (!text.has(m[1])) text.set(m[1], m[2].trim());
+  const order = [...text.keys()];
+  const ids = [...new Set(checks.map((c) => c.viewpoint))].sort((a, b) => (order.indexOf(a) + 1 || 1e9) - (order.indexOf(b) + 1 || 1e9) || a.localeCompare(b));
+  const tally = {};
+  for (const c of checks) tally[c.verdict] = (tally[c.verdict] || 0) + 1;
+  const cells = checks.map((c) => {
+    const p = packets.find((x) => x.unit_id === c.unit_id && x.role === c.role);
+    const answer = p && (p.packet.viewpoint_verdicts || []).find((v) => v.viewpoint === c.viewpoint);
+    return { ...c, evidence: answer ? answer.evidence : [] };
+  });
+  return { viewpoints: ids.map((id) => ({ id, text: text.get(id) || '' })), units: [...new Set(checks.map((c) => c.unit_id))], tally, cells };
+}
+
 function prDetail(id) {
   const { dir } = prDirFromId(id);
   const run = readJsonIfExists(path.join(dir, 'run.json'));
@@ -212,11 +231,15 @@ function prDetail(id) {
   if (!validation) return out;
   const rdir = revisionDir(dir, validation.context_id);
   const full = new Map();
+  const packets = [];
   for (const job of validation.jobs) {
     if (job.status !== 'EXECUTED_PASS') continue;
     const packet = readJsonIfExists(path.join(rdir, packetRel(job.unit_id, job.role)));
+    if (packet) packets.push({ unit_id: job.unit_id, role: job.role, packet });
     if (packet) for (const f of packet.findings) full.set(f.id, f);
   }
+  const checklistFile = path.join(rdir, 'inputs', 'policy-policies-checklist.txt');
+  out.viewpoints = viewpointView(validation.checks, packets, fs.existsSync(checklistFile) ? fs.readFileSync(checklistFile, 'utf8') : '');
   const synthesis = validation.synthesis && validation.synthesis.valid ? readJsonIfExists(path.join(rdir, 'synthesis.json')) : null;
   const aliasOf = new Map((synthesis ? synthesis.aliases : []).map((a) => [a.id, a.duplicate_of]));
   const scope = memory.memoryScope(run.identity);
@@ -230,7 +253,7 @@ function prDetail(id) {
     return { ...meta, duplicate_of: aliasOf.get(meta.id) || null, detail, rebuttal, rejected, publish_action: detail ? memory.publishAction(detail, rejected) : null };
   });
   out.feedback = readJsonIfExists(path.join(dir, 'feedback.json'));
-  const { findings, clusters, ...rest } = validation;
+  const { findings, clusters, checks, ...rest } = validation;
   out.validation = { ...rest, counts: countBySeverity(validation.findings, new Set(aliasOf.keys())) };
   out.overview = synthesis ? { flows: synthesis.overview, unverified: synthesis.unverified } : null;
   const frozenItems = readJsonIfExists(path.join(rdir, 'inputs', 'review-items.txt'), []);
@@ -259,4 +282,4 @@ function sourceSnippet(id, file, { revision = 'reviewed', start = 1, end = start
   return { path: file, revision, sha: rev, from, to, highlight: [Number(start), Number(end)], lines: lines.slice(from - 1, to) };
 }
 
-module.exports = { listRuns, ticketDetail, prDetail, prDriverLog, sourceSnippet, prDirFromId, ticketDirFromKey, httpError, PR_ID, TICKET_KEY };
+module.exports = { listRuns, ticketDetail, prDetail, viewpointView, prDriverLog, sourceSnippet, prDirFromId, ticketDirFromKey, httpError, PR_ID, TICKET_KEY };

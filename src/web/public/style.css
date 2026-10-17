@@ -203,3 +203,14 @@ section.panel h2 { margin-top: 0; }
 details.advanced { margin-top: 16px; }
 details.advanced > summary { cursor: pointer; padding: 10px 0; }
 .setting-key strong { display: block; }
+
+/* Viewpoint matrix */
+.vp-wrap { overflow-x: auto; margin-top: 10px; }
+.vp-grid th[scope="row"] { text-align: left; font-weight: 500; min-width: 220px; max-width: 360px; }
+.vp-grid td { text-align: center; }
+.vp-text { white-space: normal; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.vp-cell { cursor: pointer; min-width: 44px; font: inherit; font-size: 11px; font-weight: 600; }
+.vp-cell.bad { background: var(--bad); color: #fff; }
+.vp-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.vp-empty { background: var(--panel-2); }
+.vp-detail:not(:empty) { margin-top: 16px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }

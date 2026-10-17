@@ -284,7 +284,7 @@ async function renderPr(id) {
   // No ticket: the intent derived from the PR, shown and confirmed here.
   const intent = d.intent && d.intent.key ? d.intent : null;
   const awaiting = d.phases.ticket && d.phases.ticket.status === 'AWAITING_INTENT';
-  const tabs = [...(intent ? ['Spec'] : []), 'Findings', 'Items', 'Progress', 'Calls', 'Timeline', 'Overview', 'Plan', 'Cost', 'Logs'];
+  const tabs = [...(intent ? ['Spec'] : []), 'Findings', 'Items', 'Viewpoints', 'Progress', 'Calls', 'Timeline', 'Overview', 'Plan', 'Cost', 'Logs'];
   // A tab picked on this run wins; a run waiting for its intent opens on Spec.
   const picked = sessionStorage.getItem(`pr-tab:${id}`);
   const saved = sessionStorage.getItem('pr-tab');
@@ -325,6 +325,7 @@ async function renderPr(id) {
   if (current === 'Findings') add(body, findingsView(d));
   else if (current === 'Overview') add(body, overviewView(d));
   else if (current === 'Items') add(body, itemsView(d));
+  else if (current === 'Viewpoints') add(body, viewpointsView(d));
   else add(body, costView(d), unitsView(d));
 }
 
@@ -640,6 +641,44 @@ function itemsView(d) {
       h('strong', { title: r.text }, r.id), r.kind, r.risk, h('span', { class: `badge ${cls[r.result] || ''}` }, r.result), r.expected,
       h('div', { class: 'small' }, r.verdicts.map((v) => h('div', {}, h('span', { class: 'mono' }, `${v.unit_id}/${v.role} `), `${v.verdict} — ${v.note}`))),
     ])),
+  ];
+}
+
+// The viewpoint matrix: checklist viewpoints the runtime assigned to each
+// unit from its changed lines, and how the reviewer answered each. A cell
+// opens its note and evidence below the grid.
+const VP_MARK = { pass: ['pass', 'ok'], fail: ['FAIL', 'bad'], not_applicable: ['n/a', ''], cannot_determine: ['?', 'warn'], not_answered: ['—', 'warn'] };
+const VP_LABEL = { pass: 'pass', fail: 'fail', not_applicable: 'not applicable', cannot_determine: 'could not determine', not_answered: 'no valid answer' };
+
+function viewpointsView(d) {
+  const m = d.viewpoints;
+  if (!m) return [h('p', { class: 'muted' }, 'No viewpoint matrix: this run was reviewed before viewpoints were assigned per unit. Re-run (refresh) to get one.')];
+  const detail = h('div', { class: 'vp-detail' });
+  const only = sessionStorage.getItem(`vp-only:${d.id}`) === '1';
+  const open = (cell, vp) => put(detail,
+    h('h3', {}, `${cell.viewpoint} · ${cell.unit_id}`, cell.role ? h('span', { class: 'muted small' }, ` (${cell.role} reviewer)`) : null),
+    h('p', { class: 'muted' }, vp.text),
+    h('p', {}, h('span', { class: `badge ${VP_MARK[cell.verdict][1]}` }, VP_LABEL[cell.verdict] || cell.verdict), ' ', cell.note || ''),
+    cell.evidence.length ? h('ul', { class: 'evidence' }, cell.evidence.map((ev) => evidenceItem(d, ev))) : h('p', { class: 'muted small' }, 'No evidence cited.'));
+  const byKey = new Map(m.cells.map((c) => [`${c.unit_id}\0${c.viewpoint}`, c]));
+  const rows = m.viewpoints.filter((vp) => !only || m.units.some((u) => { const c = byKey.get(`${u}\0${vp.id}`); return c && c.verdict !== 'pass' && c.verdict !== 'not_applicable'; }));
+  const order = ['fail', 'cannot_determine', 'not_answered', 'pass', 'not_applicable'];
+  return [
+    h('p', { class: 'muted small mt12' }, 'Viewpoints the runtime assigned from what each unit\'s changed lines touch. Every run answers the same cells, so two runs or two models compare cell by cell.'),
+    h('div', { class: 'stats' }, order.filter((k) => m.tally[k]).map((k) => stat(m.tally[k], VP_LABEL[k]))),
+    h('label', { class: 'row small' }, h('input', { type: 'checkbox', checked: only, onchange: (e) => { sessionStorage.setItem(`vp-only:${d.id}`, e.target.checked ? '1' : '0'); render(); } }), 'only rows that need a look (fail, ?, —)'),
+    h('div', { class: 'vp-wrap' }, h('table', { class: 'vp-grid' },
+      h('thead', {}, h('tr', {}, h('th', {}, 'Viewpoint'), m.units.map((u) => h('th', { class: 'mono' }, u)))),
+      h('tbody', {}, rows.map((vp) => h('tr', {},
+        h('th', { scope: 'row', title: vp.text }, h('span', { class: 'mono' }, vp.id), h('div', { class: 'small muted vp-text' }, vp.text)),
+        m.units.map((u) => {
+          const c = byKey.get(`${u}\0${vp.id}`);
+          if (!c) return h('td', { class: 'vp-empty' });
+          const [mark, cls] = VP_MARK[c.verdict] || [c.verdict, ''];
+          return h('td', {}, h('button', { type: 'button', class: `badge vp-cell ${cls}`, title: `${VP_LABEL[c.verdict] || c.verdict}${c.note ? ` — ${c.note}` : ''}`, onclick: () => open(c, vp) }, mark));
+        })))))),
+    rows.length ? null : h('p', { class: 'muted' }, 'Nothing to look at: every assigned viewpoint passed or does not apply.'),
+    detail,
   ];
 }
 
