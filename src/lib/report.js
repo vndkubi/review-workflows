@@ -7,6 +7,7 @@ const { revisionDir, readInput, loadContext } = require('./freeze');
 const { packetRel } = require('./driver');
 const { SEVERITY_RANK } = require('./cluster');
 const memory = require('./memory');
+const { effectiveAliases } = require('./outcome');
 
 const STATE_TEXT = {
   stands: 'red-team defense failed — finding stands',
@@ -72,7 +73,7 @@ function renderFinding(f, meta, rebuttal) {
   const out = [];
   out.push(`### [${f.severity}] ${f.title}`);
   out.push('');
-  out.push(`\`${f.id}\` · ${meta.label} (${meta.evidence_level}) · confidence ${f.confidence} · votes ${meta.votes}${meta.cluster_id ? ` (${meta.cluster_id})` : ''} · ${STATE_TEXT[meta.state]}`);
+  out.push(`\`${f.id}\` · ${meta.label} (${meta.evidence_level}) · confidence ${f.confidence} · votes ${meta.votes}${meta.cluster_id ? ` (${meta.cluster_id})` : ''} · ${meta.withdrawal_overruled ? 'withdrawn by red-team, overruled by the reproduction' : STATE_TEXT[meta.state]}`);
   out.push('');
   out.push(`**Evidence**: ${f.evidence.filter((e) => e.kind === 'code').map((e) => `\`${e.path}:${e.start_line}-${e.end_line}\`${e.revision === 'base' ? ' (base)' : ''}`).join(', ')}`);
   out.push('', `**ASIS** — ${f.asis}`, '', `**TOBE** — ${f.tobe}`);
@@ -102,7 +103,8 @@ function renderReport(runDir, validation, identity) {
   const metas = [...validation.findings].sort(
     (a, b) => (a.state === 'withdrawn') - (b.state === 'withdrawn') || SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || b.votes - a.votes || a.id.localeCompare(b.id),
   );
-  const aliased = new Set((synthesis ? synthesis.aliases : []).map((a) => a.id));
+  const aliases = effectiveAliases(synthesis, validation.findings);
+  const aliased = new Set(aliases.map((a) => a.id));
   const out = [];
   out.push(`# Code review — ${identity.repo}#${identity.pr}`, '');
   out.push(`${identity.title}`, '');
@@ -166,7 +168,7 @@ function renderReport(runDir, validation, identity) {
     if (reach && BLOCKING_SEVERITIES.has(f.severity)) out.push(`**Reachability** — ${reach}`, '');
     const match = memory.matchRejected(f, { scope, run: path.basename(runDir), source: (readJsonIfExists(path.join(revisionDir(runDir, validation.context_id), 'context.json')) || {}).source }, entries);
     if (match) out.push(`> ${match.same ? 'Rejected' : `Looks like a finding rejected earlier (${match.entry_id}, ${match.how || 'similar'}, ${match.score})`}: ${match.reason}. ${memory.publishAction(f, match) === 'omit' ? 'Left out of the published draft.' : 'Still published because of its severity.'}`, '');
-    const dups = (synthesis ? synthesis.aliases : []).filter((a) => a.duplicate_of === meta.id).map((a) => a.id);
+    const dups = aliases.filter((a) => a.duplicate_of === meta.id).map((a) => a.id);
     if (dups.length) out.push(`_Duplicates: ${dups.join(', ')}_`, '');
   }
   out.push('## Units', '', '| Unit/role | Status | Errors |', '|---|---|---|');

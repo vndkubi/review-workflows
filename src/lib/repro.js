@@ -85,6 +85,20 @@ function assertShellSafe(values) {
   }
 }
 
+// The build module a test belongs to: the nearest directory above it, inside
+// the worktree, with a build file. Maven and Gradle write a module's reports
+// under that module, even when the build runs from the root.
+const BUILD_FILES = { maven: ['pom.xml'], gradle: ['build.gradle', 'build.gradle.kts'] };
+function moduleDir(toolchain, wt, testPath) {
+  const root = path.resolve(wt);
+  let dir = path.dirname(path.resolve(root, String(testPath || '')));
+  if (dir !== root && !dir.startsWith(root + path.sep)) return root;
+  for (; dir !== root && dir.startsWith(root + path.sep); dir = path.dirname(dir)) {
+    if ((BUILD_FILES[toolchain] || []).some((f) => fs.existsSync(path.join(dir, f)))) return dir;
+  }
+  return root;
+}
+
 // Returns { command, junit: absolute JUnit XML path }.
 function commandFor(toolchain, test, wt, override) {
   const cls = test.language === 'java' ? javaClass(test.selector) : null;
@@ -94,7 +108,8 @@ function commandFor(toolchain, test, wt, override) {
   assertShellSafe({ selector: test.selector, path: test.path, class: cls });
   const junitPytest = path.join(wt, '.arw-junit.xml');
   // A custom command without a known toolchain must write JUnit XML to {junit}.
-  const junit = { maven: path.join(wt, 'target', 'surefire-reports', `TEST-${cls}.xml`), gradle: path.join(wt, 'build', 'test-results', 'test', `TEST-${cls}.xml`), pytest: junitPytest }[toolchain] || junitPytest;
+  const mod = moduleDir(toolchain, wt, test.path);
+  const junit = { maven: path.join(mod, 'target', 'surefire-reports', `TEST-${cls}.xml`), gradle: path.join(mod, 'build', 'test-results', 'test', `TEST-${cls}.xml`), pytest: junitPytest }[toolchain] || junitPytest;
   if (override) {
     // The report is read where the command was told to write it ({junit});
     // without {junit}, from the toolchain's usual place.
@@ -440,11 +455,13 @@ function loadReproRecords(runDir, context) {
 }
 
 // ---------- orchestration ----------
-// targets: [{ finding, cluster_id }] — blocking, not withdrawn, one per cluster.
+// targets: [{ finding, cluster_id }] — blocking, one per cluster. Withdrawn
+// findings are included: a model's withdrawal must not decide that the
+// harness never runs the test that could prove it wrong.
 function reproTargets(validation, findingsById) {
   const done = new Set();
   const targets = [];
-  const metas = [...validation.findings].filter((m) => BLOCKING.has(m.severity) && m.state !== 'withdrawn').sort((a, b) => (a.canonical === b.canonical ? 0 : a.canonical ? -1 : 1));
+  const metas = [...validation.findings].filter((m) => BLOCKING.has(m.severity)).sort((a, b) => (a.canonical === b.canonical ? 0 : a.canonical ? -1 : 1));
   for (const m of metas) {
     const key = m.cluster_id || m.id;
     if (done.has(key)) continue;

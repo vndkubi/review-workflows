@@ -9,7 +9,8 @@ const BLOCKING = new Set(['P1', 'P2']);
 // jobs:    [{ unit_id, role, required, status }]
 // clusters: findingClusters output; rebuttals: Map finding_id -> rebuttal
 // repro: Map finding_id -> validated repro record (repro.loadReproRecords).
-function computeOutcome({ packets, jobs, clusters, rebuttals, items, repro = new Map() }) {
+// reviewable: the frozen reviewable files; each needs a "reviewed" row somewhere.
+function computeOutcome({ packets, jobs, clusters, rebuttals, items, repro = new Map(), reviewable = null }) {
   const findings = [];
   const clusterOf = new Map();
   for (const c of clusters) for (const id of c.members) clusterOf.set(id, c);
@@ -36,6 +37,18 @@ function computeOutcome({ packets, jobs, clusters, rebuttals, items, repro = new
           state = 'unverified';
         }
       }
+      // Execution beats a model's withdrawal: a test that failed twice on the
+      // reviewed head keeps the finding open.
+      let repro_ = reproFields(f.id, cluster, repro, state);
+      let overruled = false;
+      if (state === 'withdrawn') {
+        const proven = reproFields(f.id, cluster, repro, 'stands');
+        if (proven.evidence_level !== 'L1') {
+          state = 'stands';
+          repro_ = proven;
+          overruled = true;
+        }
+      }
       findings.push({
         id: f.id,
         unit_id,
@@ -48,7 +61,8 @@ function computeOutcome({ packets, jobs, clusters, rebuttals, items, repro = new
         cluster_id: cluster ? cluster.id : null,
         canonical: cluster ? cluster.canonical_id === f.id : true,
         votes: cluster ? cluster.votes : 1,
-        ...reproFields(f.id, cluster, repro, state),
+        withdrawal_overruled: overruled,
+        ...repro_,
       });
     }
   }
@@ -56,6 +70,13 @@ function computeOutcome({ packets, jobs, clusters, rebuttals, items, repro = new
   const gaps = [];
   for (const job of jobs) {
     if (job.required && job.status !== 'EXECUTED_PASS') gaps.push(`${job.unit_id}/${job.role} is ${job.status}`);
+  }
+  // "unverified" is an honest answer from one reviewer, but a changed file
+  // that no valid packet reviewed was not reviewed at all.
+  if (reviewable) {
+    const reviewed = new Set();
+    for (const { packet } of packets) for (const row of packet.coverage || []) if (row.disposition === 'reviewed') reviewed.add(row.id);
+    for (const file of reviewable) if (!reviewed.has(`file:${file}`)) gaps.push(`file:${file} has no "reviewed" coverage in any valid packet`);
   }
   const verdicts = new Map();
   for (const { unit_id, role, packet } of packets) {
@@ -120,4 +141,17 @@ function reproFields(id, cluster, repro, state) {
   return out;
 }
 
-module.exports = { computeOutcome, reproFields, BLOCKING };
+// The synthesis aliases that may hide a finding from the report and the
+// published review. The coordinator's word is enough for P3/P4; a P1/P2 is
+// hidden only when the runtime put both findings in the same duplicate cluster.
+function effectiveAliases(synthesis, metas) {
+  const byId = new Map(metas.map((m) => [m.id, m]));
+  return (synthesis ? synthesis.aliases : []).filter((a) => {
+    const m = byId.get(a.id);
+    const to = byId.get(a.duplicate_of);
+    if (!m || !BLOCKING.has(m.severity)) return true;
+    return Boolean(m.cluster_id && to && to.cluster_id === m.cluster_id);
+  });
+}
+
+module.exports = { computeOutcome, reproFields, effectiveAliases, BLOCKING };

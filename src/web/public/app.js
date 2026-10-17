@@ -1640,7 +1640,7 @@ async function renderSandbox(arg) {
   const ready = s.repos.filter((r) => r.exists).map((r) => r.name);
   put($main,
     h('h1', {}, 'Sandbox'),
-    h('p', { class: 'muted' }, SANDBOX_MODES[s.mode] || s.mode),
+    s.mode_error ? h('div', { class: 'notice' }, s.mode_error) : h('p', { class: 'muted' }, SANDBOX_MODES[s.mode] || s.mode),
     h('div', { class: 'stats' }, stat(s.mode, 'mode'), stat(s.docker ? 'unavailable' : 'ok', 'docker'), stat(s.repos.length, 'repositories')),
     s.docker ? h('div', { class: 'notice' }, s.docker) : null,
     s.mode !== 'bootstrap' ? h('div', { class: 'notice' }, 'Reviews do not use these environments yet: in ', h('a', { href: '#/settings' }, 'Settings'), ' set ARW_SANDBOX to bootstrap (and ARW_RUN_IMPACTED_TESTS to on to run the impacted tests), then restart the dashboard.') : null,

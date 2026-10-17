@@ -37,6 +37,20 @@ function withEnv(vars, fn) {
   }
 }
 
+// Incident: ARW_SANDBOX=dockre ran PR code on the host shell.
+test('an unknown ARW_SANDBOX value blocks instead of falling back to the host', () => {
+  const { defaultRunner } = require('../src/lib/repro');
+  for (const value of ['dockre', 'Docker', 'yes']) {
+    withEnv({ ARW_SANDBOX: value }, () => {
+      assert.throws(() => sandbox.mode(), /ARW_SANDBOX/);
+      assert.throws(() => defaultRunner(), /ARW_SANDBOX/);
+      assert.throws(() => sandbox.manifest(), /ARW_SANDBOX/);
+    });
+  }
+  for (const value of ['', 'off', 'host']) withEnv({ ARW_SANDBOX: value }, () => assert.equal(sandbox.mode(), 'host'));
+  withEnv({ ARW_SANDBOX: 'docker' }, () => assert.equal(sandbox.mode(), 'docker'));
+});
+
 test('built-in test commands reach the container as argv, without a shell', () => {
   const wt = process.platform === 'win32' ? 'C:\\runs\\x\\repro-wt' : '/runs/x/repro-wt';
   const t = { language: 'python', path: 'tests/test_fee.py', selector: 'tests/test_fee.py::test_fee' };

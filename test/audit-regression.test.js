@@ -120,6 +120,30 @@ test('B: the frozen context covers the execution, not only the source: a model c
   }
 });
 
+// Incident: the validator reads config/schemas live, so a schema edited after
+// the freeze changed what "valid" means without any drift being reported.
+test('B2: a policy file (schema, charter, checklist) that differs from its frozen snapshot is drift', () => {
+  const { freezeContext, verifyContext, revisionDir } = require('../src/lib/freeze');
+  const { sha256 } = require('../src/lib/util');
+  const repo = makeRepo();
+  const runDir = tmpDir('arw-audit-b2-');
+  const review = { units: [] };
+  fs.writeFileSync(path.join(runDir, 'run.json'), JSON.stringify({ review }));
+  const context = freezeContext({ runDir, checkout: repo.dir, base: repo.base, head: repo.head, changed: [], reviewable: [], patch: '', review, inputs: [] });
+  assert.deepEqual(verifyContext(runDir, context), []);
+  // Frozen with an older review schema: the snapshot is consistent with its
+  // own hash, but the live file the validator reads is not that schema.
+  const input = context.inputs.find((i) => i.id === 'policy-schemas-review-schema');
+  assert.ok(input, 'the review schema is frozen');
+  const older = '{"older": true}';
+  fs.writeFileSync(path.join(revisionDir(runDir, context.context_id), input.snapshot), older);
+  const stale = { ...context, inputs: context.inputs.map((i) => (i === input ? { ...i, sha256: sha256(older) } : i)) };
+  assert.match(verifyContext(runDir, stale).join('\n'), /policy files changed since freeze: policy-schemas-review-schema/);
+  // A policy file added since the freeze is drift too.
+  const fewer = { ...context, inputs: context.inputs.filter((i) => i !== input) };
+  assert.match(verifyContext(runDir, fewer).join('\n'), /policy files changed since freeze: policy-schemas-review-schema/);
+});
+
 test('A: PR code can run in a container: only the worktree, no network, limits, container paths', () => {
   const { dockerArgs, toContainer, enabled } = require('../src/lib/sandbox');
   const saved = { ...process.env };

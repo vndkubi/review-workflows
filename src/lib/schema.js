@@ -1,15 +1,22 @@
 'use strict';
 // Minimal JSON Schema (2020-12 subset) validator: enough for our own schemas,
 // with precise error paths so the repair loop can tell the model what to fix.
+const fs = require('node:fs');
 const path = require('node:path');
-const { ROOT, readJson } = require('./util');
+const { ROOT } = require('./util');
 
 const SCHEMA_DIR = path.join(ROOT, 'config', 'schemas');
 const cache = new Map();
 
+// Keyed by content: a long-running process (the dashboard) must use the file
+// as it is now, which verifyContext checks against the frozen hash.
 function loadSchema(name) {
-  if (!cache.has(name)) cache.set(name, readJson(path.join(SCHEMA_DIR, `${name}.schema.json`)));
-  return cache.get(name);
+  const text = fs.readFileSync(path.join(SCHEMA_DIR, `${name}.schema.json`), 'utf8');
+  const hit = cache.get(name);
+  if (hit && hit.text === text) return hit.schema;
+  const schema = JSON.parse(text);
+  cache.set(name, { text, schema });
+  return schema;
 }
 
 function resolveRef(root, ref) {

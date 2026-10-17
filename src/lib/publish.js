@@ -11,6 +11,7 @@ const { parsePatch, commentableLines } = require('./patch');
 const { packetRel } = require('./driver');
 const { diffBlock } = require('./report');
 const { SEVERITY_RANK } = require('./cluster');
+const { effectiveAliases } = require('./outcome');
 const memory = require('./memory');
 const { bodyHash } = require('./feedback');
 
@@ -49,7 +50,7 @@ function buildReview(runDir, { minSeverity = 'P3' } = {}) {
   const run = readJson(path.join(runDir, 'run.json'));
   const files = new Map(parsePatch(fs.readFileSync(path.join(dir, 'review.patch'), 'utf8')).map((f) => [f.path, commentableLines(f)]));
   const synthesis = validation.synthesis.valid ? readJson(path.join(dir, 'synthesis.json')) : null;
-  const aliased = new Set((synthesis ? synthesis.aliases : []).map((a) => a.id));
+  const aliased = new Set(effectiveAliases(synthesis, validation.findings).map((a) => a.id));
   const byId = new Map();
   for (const job of validation.jobs) {
     if (job.status !== 'EXECUTED_PASS') continue;

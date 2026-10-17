@@ -70,6 +70,17 @@ test('sandbox endpoints', async (t) => {
     assert.equal(r.status, 200);
     assert.ok(['host', 'docker', 'bootstrap'].includes(r.json.mode));
     assert.deepEqual(r.json.repos.map((x) => [x.name, x.latest && x.latest.status]), [['acme/payment-lib', 'TESTS_PASSED'], ['acme/payment-server', null]]);
+    const saved = process.env.ARW_SANDBOX;
+    process.env.ARW_SANDBOX = 'dockre';
+    try {
+      const bad = await call(port, 'GET', '/api/sandbox');
+      assert.equal(bad.status, 200);
+      assert.equal(bad.json.mode, 'invalid');
+      assert.match(bad.json.mode_error, /ARW_SANDBOX="dockre"/);
+    } finally {
+      if (saved === undefined) delete process.env.ARW_SANDBOX;
+      else process.env.ARW_SANDBOX = saved;
+    }
   });
 
   await t.test('discovery and graph of configured repositories only', async () => {

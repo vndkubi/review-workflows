@@ -25,8 +25,12 @@ function dockerBin() {
 // ARW_SANDBOX=docker: containers with the configured images (and ARW_SANDBOX_M2);
 // ARW_SANDBOX=bootstrap: containers prepared per repository by bootstrap
 // (discovered image, dependency cache resolved at base, staged artifacts).
+// Any other value is an error: a typo must not run PR code on the host.
 function mode() {
-  return ['docker', 'bootstrap'].includes(process.env.ARW_SANDBOX) ? process.env.ARW_SANDBOX : 'host';
+  const v = process.env.ARW_SANDBOX;
+  if (v === undefined || ['', 'off', 'host'].includes(v)) return 'host';
+  if (['docker', 'bootstrap'].includes(v)) return v;
+  throw new Error(`ARW_SANDBOX=${JSON.stringify(v)} is not one of off, docker, bootstrap; refusing to run PR code`);
 }
 
 function enabled() {

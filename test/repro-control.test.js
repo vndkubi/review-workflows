@@ -35,7 +35,7 @@ function inputEv(prompt, id, needle) {
   return { kind: 'input', path: id, start_line: i + 1, end_line: i + 1, quote: needle };
 }
 
-function executor(fixTobe) {
+function executor(fixTobe, { verdict = 'FINDING_STANDS' } = {}) {
   return async (opts) => {
     fs.mkdirSync(opts.attemptDir, { recursive: true });
     const p = opts.prompt;
@@ -47,7 +47,11 @@ function executor(fixTobe) {
     }
     if (p.includes('JOB: red-team rebuttal')) {
       const id = p.match(/^JOB: red-team rebuttal of finding (\S+)\.$/m)[1];
-      return ok({ schema_version: '1.0', context_digest: 'x', finding_id: id, finding_sha256: '0'.repeat(64), role: 'red-team', verdict: 'FINDING_STANDS', defense_attempted: 'looked for a caller that pre-checks day 30', reason: 'none does', evidence: [code(BAD_LINE)] });
+      return ok({ schema_version: '1.0', context_digest: 'x', finding_id: id, finding_sha256: '0'.repeat(64), role: 'red-team', verdict, defense_attempted: 'looked for a caller that pre-checks day 30', reason: verdict === 'FINDING_STANDS' ? 'none does' : 'callers never pass 30', evidence: [code(BAD_LINE)] });
+    }
+    if (p.includes('JOB: coordinator synthesis')) {
+      const recommendation = p.match(/recommendation computed by the runtime \(copy it\): "(\w+)"/)[1];
+      return ok({ schema_version: '1.0', context_digest: 'x', role: 'coordinator', packet_refs: [], aliases: [], overview: [{ flow: 'late fees', change: 'grace period', finding_ids: [], evidence: [code(BAD_LINE)] }], unverified: [], recommendation });
     }
     const unit = JSON.parse(p.match(/^UNIT: (.*)$/m)[1]);
     const role = p.match(/^JOB: .* role (business|technical)\.$/m)[1];
@@ -83,11 +87,11 @@ function runner(calls, { baseFails = false, linkTo = null, plantGit = null } = {
   };
 }
 
-async function review(fixTobe, pr, runnerOpts) {
+async function review(fixTobe, pr, runnerOpts, { verdict, synthesis = false } = {}) {
   const r = repo();
   const calls = [];
   const prepared = { info: { title: 'grace period', body: '', headRefName: 'g', baseRefName: 'main', url: null }, checkout: r.dir, head: r.head, base: r.base };
-  const { validation, runDir } = await reviewPr({ repo: 'acme/fees', pr, executor: executor(fixTobe), prepared, workers: 1, skipSynthesis: true, reproRunner: runner(calls, runnerOpts), testCommand: null });
+  const { validation, runDir } = await reviewPr({ repo: 'acme/fees', pr, executor: executor(fixTobe, { verdict }), prepared, workers: 1, skipSynthesis: !synthesis, reproRunner: runner(calls, runnerOpts), testCommand: null });
   return { validation, calls, runDir };
 }
 
@@ -103,6 +107,17 @@ test('a wrong fix: the base passes the test, so the failure is a confirmed regre
     assert.match(fs.readFileSync(path.join(dir, `${phase}.log`), 'utf8'), /\[arw\] exit_code=\d timed_out=false spawn_error=null\s*$/);
     assert.ok(fs.existsSync(path.join(dir, `${phase}.junit.xml`)));
   }
+});
+
+// Incident: the red-team withdrew a P2 with quote-valid evidence, so it was
+// never reproduced and the review said no_blocking_findings.
+test('a withdrawal does not stop reproduction; a confirmed failure overrules it and the synthesis follows', async () => {
+  const { validation, calls } = await review('if days < 31:', 4, {}, { verdict: 'FINDING_WITHDRAWN', synthesis: true });
+  const f = validation.findings.find((x) => x.id === 'T1-technical-F1');
+  assert.deepEqual(calls.map((c) => c[0]), ['head-1', 'head-2', 'fix', 'base'], 'the withdrawn finding is still reproduced');
+  assert.deepEqual([f.state, f.withdrawal_overruled, f.label], ['stands', true, 'CONFIRMED']);
+  assert.equal(validation.recommendation, 'changes_requested');
+  assert.deepEqual([validation.synthesis.valid, validation.status], [true, 'EXECUTED_PASS'], 'the synthesis is redone with the new recommendation');
 });
 
 test('no control: the fix does not help and the base fails too, so the failure is only REPRODUCED', async () => {

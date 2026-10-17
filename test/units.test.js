@@ -181,3 +181,61 @@ test('outcome: withdrawal never propagates; STANDS is inherited; risky items mus
   const stands = computeOutcome({ packets, jobs, clusters, rebuttals: new Map([['B1-business-F1', { verdict: 'FINDING_STANDS' }]]), items });
   assert.equal(stands.findings.find((f) => f.id === 'B1-technical-F1').rebuttal_from, 'B1-business-F1');
 });
+
+// Incident: every packet marked its coverage "unverified" and the review was
+// still complete with no_blocking_findings.
+test('outcome: a changed file that no valid packet reviewed is a gap', () => {
+  const row = (id, disposition) => ({ id, disposition, evidence: [], note: 'n' });
+  const packet = (unit_id, coverage) => ({ unit_id, role: 'technical', packet: { findings: [], item_verdicts: [], coverage } });
+  const jobs = [{ unit_id: 'T1', role: 'technical', required: true, status: 'EXECUTED_PASS' }, { unit_id: 'V1', role: 'technical', required: true, status: 'EXECUTED_PASS' }];
+  const reviewable = ['src/a.py', 'src/b.py'];
+  const none = computeOutcome({ packets: [packet('T1', [row('file:src/a.py', 'unverified'), row('file:src/b.py', 'unverified')])], jobs, clusters: [], rebuttals: new Map(), items: [], reviewable });
+  assert.deepEqual(none.gaps, ['file:src/a.py has no "reviewed" coverage in any valid packet', 'file:src/b.py has no "reviewed" coverage in any valid packet']);
+  assert.deepEqual([none.complete, none.recommendation], [false, 'needs_investigation']);
+  // One reviewer leaving a file open is fine when another reviewed it.
+  const one = computeOutcome({ packets: [packet('T1', [row('file:src/a.py', 'unverified'), row('file:src/b.py', 'reviewed')]), packet('V1', [row('file:src/a.py', 'reviewed')])], jobs, clusters: [], rebuttals: new Map(), items: [], reviewable });
+  assert.deepEqual([one.gaps, one.complete], [[], true]);
+});
+
+// Incident: the coordinator aliased a P1 to an unrelated P3 and the P1
+// disappeared from the report and the published review.
+test('outcome: a synthesis alias hides a P1/P2 only inside its runtime duplicate cluster', () => {
+  const { effectiveAliases } = require('../src/lib/outcome');
+  const metas = [
+    { id: 'A-technical-F1', severity: 'P1', cluster_id: 'C1' },
+    { id: 'B-business-F1', severity: 'P1', cluster_id: 'C1' },
+    { id: 'C-technical-F1', severity: 'P3', cluster_id: null },
+    { id: 'D-technical-F1', severity: 'P4', cluster_id: null },
+  ];
+  const synthesis = {
+    aliases: [
+      { id: 'A-technical-F1', duplicate_of: 'C-technical-F1', reason: 'model says same' },
+      { id: 'B-business-F1', duplicate_of: 'A-technical-F1', reason: 'same cluster' },
+      { id: 'D-technical-F1', duplicate_of: 'C-technical-F1', reason: 'minor dup' },
+    ],
+  };
+  assert.deepEqual(effectiveAliases(synthesis, metas).map((a) => a.id), ['B-business-F1', 'D-technical-F1']);
+  assert.deepEqual(effectiveAliases(null, metas), []);
+});
+
+// Incident: a quote-valid FINDING_WITHDRAWN from the red-team removed a P1
+// before reproduction, so no execution could ever contradict the model.
+test('outcome: a withdrawn blocking finding is still reproduced, and a reproduced one stays open', () => {
+  const { reproTargets } = require('../src/lib/repro');
+  const f = { id: 'T1-technical-F1', severity: 'P1', confidence: 'LIKELY', title: 'overflow' };
+  const packets = [{ unit_id: 'T1', role: 'technical', packet: { findings: [f], item_verdicts: [] } }];
+  const jobs = [{ unit_id: 'T1', role: 'technical', required: true, status: 'EXECUTED_PASS' }];
+  const rebuttals = new Map([[f.id, { verdict: 'FINDING_WITHDRAWN' }]]);
+  const before = computeOutcome({ packets, jobs, clusters: [], rebuttals, items: [] });
+  assert.equal(before.findings[0].state, 'withdrawn');
+  assert.deepEqual(reproTargets(before, new Map([[f.id, f]])).map((t) => t.finding.id), [f.id], 'withdrawal does not skip reproduction');
+  const repro = new Map([[f.id, { finding_id: f.id, status: 'RED_PROVEN', control: 'base', test: { selector: 'T#t' }, runs: [] }]]);
+  const after = computeOutcome({ packets, jobs, clusters: [], rebuttals, items: [], repro });
+  assert.deepEqual([after.findings[0].state, after.findings[0].label, after.findings[0].withdrawal_overruled], ['stands', 'CONFIRMED', true]);
+  assert.equal(after.recommendation, 'changes_requested');
+  // Without execution evidence the withdrawal holds.
+  const failed = new Map([[f.id, { finding_id: f.id, status: 'GREEN_NOT_PROVEN', control: null, runs: [] }]]);
+  const held = computeOutcome({ packets, jobs, clusters: [], rebuttals, items: [], repro: failed });
+  assert.deepEqual([held.findings[0].state, held.findings[0].label, held.findings[0].withdrawal_overruled], ['withdrawn', 'NOT_A_BUG', false]);
+  assert.equal(held.recommendation, 'no_blocking_findings');
+});

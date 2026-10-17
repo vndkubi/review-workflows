@@ -91,3 +91,19 @@ test('test commands run without secrets; toolchains are detected from build file
   assert.match(command, /^mvn -B -q test -Dtest=com\.acme\.FooReproTest /);
   assert.ok(junit.endsWith(path.join('target', 'surefire-reports', 'TEST-com.acme.FooReproTest.xml')));
 });
+
+// Incident: a test under module-a/ was run from the root, and its report was
+// looked for in <root>/target, where Maven never writes it.
+test('repro: the JUnit report of a multi-module build is read from the module of the test', () => {
+  const dir = tmpDir();
+  fs.writeFileSync(path.join(dir, 'pom.xml'), '<project/>');
+  fs.mkdirSync(path.join(dir, 'module-a', 'src', 'test', 'java', 'com', 'acme'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'module-a', 'pom.xml'), '<project/>');
+  const test = { language: 'java', selector: 'com.acme.FooReproTest#t', path: 'module-a/src/test/java/com/acme/FooReproTest.java' };
+  assert.equal(commandFor('maven', test, dir).junit, path.join(dir, 'module-a', 'target', 'surefire-reports', 'TEST-com.acme.FooReproTest.xml'));
+  // A test at the root module stays at the root.
+  assert.equal(commandFor('maven', { ...test, path: 'src/test/java/com/acme/FooReproTest.java' }, dir).junit, path.join(dir, 'target', 'surefire-reports', 'TEST-com.acme.FooReproTest.xml'));
+  // Gradle subprojects the same way.
+  fs.writeFileSync(path.join(dir, 'module-a', 'build.gradle.kts'), '');
+  assert.equal(commandFor('gradle', test, dir).junit, path.join(dir, 'module-a', 'build', 'test-results', 'test', 'TEST-com.acme.FooReproTest.xml'));
+});

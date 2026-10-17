@@ -22,6 +22,17 @@ function policyFiles() {
   return out;
 }
 
+// Charters, checklists and schemas as frozen inputs. Charters are read back
+// from their snapshots; schemas are read live by the validator, so
+// verifyContext checks the live files against the frozen hashes.
+function policyInputs() {
+  return policyFiles().map((file) => ({
+    id: `policy-${path.basename(path.dirname(file))}-${path.basename(file).replace(/\.(md|json)$/, '').replace(/\./g, '-')}`,
+    kind: 'policy',
+    content: fs.readFileSync(file, 'utf8'),
+  }));
+}
+
 // Hash of the trusted runtime. Upgrading the tool changes what "valid" means,
 // so a context frozen by an older tool must be refreshed.
 // The code that runs a review: the runtime library and the CLI that drives
@@ -87,14 +98,7 @@ function freezeContext({ runDir, checkout, base, head, changed, reviewable, patc
   const actualHead = git.revParse(checkout, 'HEAD');
   if (actualHead !== head) throw new Error(`checkout HEAD ${actualHead} != frozen head ${head}`);
 
-  const allInputs = [
-    ...inputs,
-    ...policyFiles().map((file) => ({
-      id: `policy-${path.basename(path.dirname(file))}-${path.basename(file).replace(/\.(md|json)$/, '').replace(/\./g, '-')}`,
-      kind: 'policy',
-      content: fs.readFileSync(file, 'utf8'),
-    })),
-  ];
+  const allInputs = [...inputs, ...policyInputs()];
   const ids = new Set();
   for (const input of allInputs) {
     if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(input.id)) throw new Error(`bad input id ${input.id}`);
@@ -177,6 +181,10 @@ function verifyContext(runDir, context, { checkTool = true } = {}) {
   if (!run || !run.review || planDigest(run.review) !== context.plan_sha256) errors.push('run.json review plan changed since freeze');
   if (checkTool && toolDigest() !== context.tool_sha256) errors.push('tool source (src/lib, src/cli) changed since freeze; refresh the context');
   if (checkTool) {
+    const live = new Map(policyInputs().map((p) => [p.id, sha256(p.content)]));
+    const frozen = new Map(context.inputs.filter((i) => i.kind === 'policy').map((i) => [i.id, i.sha256]));
+    const drift = [...new Set([...live.keys(), ...frozen.keys()])].filter((id) => live.get(id) !== frozen.get(id)).sort();
+    if (drift.length) errors.push(`policy files changed since freeze: ${drift.join(', ')}; refresh the context`);
     const now = executionManifest();
     if (!context.execution) errors.push('context frozen without an execution manifest; refresh the context');
     else {

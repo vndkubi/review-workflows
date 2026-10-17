@@ -17,6 +17,7 @@ const { worktreeRoot } = require('./runs');
 const { revisionDir, toolDigest } = require('./freeze');
 const { packetRel } = require('./driver');
 const { words, SEVERITY_RANK } = require('./cluster');
+const { effectiveAliases } = require('./outcome');
 const git = require('./git');
 
 const LINE_SLACK = 3;
@@ -88,7 +89,7 @@ function reviewFindings(runDir) {
     if (packet) for (const f of packet.findings) byId.set(f.id, f);
   }
   const synthesis = validation.synthesis && validation.synthesis.valid ? readJsonIfExists(path.join(dir, 'synthesis.json')) : null;
-  const aliased = new Set((synthesis ? synthesis.aliases : []).map((a) => a.id));
+  const aliased = new Set(effectiveAliases(synthesis, validation.findings).map((a) => a.id));
   const shown = [];
   const withdrawn = [];
   for (const meta of validation.findings) {

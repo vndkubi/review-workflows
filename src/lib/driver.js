@@ -502,7 +502,9 @@ async function runBatch({ runDir, executor, workers = envInt('ARW_WORKERS', 4), 
 
     // W4: synthesis over the final packet set.
     state = collectState(runDir, context, review, grading);
-    let outcome = computeOutcome({ packets: state.packets, jobs: state.jobs, clusters: state.clusters, rebuttals: state.rebuttals, items: grading.items });
+    // With the repro records already on disk: a reproduction can overrule a
+    // withdrawal and so change the recommendation the synthesis copies.
+    let outcome = computeOutcome({ packets: state.packets, jobs: state.jobs, clusters: state.clusters, rebuttals: state.rebuttals, items: grading.items, repro: loadReproRecords(runDir, context).records, reviewable: context.source.reviewable });
     const synth = synthesisCheck(runDir, context, state, outcome);
     if (!skipSynthesis && state.packets.length && !synth.valid) {
       const packetRefs = state.packets.map((p) => p.ref);
@@ -562,7 +564,7 @@ function finish(runDir, optOuts = {}) {
   const drift = verifyContext(runDir, context);
   const state = collectState(runDir, context, run.review, grading);
   const reproState = loadReproRecords(runDir, context);
-  const outcome = computeOutcome({ packets: state.packets, jobs: state.jobs, clusters: state.clusters, rebuttals: state.rebuttals, items: grading.items, repro: reproState.records });
+  const outcome = computeOutcome({ packets: state.packets, jobs: state.jobs, clusters: state.clusters, rebuttals: state.rebuttals, items: grading.items, repro: reproState.records, reviewable: context.source.reviewable });
   // A repro record whose artifacts changed is not evidence of anything.
   outcome.gaps.push(...reproState.errors);
   outcome.complete = outcome.gaps.length === 0;

@@ -76,7 +76,17 @@ function routes({ queue }) {
       const records = b().listRecords();
       const latest = {};
       for (const r of records) latest[r.repo] = recordSummary(r);
-      return { mode: sandbox.mode(), manifest: sandbox.manifest(), docker: sandbox.daemonError(), home: b().home(), repos: configured().map((r) => ({ ...r, latest: latest[r.name] || null })) };
+      // A bad ARW_SANDBOX blocks reviews; the page says why instead of failing.
+      let mode, manifest, modeError = null;
+      try {
+        mode = sandbox.mode();
+        manifest = sandbox.manifest();
+      } catch (err) {
+        mode = 'invalid';
+        manifest = null;
+        modeError = err.message;
+      }
+      return { mode, mode_error: modeError, manifest, docker: sandbox.daemonError(), home: b().home(), repos: configured().map((r) => ({ ...r, latest: latest[r.name] || null })) };
     }],
     ['GET', /^\/api\/sandbox\/discover$/, (m, q) => {
       const r = repoOrThrow(String(q.get('repo') || ''));
