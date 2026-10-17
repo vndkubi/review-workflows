@@ -25,7 +25,7 @@ const ENV_SETTINGS = [
   ['ARW_WORKERS', 'review', 'number', '4', 'Parallel review workers.', null, [1, 8]],
   ['ARW_REPAIR_ATTEMPTS', 'review', 'number', '2', 'Repairs of an invalid model answer before one fresh retry.', null, [0, 5]],
   ['ARW_OUTPUT_LANGUAGE', 'review', 'string', 'English', 'Language of titles, explanations and given/when/then. Quotes stay verbatim.'],
-  ['ARW_PR_INTENT', 'review', 'enum', 'on', 'A PR review without a ticket run derives the intent from the PR description, linked issues and commit messages (never the diff) and builds the usual spec tables; a person confirms it at the SPEC gate.', ['on', 'off']],
+  ['ARW_PR_INTENT', 'review', 'enum', 'confirm', 'A PR review without a ticket run derives the intent (business or technical) from the PR description, linked issues, commit messages and the comments and test names its author added (never the code) and builds the usual spec tables. confirm: the review waits until a person approves that spec. unconfirmed: reviews right away with the unapproved items. off: no intent.', ['confirm', 'unconfirmed', 'off']],
   ['ARW_AUTO_APPROVE_SPEC', 'review', 'bool', '0', 'Let a deterministic policy approve clean specs (no gaps, contradictions or inferred rules).'],
   ['ARW_MAX_CALLS', 'review', 'number', '0', 'Budget: most model calls per review run (planning + review + repro). 0 = no limit.', null, [0, 1000]],
   ['ARW_MAX_INPUT_TOKENS', 'review', 'number', '0', 'Budget: most input tokens per review run. 0 = no limit.', null, [0, 100000000]],

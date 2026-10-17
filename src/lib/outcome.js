@@ -89,8 +89,11 @@ function computeOutcome({ packets, jobs, clusters, rebuttals, items, repro = new
   // contradictions are reported, not decided.
   for (const item of items || []) {
     if (item.risk === 'normal' || !['rule', 'boundary', 'ac'].includes(item.kind)) continue;
-    const vs = (verdicts.get(item.id) || []).filter((v) => v.role === 'business');
-    if (!vs.some((v) => v.verdict !== 'cannot_determine')) gaps.push(`${item.id} (${item.risk} risk ${item.kind}) has no determinate business verdict`);
+    // A technical item (a contract of the code) may be decided by either
+    // reviewer; a business item needs the business reviewer.
+    const technical = item.nature === 'technical';
+    const vs = (verdicts.get(item.id) || []).filter((v) => v.role === 'business' || (technical && v.role === 'technical'));
+    if (!vs.some((v) => v.verdict !== 'cannot_determine')) gaps.push(`${item.id} (${item.risk} risk ${item.kind}) has no determinate ${technical ? '' : 'business '}verdict`);
   }
   // Per-item grading for the report: fail beats pass; any pass beats "unknown".
   const itemResults = (items || []).map((item) => {

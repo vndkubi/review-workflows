@@ -48,8 +48,49 @@ function commitMessages(checkout, base, head) {
   return out.split('\0').map((s) => s.trim()).filter(Boolean);
 }
 
+// Prose the author added inside the change: comments, doc comments and test
+// names. They state what the code should do; the code itself is not intent.
+// Added lines only, "path: text", capped.
+const COMMENT = /^\s*(\/\/+|\/\*+|\*+(?!\/)|#|"""|''')\s*(.*)$/;
+const TEST_NAME = [
+  /^\s*(?:public\s+|private\s+|protected\s+)?(?:static\s+)?void\s+(test\w*|\w+)\s*\(/, // only after @Test
+  /^\s*def\s+test_(\w+)\s*\(/,
+  /^\s*(?:it|test|describe)\(\s*['"`](.+?)['"`]/,
+  /@DisplayName\(\s*"(.+?)"\s*\)/,
+];
+function authorNotes(patch, { maxLines = 200 } = {}) {
+  const out = [];
+  let file = null;
+  let afterTest = false;
+  for (const line of String(patch || '').split(/\r?\n/)) {
+    if (line.startsWith('+++ ')) {
+      file = line.replace(/^\+\+\+ (b\/)?/, '').trim();
+      continue;
+    }
+    if (!file || !line.startsWith('+') || line.startsWith('+++')) continue;
+    const text = line.slice(1);
+    let note = null;
+    const display = text.match(TEST_NAME[3]);
+    const js = text.match(TEST_NAME[2]);
+    const py = text.match(TEST_NAME[1]);
+    const java = afterTest && text.match(TEST_NAME[0]);
+    if (display) note = `test: ${display[1]}`;
+    else if (js) note = `test: ${js[1]}`;
+    else if (py) note = `test ${py[1]}`;
+    else if (java) note = `test ${java[1]}`;
+    else {
+      const c = text.match(COMMENT);
+      if (c && c[2].replace(/\*+\/\s*$/, '').trim()) note = text.trim();
+    }
+    afterTest = /^\s*@Test\b/.test(text) || (afterTest && /^\s*@/.test(text));
+    if (note) out.push(`${file}: ${note}`);
+    if (out.length >= maxLines) break;
+  }
+  return out;
+}
+
 // { text, linked: [{ key, relation, text }], notes } for the ticket intake.
-async function prIntentEvidence({ repo, pr, info, commits = [], fetchIssue = ghIssue, limit = envInt('ARW_LINKED_ISSUES', 5) }) {
+async function prIntentEvidence({ repo, pr, info, commits = [], patch = null, fetchIssue = ghIssue, limit = envInt('ARW_LINKED_ISSUES', 5) }) {
   const lines = [
     `# ${repo}#${pr}: ${info.title}`,
     '',
@@ -61,6 +102,8 @@ async function prIntentEvidence({ repo, pr, info, commits = [], fetchIssue = ghI
   ];
   commits = commits.filter((c) => !/^Merge (remote-tracking )?branch |^Merge pull request /.test(String(c)));
   if (commits.length) lines.push('', '## Commit messages', '', ...commits.map((c) => `- ${String(c).split(/\r?\n/).filter(Boolean).join(' / ')}`));
+  const prose = authorNotes(patch);
+  if (prose.length) lines.push('', '## What the author wrote in the change', '', 'Comments, doc comments and test names the author added (stated intent; the code itself is not intent):', '', ...prose.map((p) => `- ${p}`));
   const linked = [];
   const notes = [];
   for (const ref of linkedRefs(info.body, repo, pr).slice(0, limit)) {
@@ -87,8 +130,15 @@ function ghCommits(repo, pr) {
   return JSON.parse(out).map((s) => s.trim()).filter(Boolean);
 }
 
-function enabled() {
-  return process.env.ARW_PR_INTENT !== 'off';
+// ARW_PR_INTENT: confirm (default; the review waits for the SPEC gate),
+// unconfirmed (reviews right away with the unapproved items) or off.
+function mode() {
+  const v = process.env.ARW_PR_INTENT;
+  return v === 'off' || v === 'unconfirmed' ? v : 'confirm';
 }
 
-module.exports = { prTicketKey, linkedRefs, prIntentEvidence, commitMessages, ghIssue, ghCommits, enabled };
+function enabled() {
+  return mode() !== 'off';
+}
+
+module.exports = { prTicketKey, linkedRefs, authorNotes, prIntentEvidence, commitMessages, ghIssue, ghCommits, mode, enabled };

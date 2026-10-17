@@ -180,3 +180,167 @@ test('a ticket key named in the PR keeps precedence when its run exists', async 
   assert.equal(t.key, 'SHOP-5');
   assert.notEqual(run.identity.ticket_source, 'pr');
 });
+
+// ---------- confirm the intent before reviewing ----------
+
+const PATCH = [
+  'diff --git a/src/Lightning.java b/src/Lightning.java',
+  '--- a/src/Lightning.java',
+  '+++ b/src/Lightning.java',
+  '@@ -1,3 +1,8 @@',
+  '-    // old comment that was removed',
+  '+    /** Maximum number of times the same target can be hit. <= 0 for unlimited. */',
+  '+    public int lightningHits = -1;',
+  '+    if (hits < 0 || count < hits) create();',
+  '+    # not a comment in Java but kept as prose',
+  'diff --git a/test/LightningTest.java b/test/LightningTest.java',
+  '+++ b/test/LightningTest.java',
+  '@@ -0,0 +1,4 @@',
+  '+    @Test',
+  '+    void zeroHitsMeansUnlimited() {',
+  '+    @DisplayName("negative hits keep the vanilla behaviour")',
+  '+def test_zero_means_unlimited():',
+].join('\n');
+
+test('what the author wrote inside the change (comments, test names) is intent evidence; the code is not', async () => {
+  const ev = await prIntentEvidence(fromPr(7, { patch: PATCH }));
+  assert.match(ev.text, /## What the author wrote in the change/);
+  assert.match(ev.text, /src\/Lightning\.java: \/\*\* Maximum number of times the same target can be hit\. <= 0 for unlimited\. \*\//);
+  assert.match(ev.text, /test\/LightningTest\.java: test zeroHitsMeansUnlimited/);
+  assert.match(ev.text, /test: negative hits keep the vanilla behaviour/);
+  assert.match(ev.text, /test zero_means_unlimited/);
+  assert.ok(!ev.text.includes('count < hits'), 'code lines are not intent');
+  assert.ok(!ev.text.includes('public int lightningHits'), 'declarations are not intent');
+  assert.ok(!ev.text.includes('old comment that was removed'), 'removed lines are not intent');
+});
+
+test('each feature is business or technical; technical items can be graded by the technical reviewer', async () => {
+  const { computeOutcome } = require('../src/lib/outcome');
+  const key = 'TECH-1';
+  const model = cleanModel(key);
+  model.features[0].nature = 'technical';
+  const exec = scriptedExecutor((prompt) => {
+    if (prompt.startsWith('You audit')) return '{"missing":[],"invalid":[]}';
+    if (prompt.startsWith('You model')) {
+      assert.match(prompt, /nature/, 'the prompt asks for business or technical');
+      return JSON.stringify(model);
+    }
+    throw new Error(`unexpected prompt: ${prompt.slice(0, 60)}`);
+  });
+  const file = path.join(tmpDir(), 'T.md');
+  fs.writeFileSync(file, BODY);
+  const res = await advanceTicket({ key, fromFile: file, executor: exec });
+  const spec = JSON.parse(fs.readFileSync(path.join(res.dir, 'spec.json'), 'utf8'));
+  assert.equal(spec.features[0].nature, 'technical');
+  assert.ok(spec.review_items.every((i) => i.nature === 'technical'));
+  assert.match(fs.readFileSync(path.join(res.dir, 'spec.md'), 'utf8'), /## F1 — Refund approval \(technical\)/);
+
+  const item = { ...spec.review_items.find((i) => i.kind === 'rule'), risk: 'money' };
+  const packets = [{ unit_id: 'B1', role: 'technical', packet: { findings: [], item_verdicts: [{ item: item.id, verdict: 'pass', note: 'n' }] } }];
+  const jobs = [];
+  assert.deepEqual(computeOutcome({ packets, jobs, clusters: [], rebuttals: new Map(), items: [item] }).gaps, [], 'a technical verdict decides a technical item');
+  const business = { ...item, nature: 'business' };
+  assert.equal(computeOutcome({ packets, jobs, clusters: [], rebuttals: new Map(), items: [business] }).gaps.length, 1, 'a business item still needs the business reviewer');
+  // A model that leaves nature out (older answers) is business.
+  delete model.features[0].nature;
+  model.ticket = 'TECH-2';
+  const old = await advanceTicket({ key: 'TECH-2', fromFile: file, executor: exec });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(old.dir, 'spec.json'), 'utf8')).features[0].nature, 'business');
+});
+
+test('a review of a PR without a ticket stops until a person confirms the derived intent', async () => {
+  const { makeRepo } = require('./helpers');
+  const { reviewPr } = require('../src/lib/pr-review');
+  const { recordGate, prDir } = require('../src/lib/runs');
+  const repo = makeRepo();
+  const key = prTicketKey('acme/shop', 21);
+  const prompts = [];
+  const exec = scriptedExecutor((prompt) => {
+    prompts.push(prompt.slice(0, 40));
+    if (prompt.startsWith('You audit')) return '{"missing":[],"invalid":[]}';
+    if (prompt.startsWith('You model the')) return JSON.stringify(cleanModel(key));
+    return { error_class: 'auth', error_message: 'the review itself is not part of this test' };
+  });
+  const prepared = { info: { ...fromPr(21).info, headRefName: 'refunds', baseRefName: 'main' }, checkout: repo.dir, head: repo.head, base: repo.base };
+  const res = await reviewPr({ repo: 'acme/shop', pr: 21, prepared, executor: exec, noRepro: true });
+  assert.deepEqual([res.awaiting, res.ticket, res.validation], ['intent', key, null]);
+  assert.ok(!prompts.some((p) => p.startsWith('You are a read-only planner')), 'nothing is reviewed before the intent is confirmed');
+  const run = JSON.parse(fs.readFileSync(path.join(prDir('acme/shop', 21), 'run.json'), 'utf8'));
+  assert.deepEqual([run.phases.ticket.status, run.phases.ticket.ticket], ['AWAITING_INTENT', key]);
+
+  // Confirmed: the next review grades the approved spec's items.
+  recordGate(ticketDir(key), 'SPEC', 'approved', { by: 'test', note: 'that is what it should do' });
+  await assert.rejects(reviewPr({ repo: 'acme/shop', pr: 21, prepared, executor: exec, noRepro: true }));
+  assert.ok(prompts.some((p) => p.startsWith('You are a read-only planner')), 'the review starts once confirmed');
+  const after = JSON.parse(fs.readFileSync(path.join(prDir('acme/shop', 21), 'run.json'), 'utf8'));
+  assert.deepEqual([after.phases.ticket.status, after.phases.ticket.spec_approved], ['EXECUTED_PASS', true]);
+
+  // ARW_PR_INTENT=unconfirmed reviews right away with the unapproved items.
+  const saved = process.env.ARW_PR_INTENT;
+  process.env.ARW_PR_INTENT = 'unconfirmed';
+  try {
+    prompts.length = 0;
+    await assert.rejects(reviewPr({ repo: 'acme/shop', pr: 22, prepared: { ...prepared, info: { ...prepared.info, url: null } }, executor: exec, noRepro: true }));
+    assert.ok(prompts.some((p) => p.startsWith('You are a read-only planner')));
+  } finally {
+    if (saved === undefined) delete process.env.ARW_PR_INTENT;
+    else process.env.ARW_PR_INTENT = saved;
+  }
+});
+
+test('an edited PR description rebuilds the derived intent, and a confirmation of the old one no longer counts', async () => {
+  const { recordGate, isApproved } = require('../src/lib/runs');
+  const key = prTicketKey('acme/shop', 30);
+  const exec = executorFor(key);
+  const base = { repo: 'acme/shop', pr: 30, executor: exec, models: {}, log: () => {}, commits: [], fetchIssue: async () => null };
+  const info = fromPr(30).info;
+  await ensurePrIntent({ ...base, info, run: { identity: {} }, tickets: { key: null } });
+  recordGate(ticketDir(key), 'SPEC', 'approved', { by: 'test' });
+  const calls = exec.calls.length;
+
+  // Same description: nothing rebuilt, the confirmation holds.
+  const same = await ensurePrIntent({ ...base, info, run: { identity: {} }, tickets: ticketInputs({ identity: {} }, { info, repo: 'acme/shop', pr: 30 }) });
+  assert.equal(exec.calls.length, calls);
+  assert.equal(same.approved, true);
+
+  // Edited description: requirements and spec are rebuilt; the old approval is not bound to the new spec.
+  const edited = { ...info, body: `${BODY}\n\nAlso: refunds above 10000 are blocked.` };
+  const t = await ensurePrIntent({ ...base, info: edited, run: { identity: {} }, tickets: ticketInputs({ identity: {} }, { info: edited, repo: 'acme/shop', pr: 30 }) });
+  assert.ok(exec.calls.length > calls, 'the intent was rebuilt from the new description');
+  assert.equal(t.approved, false);
+  assert.equal(isApproved(ticketDir(key), 'SPEC'), false);
+});
+
+test('the PR page data carries the derived intent: its state, gate and spec; a failed derivation is shown, not hidden', async () => {
+  const { makeRepo } = require('./helpers');
+  const { reviewPr } = require('../src/lib/pr-review');
+  const { recordGate } = require('../src/lib/runs');
+  const data = require('../src/web/data');
+  const repo = makeRepo();
+  const key = prTicketKey('acme/shop', 23);
+  const exec = scriptedExecutor((prompt) => {
+    if (prompt.startsWith('You audit')) return '{"missing":[],"invalid":[]}';
+    if (prompt.startsWith('You model the')) return JSON.stringify(cleanModel(key));
+    return { error_class: 'auth', error_message: 'the review itself is not part of this test' };
+  });
+  const prepared = (pr, body) => ({ info: { title: 'Refunds', body, headRefName: `r${pr}`, baseRefName: 'main', url: null }, checkout: repo.dir, head: repo.head, base: repo.base });
+
+  await reviewPr({ repo: 'acme/shop', pr: 23, prepared: prepared(23, BODY), executor: exec, noRepro: true });
+  let d = data.prDetail('acme__shop__23');
+  assert.equal(d.intent.key, key);
+  assert.equal(d.intent.state, 'AWAIT_GATE_SPEC');
+  assert.equal(d.intent.gate.decision, 'NOT_RECORDED');
+  assert.equal(d.intent.stats.rules, 3);
+  assert.equal(d.intent.error, null);
+
+  recordGate(ticketDir(key), 'SPEC', 'approved', { by: 'test' });
+  d = data.prDetail('acme__shop__23');
+  assert.equal(d.intent.state, 'SPEC_APPROVED', 'an approved spec is not waiting for a decision');
+  assert.equal(data.ticketDetail(key).state, 'SPEC_APPROVED');
+
+  // An empty description gives nothing to derive: the review goes on, and says so.
+  await assert.rejects(reviewPr({ repo: 'acme/shop', pr: 24, prepared: prepared(24, ''), executor: exec, noRepro: true }));
+  d = data.prDetail('acme__shop__24');
+  assert.match(d.intent.error, /could not derive the intent|no requirement items/);
+  assert.equal(d.phases.ticket.intent_error, d.intent.error);
+});

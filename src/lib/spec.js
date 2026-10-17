@@ -320,9 +320,13 @@ function buildSpec({ model, requirements, ticket, blocks }) {
   const questions = [];
   const items = [];
   const features = [];
+  // business: what users or the business care about; technical: a contract
+  // of the code (a field's meaning, defaults, limits, compatibility). A
+  // model that leaves it out means business.
+  const natureOf = new Map(m.features.map((f) => [f.id, f.nature === 'technical' ? 'technical' : 'business']));
   const addItem = (item) => {
     const id = `I${items.length + 1}`;
-    items.push({ id, ...item });
+    items.push({ id, nature: natureOf.get(item.feature) || 'business', ...item });
     return id;
   };
 
@@ -467,6 +471,7 @@ function buildSpec({ model, requirements, ticket, blocks }) {
     features.push({
       id: f.id,
       name: f.name,
+      nature: natureOf.get(f.id),
       combinations: total,
       mode,
       gaps: gaps.length,
@@ -547,7 +552,7 @@ function renderSpecMarkdown(spec) {
   if (spec.questions.length) out.push('## Open questions', '', ...spec.questions.map((q) => `- **${q.id}** (${q.kind}) ${q.text}`), '');
   if (spec.warnings.length) out.push('## Warnings', '', ...spec.warnings.map((w) => `- ${w}`), '');
   for (const f of spec.features) {
-    out.push(`## ${f.id} — ${f.name}`, '');
+    out.push(`## ${f.id} — ${f.name} (${f.nature || 'business'})`, '');
     out.push(`### Input matrix (${f.combinations} combinations; scenarios: ${f.mode})`, '', '| Variable | Type | Class | Validity | Range / value | Example |', '|---|---|---|---|---|---|');
     for (const v of f.variables) for (const c of v.classes) out.push(`| ${v.id} | ${v.type}${v.unit ? ` (${v.unit})` : ''} | ${cell(c.label)} | ${c.validity} | ${cell(c.range)} | ${cell(c.example)} |`);
     const vars = f.variables.map((v) => v.id);

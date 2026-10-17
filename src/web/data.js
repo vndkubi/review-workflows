@@ -98,8 +98,34 @@ function ticketState(dir, stages) {
   if (stages.ready) return 'READY';
   const failed = Object.entries(stages).find(([, s]) => /FAIL|BLOCKED/.test(s.status));
   if (failed) return `${failed[0]}: ${failed[1].status}`;
-  if (stages.spec && stages.spec.status === 'EXECUTED_PASS' && !stages.analysis) return 'AWAIT_GATE_SPEC';
+  if (stages.spec && stages.spec.status === 'EXECUTED_PASS' && !stages.analysis) {
+    // A PR review stops at the approved spec (no analysis): approved, not waiting.
+    const g = safeGate(dir, 'SPEC');
+    return g && g.decision === 'approved' && g.valid ? 'SPEC_APPROVED' : 'AWAIT_GATE_SPEC';
+  }
   return 'IN_PROGRESS';
+}
+
+function safeGate(dir, gate) {
+  try {
+    return gateState(dir, gate);
+  } catch {
+    return null;
+  }
+}
+
+// The intent a ticketless PR review derived from the PR (pr-intent.js):
+// which ticket, where it stands, its gate and spec numbers, or why it failed.
+function prIntent(identity) {
+  const key = identity.ticket_source === 'pr' ? identity.ticket : identity.intent_ticket;
+  if (!key && !identity.intent_error) return null;
+  const out = { key: key || null, state: null, gate: null, stats: null, questions: 0, error: identity.intent_error || null };
+  const dir = key ? ticketDir(key) : null;
+  const run = dir ? readJsonIfExists(path.join(dir, 'run.json')) : null;
+  if (!run) return out;
+  const spec = readJsonIfExists(path.join(dir, 'spec.json'));
+  const g = safeGate(dir, 'SPEC');
+  return { ...out, state: ticketState(dir, run.stages || {}), gate: g ? { decision: g.decision, valid: g.valid } : null, stats: spec ? spec.stats : null, questions: spec ? spec.questions.length : 0 };
 }
 
 function ticketDetail(key) {
@@ -151,6 +177,7 @@ function prDetail(id) {
     id,
     identity: run.identity,
     phases: run.phases || {},
+    intent: run.identity ? prIntent(run.identity) : null,
     units: (run.review && run.review.units) || [],
     plan: fs.existsSync(path.join(dir, 'pr-review-plan.md')) ? fs.readFileSync(path.join(dir, 'pr-review-plan.md'), 'utf8') : null,
     published: readJsonIfExists(path.join(dir, 'published.json')),

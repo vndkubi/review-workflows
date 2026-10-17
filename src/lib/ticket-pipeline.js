@@ -181,7 +181,7 @@ function rejectionFeedback(dir) {
 }
 
 // Advance the pipeline; returns { dir, state, message }.
-async function advanceTicket({ key, fromFile, fromPr, extras, images: imageFiles = [], repoDir, executor, models = {}, log = () => {}, redo }) {
+async function advanceTicket({ key, fromFile, fromPr, extras, images: imageFiles = [], repoDir, executor, models = {}, log = () => {}, redo, stopAtSpec = false }) {
   const dir = ensureDir(ticketDir(key));
   const run = loadRun(dir, key);
   if (redo && redo !== 'intake') {
@@ -286,8 +286,10 @@ async function advanceTicket({ key, fromFile, fromPr, extras, images: imageFiles
     }
   }
 
+  // A review needs the confirmed spec, not the analysis of the repository.
+  if (stopAtSpec) return { dir, state: 'SPEC_APPROVED', message: `Spec approved: ${spec.review_items.length} review items.` };
   const items = spec.review_items;
-  const stale = run.stages.analysis && run.stages.analysis.spec_sha256 !== gateState(dir, 'SPEC').record.bound.sha256;
+  const stale =run.stages.analysis && run.stages.analysis.spec_sha256 !== gateState(dir, 'SPEC').record.bound.sha256;
   if (!run.stages.analysis || run.stages.analysis.status !== 'EXECUTED_PASS' || stale) {
     if (!executor) return { dir, state: 'FAILED', message: 'analysis needs a model executor' };
     log('analysis');

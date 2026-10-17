@@ -257,11 +257,17 @@ async function renderPr(id) {
   const v = d.validation;
   const idn = d.identity;
   const job = activeJobFor('pr', id);
-  const tabs = ['Findings', 'Items', 'Progress', 'Calls', 'Timeline', 'Overview', 'Plan', 'Cost'];
-  const current = sessionStorage.getItem('pr-tab') || 'Findings';
+  // No ticket: the intent derived from the PR, shown and confirmed here.
+  const intent = d.intent && d.intent.key ? d.intent : null;
+  const awaiting = d.phases.ticket && d.phases.ticket.status === 'AWAITING_INTENT';
+  const tabs = [...(intent ? ['Spec'] : []), 'Findings', 'Items', 'Progress', 'Calls', 'Timeline', 'Overview', 'Plan', 'Cost'];
+  // A tab picked on this run wins; a run waiting for its intent opens on Spec.
+  const picked = sessionStorage.getItem(`pr-tab:${id}`);
+  const saved = sessionStorage.getItem('pr-tab');
+  const current = [picked, awaiting && !job ? 'Spec' : null, saved].find((t) => t && tabs.includes(t)) || 'Findings';
   const body = h('div', {});
   const tabBar = h('div', { class: 'tabs', role: 'tablist' }, tabs.map((t) =>
-    h('button', { class: `tab${t === current ? ' active' : ''}`, role: 'tab', onclick: () => { sessionStorage.setItem('pr-tab', t); render(); } }, t)));
+    h('button', { class: `tab${t === current ? ' active' : ''}`, role: 'tab', onclick: () => { sessionStorage.setItem('pr-tab', t); sessionStorage.setItem(`pr-tab:${id}`, t); render(); } }, t)));
 
   put($main, 
     h('h1', {}, idn.title || `${idn.repo}#${idn.pr}`),
@@ -271,11 +277,17 @@ async function renderPr(id) {
       h('span', { class: 'mono' }, `base ${String(idn.base_sha || '').slice(0, 12)}`),
       idn.ticket ? h('a', { href: `#/ticket/${idn.ticket}` }, idn.ticket) : h('span', {}, 'no ticket')),
     job ? livePanel(job, () => prProgressView(id)) : null,
-    v ? prSummary(d) : job ? null : h('div', { class: 'notice' }, 'This review has no validation yet.'),
+    !job && awaiting
+      ? h('div', { class: 'notice' }, 'This PR has no ticket. Its intent (business or technical) was derived from what the author wrote, and the review waits until you confirm it: read the Spec tab below, answer its open questions by approving or rejecting with a note, then review the PR with the confirmed spec.')
+      : null,
+    d.intent && d.intent.error ? h('div', { class: 'notice' }, `No intent: ${d.intent.error}. The review graded the code without requirement items.`) : null,
+    v && awaiting ? h('div', { class: 'notice' }, 'The results below are from an earlier review that did not use a confirmed intent. They are replaced when you review again after confirming it.') : null,
+    v ? prSummary(d) : job || awaiting ? null : h('div', { class: 'notice' }, 'This review has no validation yet.'),
     prActions(d),
     tabBar,
     body,
   );
+  if (current === 'Spec') return add(body, await prSpecView(intent));
   // Progress, calls and timeline are useful while a run is still going.
   if (current === 'Progress') return add(body, await prProgressView(id));
   if (current === 'Calls') return add(body, await callsView(id));
@@ -286,6 +298,23 @@ async function renderPr(id) {
   else if (current === 'Overview') add(body, overviewView(d));
   else if (current === 'Items') add(body, itemsView(d));
   else add(body, costView(d), unitsView(d));
+}
+
+// The spec derived from a ticketless PR, with its gate: the same tables and
+// decision as the ticket page, so the intent is confirmed where it is reviewed.
+async function prSpecView(intent) {
+  let t;
+  try {
+    t = await api('GET', `/api/tickets/${encodeURIComponent(intent.key)}`);
+  } catch {
+    return h('p', { class: 'muted' }, 'The spec is not built yet.');
+  }
+  if (!t.spec) return h('p', { class: 'muted' }, `The spec is not built yet (${t.state}).`);
+  return h('div', {},
+    h('div', { class: 'row my10' }, statusBadge(t.state), h('span', { class: `badge ${t.spec.clean ? 'ok' : 'warn'}` }, t.spec.clean ? 'spec clean' : 'spec needs a decision'),
+      h('a', { class: 'small', href: `#/ticket/${intent.key}` }, `${intent.key}: evidence, requirement items, model calls`)),
+    specGate(intent.key, t),
+    specView(t.spec));
 }
 
 function prSummary(d) {
@@ -628,7 +657,7 @@ async function renderTicket(key) {
     h('div', { class: 'row' }, statusBadge(t.state), s ? h('span', { class: `badge ${s.clean ? 'ok' : 'warn'}` }, s.clean ? 'spec clean' : 'spec needs a decision') : null,
       h('span', { class: 'muted small' }, `model calls ${t.usage.calls} · ${fmtNum(t.usage.input_tokens)} input tokens`)),
     t.stages.intake && t.stages.intake.intent === 'pr'
-      ? h('div', { class: 'notice' }, `No ticket: this intent was read from ${t.stages.intake.source.replace(/^github-pr:/, '')} — the description, linked issues and commit messages its author wrote, never the diff. It is the author's claim. Approving the spec confirms that this is what the change should do; no policy approves it for you.`)
+      ? h('div', { class: 'notice' }, `No ticket: this intent was read from ${t.stages.intake.source.replace(/^github-pr:/, '')} — the description, linked issues, commit messages and the comments and test names its author added, never the code. It is the author's claim. Approving the spec confirms that this is what the change should do; no policy approves it for you.`)
       : null,
     h('div', { class: 'panel' },
       h('div', { class: 'row' }, h('span', { class: 'label' }, 'Pipeline'), repo,
@@ -667,7 +696,21 @@ function specGate(key, t) {
       g.decision !== 'NOT_RECORDED' ? h('span', { class: 'small muted' }, `${g.by || ''} ${fmtTime(g.at)}${g.valid ? '' : ' — not bound to the current spec'}`) : null),
     g.note ? h('p', { class: 'small' }, h('span', { class: 'label' }, 'Last note '), g.note) : null,
     note,
-    h('div', { class: 'row mt8' }, h('button', { class: 'btn primary', onclick: decide('approved') }, 'Approve spec'), h('button', { class: 'btn danger', onclick: decide('rejected') }, 'Reject and rebuild')));
+    h('div', { class: 'row mt8' }, h('button', { class: 'btn primary', onclick: decide('approved') }, 'Approve spec'), h('button', { class: 'btn danger', onclick: decide('rejected') }, 'Reject and rebuild'),
+      prReviewAfterIntent(t, g)));
+}
+
+// A ticket derived from a PR: once its intent is confirmed, review that PR.
+function prReviewAfterIntent(t, g) {
+  const m = t.stages.intake && t.stages.intake.intent === 'pr' && String(t.stages.intake.source).match(/^github-pr:([\w.-]+\/[\w.-]+)#(\d+)$/);
+  if (!m) return null;
+  const ready = g.decision === 'approved' && g.valid;
+  return h('button', {
+    class: 'btn',
+    disabled: !ready,
+    title: ready ? '' : 'Approve the spec first: the review grades the PR against the confirmed intent',
+    onclick: () => startJob(api('POST', '/api/reviews', { repo: m[1], pr: Number(m[2]), refresh: true }), 'Review'),
+  }, `Review ${m[1]}#${m[2]} with this spec`);
 }
 
 function specView(s) {
@@ -683,7 +726,7 @@ function specView(s) {
     const vars = f.variables.map((v) => v.id);
     const outs = f.outcomes.map((o) => o.id);
     out.push(
-      h('h3', {}, `${f.id} — ${f.name}`),
+      h('h3', {}, `${f.id} — ${f.name} `, h('span', { class: `badge ${f.nature === 'technical' ? '' : 'ok'}`, title: f.nature === 'technical' ? 'A contract of the code: a field or setting, its default, limits, errors, compatibility' : 'What users or the business care about' }, f.nature || 'business')),
       h('p', { class: 'small muted' }, `${f.combinations} value combinations checked exhaustively · scenarios ${f.mode} · ${f.gaps} uncovered combinations`),
       h('div', { class: 'label' }, 'Input matrix'),
       table(['Variable', 'Type', 'Class', 'Validity', 'Range / value', 'Example'], f.variables.flatMap((v) => v.classes.map((c) => [v.id, `${v.type}${v.unit ? ` (${v.unit})` : ''}`, c.label, statusBadge(c.validity === 'valid' ? 'valid' : 'INVALID'), h('code', {}, c.range), c.example]))),

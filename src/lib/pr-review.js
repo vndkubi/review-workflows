@@ -98,20 +98,28 @@ function ticketInputs(run, { ticket, info, repo = null, pr = null }) {
 // local review, which has no description.
 async function ensurePrIntent({ run, tickets, repo, pr, info, checkout = null, base = null, head = null, commits = null, fetchIssue, executor, models = {}, log = () => {} }) {
   const intent = require('./pr-intent');
-  if (tickets.items || !repo || !pr || !executor || !intent.enabled()) return tickets;
+  // A run derived from this PR is refreshed too: intake is cheap, and when
+  // the author edited what they wrote the spec is rebuilt (and an approval of
+  // the old one no longer binds).
+  if ((tickets.items && tickets.source !== 'pr') || !repo || !pr || !executor || !intent.enabled()) return tickets;
   const key = intent.prTicketKey(repo, pr);
   const msgs = commits || (checkout && base && head ? intent.commitMessages(checkout, base, head) : []);
-  log(`${tickets.key ? `no ticket run for ${tickets.key}` : 'no ticket'}: deriving the intent from the PR description as ${key}`);
+  const patch = checkout && base && head ? require('./git').diffPatch(checkout, base, head) : null;
+  log(tickets.source === 'pr' ? `refreshing the intent derived from the PR (${key}) from what its author wrote now` : `${tickets.key ? `no ticket run for ${tickets.key}` : 'no ticket'}: deriving the intent from the PR description as ${key}`);
   let res;
   try {
-    res = await advanceTicket({ key, fromPr: { repo, pr, info, commits: msgs, ...(fetchIssue ? { fetchIssue } : {}) }, repoDir: checkout, executor, models, log });
+    res = await advanceTicket({ key, fromPr: { repo, pr, info, commits: msgs, patch, ...(fetchIssue ? { fetchIssue } : {}) }, repoDir: checkout, executor, models, log, stopAtSpec: true });
   } catch (err) {
     res = { state: 'FAILED', message: err.message };
   }
+  run.identity.intent_ticket = key;
   if (res.state === 'FAILED') {
-    log(`could not derive the intent from the PR: ${res.message}`);
+    // Shown on the PR page: a review without an intent should say why.
+    run.identity.intent_error = `could not derive the intent from the PR: ${res.message}`;
+    log(run.identity.intent_error);
     return tickets;
   }
+  delete run.identity.intent_error;
   log(`derived the intent from the PR description as ${key} (${res.state}): it is the author's claim; confirm it at the SPEC gate`);
   return ticketInputs(run, { info, repo, pr });
 }
@@ -273,11 +281,18 @@ async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight
   log(`run dir ${runDir}; head ${run.identity.head_sha.slice(0, 12)} base ${run.identity.base_sha.slice(0, 12)}`);
   let tickets = ticketInputs(run, { ticket, info, repo: run.identity.local ? null : repo, pr: run.identity.local ? null : pr });
   if (prIntent && !ticket && !run.identity.local) {
+    phase(run, runDir, 'ticket', 'RUNNING', { step: 'deriving the intent from the PR' });
     tickets = await ensurePrIntent({ run, tickets, repo, pr, info, checkout: run.identity.checkout, base: run.identity.base_sha, head: run.identity.head_sha, executor, models, log });
+    // Review against an understanding a person has confirmed, not a guess.
+    if (tickets.source === 'pr' && !tickets.approved && require('./pr-intent').mode() === 'confirm') {
+      phase(run, runDir, 'ticket', 'AWAITING_INTENT', { ticket: tickets.key, spec_approved: false, items: tickets.items ? tickets.items.length : 0 });
+      log(`waiting: confirm the intent derived from the PR at the SPEC gate of ${tickets.key}, then review again (ARW_PR_INTENT=unconfirmed reviews without waiting)`);
+      return { runDir, validation: null, awaiting: 'intent', ticket: tickets.key };
+    }
   }
   if (tickets.note && !tickets.items) log(tickets.note);
   if (tickets.items && !tickets.approved) log(`the spec for ${tickets.key} is NOT approved; review items come from raw requirement items and are labelled unapproved`);
-  phase(run, runDir, 'ticket', tickets.key ? 'EXECUTED_PASS' : 'SKIPPED', { ticket: tickets.key, spec_approved: Boolean(tickets.approved), items: tickets.items ? tickets.items.length : 0 });
+  phase(run, runDir, 'ticket', tickets.key ? 'EXECUTED_PASS' : 'SKIPPED', { ticket: tickets.key, spec_approved: Boolean(tickets.approved), items: tickets.items ? tickets.items.length : 0, ...(run.identity.intent_error ? { intent_error: run.identity.intent_error } : {}) });
 
   // Reuse the frozen context when it still holds.
   let context = null;

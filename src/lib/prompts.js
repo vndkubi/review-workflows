@@ -302,6 +302,7 @@ function specPrompt({ ticket, requirements, evidenceBlocks, feedback, repair }) 
     `WHAT THE HARNESS DOES WITH IT: from your variables, classes and rules it enumerates every value combination, finds combinations no rule covers (gaps) or two rules answer differently (contradictions), derives boundary values, and builds the decision table, scenario matrix and the review items a pull request is graded against. Do the modelling well; do NOT enumerate combinations or scenarios yourself.`,
     `HOW TO MODEL
 - feature: one decision area (e.g. "member discount", "late fee"). A ticket may have several.
+- nature of a feature: "business" when users or the business care about the result (prices, permissions, statuses); "technical" when it is a contract of the code: what a field, setting or parameter means, its default, limits, errors, compatibility. Model a technical contract the same way: e.g. a setting's values as classes ("<= 0", "1..n") and the behaviour as the outcome. When the evidence is a pull request, its author's description, comments and test names are the stated intent.
 - variable: an input that changes the result (role, amount, date, status, flag). type: boolean | enum | integer | decimal | date | text.
 - classes (equivalence classes) of a variable:
   - boolean: two classes with value "true" and "false".

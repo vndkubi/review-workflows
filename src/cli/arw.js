@@ -112,7 +112,8 @@ async function cmdTicket(argv) {
     const m = String(args.fromPr).match(/^([\w.-]+\/[\w.-]+)#(\d+)$/);
     if (!m) throw new Error('usage: arw ticket [KEY] --from-pr owner/name#N');
     const intent = require('../lib/pr-intent');
-    fromPr = { repo: m[1], pr: Number(m[2]), info: github.prView(m[1], Number(m[2])), commits: intent.ghCommits(m[1], Number(m[2])) };
+    const patch = execFileSync('gh', ['pr', 'diff', m[2], '--repo', m[1]], { encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
+    fromPr = { repo: m[1], pr: Number(m[2]), info: github.prView(m[1], Number(m[2])), commits: intent.ghCommits(m[1], Number(m[2])), patch };
     if (!args._[0]) args._[0] = intent.prTicketKey(m[1], m[2]);
     if (!args.repo && !args.repoDir && github.reposConfig().repos[m[1]]) args.repo = m[1];
   }
@@ -158,6 +159,10 @@ async function cmdReview(argv) {
     prepared: local ? local.prepared : undefined,
     log,
   });
+  if (res.awaiting === 'intent') {
+    console.log(`AWAITING_INTENT · no ticket: the intent was derived from the PR as ${res.ticket}.\nConfirm it first: read ${path.join(RUNS, 'tickets', res.ticket, 'spec.md')}, then\n  arw gate approve --ticket ${res.ticket} --gate SPEC   (or reject with --note to rebuild it)\nand run this review again.`);
+    return 0;
+  }
   const v = res.validation;
   const identity = readJsonIfExists(path.join(res.runDir, 'run.json'), {}).identity || {};
   const base = (process.env.ARW_DASHBOARD_URL || '').replace(/\/+$/, '');

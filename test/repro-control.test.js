@@ -112,7 +112,7 @@ test('a wrong fix: the base passes the test, so the failure is a confirmed regre
 // Incident: the red-team withdrew a P2 with quote-valid evidence, so it was
 // never reproduced and the review said no_blocking_findings.
 test('a withdrawal does not stop reproduction; a confirmed failure overrules it and the synthesis follows', async () => {
-  const { validation, calls } = await review('if days < 31:', 4, {}, { verdict: 'FINDING_WITHDRAWN', synthesis: true });
+  const { validation, calls } = await review('if days < 31:', 6, {}, { verdict: 'FINDING_WITHDRAWN', synthesis: true });
   const f = validation.findings.find((x) => x.id === 'T1-technical-F1');
   assert.deepEqual(calls.map((c) => c[0]), ['head-1', 'head-2', 'fix', 'base'], 'the withdrawn finding is still reproduced');
   assert.deepEqual([f.state, f.withdrawal_overruled, f.label], ['stands', true, 'CONFIRMED']);
