@@ -81,12 +81,25 @@ function fragmentsInOrder(haystack, quote) {
   return true;
 }
 
+// A model reading UTF-8 through a console in another codepage (Windows
+// PowerShell 5.1 Get-Content) sees "—" as "�?\"" or "â€”" and copies that.
+// Each run of non-ASCII text in the file then stands for one garbled run in
+// the quote (starting with a non-ASCII character); all ASCII stays verbatim.
+const MARK = '\u0001';
+function garbledMatches(region, quote) {
+  if (!/[^\x00-\x7f]/.test(region) || !/[^\x00-\x7f]/.test(quote)) return false;
+  const r = region.replace(/[^\x00-\x7f]+/g, MARK);
+  const q = quote.replace(/[^\x00-\x7f](?:[^\x00-\x7f]|[?"'<])*/g, MARK);
+  return q.includes(MARK) && /[\p{L}\p{N}]/u.test(q) && r.includes(q);
+}
+
 function regionMatches(region, quote) {
   if (region.includes(quote)) return 'exact';
   const r = collapse(region);
   const q = collapse(quote);
   if (q && r.includes(q)) return 'whitespace';
   if (fragmentsInOrder(r, quote)) return 'ellipsis';
+  if (garbledMatches(r, q)) return 'mojibake';
   return null;
 }
 

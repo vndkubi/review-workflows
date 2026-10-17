@@ -34,6 +34,19 @@ test('quoteMatchesAt: exact, whitespace, ellipsis, end slack, and rejections', (
   assert.deepEqual(locateQuote(lines, 'y();').hits, [3]);
 });
 
+// Incident (vndkubi/trading#1, code-graph#1/#2): Windows PowerShell 5.1
+// Get-Content reads BOM-less UTF-8 as ANSI, so the model saw "—" as "�?\"" and
+// every quote of a line with non-ASCII text failed, leaving reviews incomplete.
+test('quoteMatchesAt: non-ASCII text the model read garbled still matches; ASCII must be verbatim', () => {
+  const lines = splitLines('# Mainnet (REAL MONEY) — https://www.binance.com\n# Giá trị → total\nx = 1\n');
+  assert.equal(quoteMatchesAt(lines, 1, 1, '# Mainnet (REAL MONEY) �?" https://www.binance.com').how, 'mojibake');
+  assert.equal(quoteMatchesAt(lines, 1, 1, '# Mainnet (REAL MONEY) â€” https://www.binance.com').how, 'mojibake', 'cp1252 decoding');
+  assert.equal(quoteMatchesAt(lines, 2, 2, '# Gi�? tr��< �?\' total').how, 'mojibake');
+  assert.equal(quoteMatchesAt(lines, 1, 1, '# Mainnet (TEST MONEY) �?" https://www.binance.com').ok, false, 'ASCII around the garbled run is checked');
+  assert.equal(quoteMatchesAt(lines, 3, 3, 'x = 1 �?"').ok, false, 'garbage where the file has no non-ASCII text');
+  assert.equal(quoteMatchesAt(lines, 1, 1, '# Mainnet (REAL MONEY) https://www.binance.com').ok, false, 'a dropped character is not garbling');
+});
+
 test('looksLikeCode rejects prose fixes', () => {
   assert.equal(looksLikeCode('Use >= instead of >'), false);
   assert.equal(looksLikeCode('if (total.compareTo(T) >= 0) {'), true);

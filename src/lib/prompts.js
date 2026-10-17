@@ -27,7 +27,7 @@ HARD RULES
 
 EVIDENCE (every claim)
 - Shape: {"kind","path","start_line","end_line","quote"} (+ "revision":"base" for old code).
-- kind "code": path is repository-relative with forward slashes; quote is copied verbatim from that file at the reviewed head (or at base with "revision":"base") inside start_line..end_line (1-based, inclusive). Re-open the lines and copy them; never paraphrase. Keep quotes short: 1-5 lines.
+- kind "code": path is repository-relative with forward slashes; quote is copied verbatim from that file at the reviewed head (or at base with "revision":"base") inside start_line..end_line (1-based, inclusive). Re-open the lines and copy them; never paraphrase. Keep quotes short: 1-5 lines. Read files as UTF-8 (Windows PowerShell: Get-Content -Encoding UTF8, or git show); if you see "�" or "â€", re-read.
 - kind "input": path is one of the frozen input ids listed below (for example "requirements"); inputs are shown with "N| " line-number prefixes — use N for start_line/end_line and do NOT copy the prefix into the quote.
 - Do not add sha256 to code or input evidence.
 
