@@ -280,6 +280,9 @@ async function renderPr(id) {
     !job && awaiting
       ? h('div', { class: 'notice' }, 'This PR has no ticket. Its intent (business or technical) was derived from what the author wrote, and the review waits until you confirm it: read the Spec tab below, answer its open questions by approving or rejecting with a note, then review the PR with the confirmed spec.')
       : null,
+    !job && !awaiting && d.phases.ticket && d.phases.ticket.intent === 'unconfirmed'
+      ? h('div', { class: 'notice' }, 'This PR has no ticket. It was reviewed against the intent derived from what its author wrote, which nobody has confirmed yet: check the Spec tab, approve it (or reject it with a note), then re-run to grade against the confirmed intent.')
+      : null,
     d.intent && d.intent.error ? h('div', { class: 'notice' }, `No intent: ${d.intent.error}. The review graded the code without requirement items.`) : null,
     v && awaiting ? h('div', { class: 'notice' }, 'The results below are from an earlier review that did not use a confirmed intent. They are replaced when you review again after confirming it.') : null,
     v ? prSummary(d) : job || awaiting ? null : h('div', { class: 'notice' }, 'This review has no validation yet.'),

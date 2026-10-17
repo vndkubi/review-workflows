@@ -110,6 +110,7 @@ function renderReport(runDir, validation, identity) {
   out.push(`${identity.title}`, '');
   out.push(`- head \`${identity.head_sha}\` · context \`${validation.context_id}\``);
   out.push(`- runtime recommendation: **${validation.recommendation}** (${validation.complete ? 'complete' : 'INCOMPLETE'}) — not an approval`);
+  if (identity.intent) out.push(`- intent: derived from the PR as ${identity.ticket} — **${identity.intent === 'confirmed' ? 'confirmed at the SPEC gate' : 'NOT confirmed: review items may grade against a misreading; check the spec'}**`);
   out.push(`- human gate REVIEW: **${validation.human_gate.recorded}**${validation.human_gate.bound_to_current_context ? '' : ' (not bound to this context)'}`);
   const counts = ['P1', 'P2', 'P3', 'P4'].map((s) => `${s}: ${metas.filter((m) => m.severity === s && m.state !== 'withdrawn' && !aliased.has(m.id)).length}`);
   out.push(`- open findings — ${counts.join(' · ')} · withdrawn: ${metas.filter((m) => m.state === 'withdrawn').length}`);

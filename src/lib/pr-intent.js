@@ -130,11 +130,12 @@ function ghCommits(repo, pr) {
   return JSON.parse(out).map((s) => s.trim()).filter(Boolean);
 }
 
-// ARW_PR_INTENT: confirm (default; the review waits for the SPEC gate),
-// unconfirmed (reviews right away with the unapproved items) or off.
+// ARW_PR_INTENT: review (default; reviews right away against the derived
+// spec, labelled unconfirmed until a person approves it), confirm (the
+// review waits for the SPEC gate) or off. "unconfirmed" is an old name for review.
 function mode() {
   const v = process.env.ARW_PR_INTENT;
-  return v === 'off' || v === 'unconfirmed' ? v : 'confirm';
+  return v === 'off' || v === 'confirm' ? v : 'review';
 }
 
 function enabled() {

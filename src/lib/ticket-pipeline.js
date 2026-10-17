@@ -322,6 +322,11 @@ async function advanceTicket({ key, fromFile, fromPr, extras, images: imageFiles
 
 // What a PR review may use from a ticket run. Items come from the approved
 // spec; without one, from the requirement items, labelled unapproved.
+function isFromPr(dir) {
+  const run = readJsonIfExists(path.join(dir, 'run.json'));
+  return Boolean(run && run.stages && run.stages.intake && run.stages.intake.intent === 'pr');
+}
+
 function approvedTicketInputs(key) {
   const dir = ticketDir(key);
   if (!fs.existsSync(dir)) return null;
@@ -334,6 +339,13 @@ function approvedTicketInputs(key) {
     out.requirements = { ...out.requirements, items: spec.requirement_items };
     out.specMarkdown = fs.readFileSync(path.join(dir, 'spec.md'), 'utf8');
     out.approved = true;
+  } else if (isFromPr(dir) && fs.existsSync(path.join(dir, 'spec.json'))) {
+    // Intent derived from a PR: review against its spec right away (items,
+    // boundaries, gaps), labelled unconfirmed until a person approves it.
+    const spec = readJson(path.join(dir, 'spec.json'));
+    out.items = spec.review_items;
+    out.requirements = { ...out.requirements, items: spec.requirement_items };
+    out.specMarkdown = fs.readFileSync(path.join(dir, 'spec.md'), 'utf8');
   } else if (out.requirements && out.requirements.items.length) {
     out.items = itemsFromRequirements(out.requirements);
   }

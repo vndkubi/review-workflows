@@ -283,16 +283,19 @@ async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight
   if (prIntent && !ticket && !run.identity.local) {
     phase(run, runDir, 'ticket', 'RUNNING', { step: 'deriving the intent from the PR' });
     tickets = await ensurePrIntent({ run, tickets, repo, pr, info, checkout: run.identity.checkout, base: run.identity.base_sha, head: run.identity.head_sha, executor, models, log });
-    // Review against an understanding a person has confirmed, not a guess.
+    // confirm mode: review only against an understanding a person confirmed.
     if (tickets.source === 'pr' && !tickets.approved && require('./pr-intent').mode() === 'confirm') {
       phase(run, runDir, 'ticket', 'AWAITING_INTENT', { ticket: tickets.key, spec_approved: false, items: tickets.items ? tickets.items.length : 0 });
-      log(`waiting: confirm the intent derived from the PR at the SPEC gate of ${tickets.key}, then review again (ARW_PR_INTENT=unconfirmed reviews without waiting)`);
+      log(`waiting: confirm the intent derived from the PR at the SPEC gate of ${tickets.key}, then review again (ARW_PR_INTENT=review reviews without waiting)`);
       return { runDir, validation: null, awaiting: 'intent', ticket: tickets.key };
     }
   }
   if (tickets.note && !tickets.items) log(tickets.note);
-  if (tickets.items && !tickets.approved) log(`the spec for ${tickets.key} is NOT approved; review items come from raw requirement items and are labelled unapproved`);
-  phase(run, runDir, 'ticket', tickets.key ? 'EXECUTED_PASS' : 'SKIPPED', { ticket: tickets.key, spec_approved: Boolean(tickets.approved), items: tickets.items ? tickets.items.length : 0, ...(run.identity.intent_error ? { intent_error: run.identity.intent_error } : {}) });
+  const fromPr = tickets.source === 'pr';
+  if (fromPr && !tickets.approved) log(`reviewing against the intent derived from the PR (${tickets.key}), NOT confirmed yet: check its spec, approve it, then re-run to grade against the confirmed intent`);
+  else if (tickets.items && !tickets.approved) log(`the spec for ${tickets.key} is NOT approved; review items come from raw requirement items and are labelled unapproved`);
+  run.identity.intent = fromPr ? (tickets.approved ? 'confirmed' : 'unconfirmed') : null;
+  phase(run, runDir, 'ticket', tickets.key ? 'EXECUTED_PASS' : 'SKIPPED', { ticket: tickets.key, spec_approved: Boolean(tickets.approved), items: tickets.items ? tickets.items.length : 0, ...(fromPr ? { intent: run.identity.intent } : {}), ...(run.identity.intent_error ? { intent_error: run.identity.intent_error } : {}) });
 
   // Reuse the frozen context when it still holds.
   let context = null;

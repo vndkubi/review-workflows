@@ -141,7 +141,9 @@ test('a review without a ticket derives the intent from its PR once, then uses i
   const tickets = await ensurePrIntent({ ...base, run, tickets: ticketInputs(run, { info: base.info }) });
   assert.equal(tickets.key, key);
   assert.equal(tickets.approved, false);
-  assert.equal(tickets.items.length, 3, 'unapproved: one item per requirement item');
+  const derived = JSON.parse(fs.readFileSync(path.join(ticketDir(key), 'spec.json'), 'utf8'));
+  assert.deepEqual(tickets.items.map((i) => i.id), derived.review_items.map((i) => i.id), 'unconfirmed: the items of the derived spec');
+  assert.ok(tickets.specMarkdown, 'the reviewers see the derived spec');
   assert.equal(run.identity.ticket, key);
   assert.equal(run.identity.ticket_source, 'pr');
   assert.ok(logs.some((l) => /derived the intent from the PR description/.test(l)));
@@ -248,40 +250,47 @@ test('each feature is business or technical; technical items can be graded by th
   assert.equal(JSON.parse(fs.readFileSync(path.join(old.dir, 'spec.json'), 'utf8')).features[0].nature, 'business');
 });
 
-test('a review of a PR without a ticket stops until a person confirms the derived intent', async () => {
+test('a review of a PR without a ticket reviews right away against the derived spec; confirm mode waits for a person', async () => {
   const { makeRepo } = require('./helpers');
   const { reviewPr } = require('../src/lib/pr-review');
   const { recordGate, prDir } = require('../src/lib/runs');
   const repo = makeRepo();
-  const key = prTicketKey('acme/shop', 21);
   const prompts = [];
-  const exec = scriptedExecutor((prompt) => {
-    prompts.push(prompt.slice(0, 40));
+  const execFor = (key) => scriptedExecutor((prompt) => {
+    prompts.push(prompt);
     if (prompt.startsWith('You audit')) return '{"missing":[],"invalid":[]}';
     if (prompt.startsWith('You model the')) return JSON.stringify(cleanModel(key));
     return { error_class: 'auth', error_message: 'the review itself is not part of this test' };
   });
-  const prepared = { info: { ...fromPr(21).info, headRefName: 'refunds', baseRefName: 'main' }, checkout: repo.dir, head: repo.head, base: repo.base };
-  const res = await reviewPr({ repo: 'acme/shop', pr: 21, prepared, executor: exec, noRepro: true });
-  assert.deepEqual([res.awaiting, res.ticket, res.validation], ['intent', key, null]);
-  assert.ok(!prompts.some((p) => p.startsWith('You are a read-only planner')), 'nothing is reviewed before the intent is confirmed');
+  const prepared = (pr) => ({ info: { ...fromPr(pr).info, headRefName: `refunds-${pr}`, baseRefName: 'main' }, checkout: repo.dir, head: repo.head, base: repo.base });
+  const planner = () => prompts.find((p) => p.startsWith('You are a read-only planner'));
+
+  // Default: derive, then review at once, graded by the derived spec's items, labelled unconfirmed.
+  const key = prTicketKey('acme/shop', 21);
+  await assert.rejects(reviewPr({ repo: 'acme/shop', pr: 21, prepared: prepared(21), executor: execFor(key), noRepro: true }), /planning failed/);
+  assert.ok(planner(), 'the review does not wait');
+  const spec = JSON.parse(fs.readFileSync(path.join(ticketDir(key), 'spec.json'), 'utf8'));
+  const boundary = spec.review_items.find((i) => i.kind === 'boundary');
+  assert.ok(boundary && planner().includes(boundary.id) && planner().includes('Boundary of amount'), 'the planner gets the spec items (boundaries included), not only raw requirements');
   const run = JSON.parse(fs.readFileSync(path.join(prDir('acme/shop', 21), 'run.json'), 'utf8'));
-  assert.deepEqual([run.phases.ticket.status, run.phases.ticket.ticket], ['AWAITING_INTENT', key]);
+  assert.deepEqual([run.phases.ticket.status, run.phases.ticket.ticket, run.phases.ticket.spec_approved, run.phases.ticket.intent], ['EXECUTED_PASS', key, false, 'unconfirmed']);
 
-  // Confirmed: the next review grades the approved spec's items.
-  recordGate(ticketDir(key), 'SPEC', 'approved', { by: 'test', note: 'that is what it should do' });
-  await assert.rejects(reviewPr({ repo: 'acme/shop', pr: 21, prepared, executor: exec, noRepro: true }));
-  assert.ok(prompts.some((p) => p.startsWith('You are a read-only planner')), 'the review starts once confirmed');
-  const after = JSON.parse(fs.readFileSync(path.join(prDir('acme/shop', 21), 'run.json'), 'utf8'));
-  assert.deepEqual([after.phases.ticket.status, after.phases.ticket.spec_approved], ['EXECUTED_PASS', true]);
-
-  // ARW_PR_INTENT=unconfirmed reviews right away with the unapproved items.
+  // ARW_PR_INTENT=confirm waits until the SPEC gate is approved.
   const saved = process.env.ARW_PR_INTENT;
-  process.env.ARW_PR_INTENT = 'unconfirmed';
+  process.env.ARW_PR_INTENT = 'confirm';
   try {
     prompts.length = 0;
-    await assert.rejects(reviewPr({ repo: 'acme/shop', pr: 22, prepared: { ...prepared, info: { ...prepared.info, url: null } }, executor: exec, noRepro: true }));
-    assert.ok(prompts.some((p) => p.startsWith('You are a read-only planner')));
+    const key2 = prTicketKey('acme/shop', 22);
+    const res = await reviewPr({ repo: 'acme/shop', pr: 22, prepared: prepared(22), executor: execFor(key2), noRepro: true });
+    assert.deepEqual([res.awaiting, res.ticket, res.validation], ['intent', key2, null]);
+    assert.ok(!planner(), 'nothing is reviewed before the intent is confirmed');
+    const waiting = JSON.parse(fs.readFileSync(path.join(prDir('acme/shop', 22), 'run.json'), 'utf8'));
+    assert.deepEqual([waiting.phases.ticket.status, waiting.phases.ticket.ticket], ['AWAITING_INTENT', key2]);
+    recordGate(ticketDir(key2), 'SPEC', 'approved', { by: 'test', note: 'that is what it should do' });
+    await assert.rejects(reviewPr({ repo: 'acme/shop', pr: 22, prepared: prepared(22), executor: execFor(key2), noRepro: true }));
+    assert.ok(planner(), 'the review starts once confirmed');
+    const after = JSON.parse(fs.readFileSync(path.join(prDir('acme/shop', 22), 'run.json'), 'utf8'));
+    assert.deepEqual([after.phases.ticket.status, after.phases.ticket.spec_approved, after.phases.ticket.intent], ['EXECUTED_PASS', true, 'confirmed']);
   } finally {
     if (saved === undefined) delete process.env.ARW_PR_INTENT;
     else process.env.ARW_PR_INTENT = saved;
@@ -325,7 +334,7 @@ test('the PR page data carries the derived intent: its state, gate and spec; a f
   });
   const prepared = (pr, body) => ({ info: { title: 'Refunds', body, headRefName: `r${pr}`, baseRefName: 'main', url: null }, checkout: repo.dir, head: repo.head, base: repo.base });
 
-  await reviewPr({ repo: 'acme/shop', pr: 23, prepared: prepared(23, BODY), executor: exec, noRepro: true });
+  await assert.rejects(reviewPr({ repo: 'acme/shop', pr: 23, prepared: prepared(23, BODY), executor: exec, noRepro: true }), /planning failed/);
   let d = data.prDetail('acme__shop__23');
   assert.equal(d.intent.key, key);
   assert.equal(d.intent.state, 'AWAIT_GATE_SPEC');
