@@ -191,6 +191,26 @@ test('dashboard server', async (t) => {
     assert.match(r.json.error, /not in config\/repos\.json/);
   });
 
+  await t.test('several PRs of a repository are queued in one request, one review job each', async () => {
+    fs.writeFileSync(process.env.ARW_REPOS_FILE, JSON.stringify({ repos: { 'acme/shop': { checkout: tmpDir() } } }));
+    try {
+      const r = await call(port, 'POST', '/api/reviews/batch', { body: { repo: 'acme/shop', prs: [3, '5', 7, 3], noRepro: true, workers: 2 }, headers: auth });
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.json.jobs.map((j) => j.title), ['acme/shop#3', 'acme/shop#5', 'acme/shop#7'], 'in order, each PR once');
+      assert.deepEqual(r.json.jobs[1].args, ['review', '--repo', 'acme/shop', '--pr', '5', '--workers', '2', '--no-repro']);
+      assert.deepEqual(r.json.jobs.map((j) => j.target.id), ['acme__shop__3', 'acme__shop__5', 'acme__shop__7']);
+      const one = await call(port, 'POST', '/api/reviews', { body: { repo: 'acme/shop', pr: 9, ticket: 'SHOP-1' }, headers: auth });
+      assert.deepEqual([one.status, one.json.args], [200, ['review', '--repo', 'acme/shop', '--pr', '9', '--ticket', 'SHOP-1']]);
+      assert.equal((await call(port, 'POST', '/api/reviews', { body: { repo: 'acme/shop', pr: 9, ticket: 'bad key' }, headers: auth })).status, 400);
+      for (const body of [{ repo: 'acme/shop', prs: [] }, { repo: 'acme/shop', prs: ['x'] }, { repo: 'acme/shop', prs: Array.from({ length: 21 }, (_, i) => i + 1) }, { repo: 'someone/else', prs: [1] }]) {
+        assert.equal((await call(port, 'POST', '/api/reviews/batch', { body, headers: auth })).status, 400, JSON.stringify(body).slice(0, 80));
+      }
+      assert.equal((await call(port, 'POST', '/api/reviews/batch', { body: { repo: 'acme/shop', prs: [1] } })).status, 403, 'writes need the token');
+    } finally {
+      fs.rmSync(process.env.ARW_REPOS_FILE, { force: true });
+    }
+  });
+
   await t.test('rejection memory and acceptance endpoints', async () => {
     assert.equal((await call(port, 'POST', '/api/prs/acme__shop__1/findings/B1-business-F1/reject', { body: { reason: 'x' } })).status, 403, 'writes need the token');
     const noReason = await call(port, 'POST', '/api/prs/acme__shop__1/findings/B1-business-F1/reject', { body: {}, headers: auth });
@@ -235,3 +255,12 @@ test('a failing route never uses a process exit code as the HTTP status', () => 
   assert.equal(httpStatusOf(new Error('x')), 500);
   assert.equal(httpStatusOf(Object.assign(new Error('x'), { status: 700 })), 500);
 });
+
+test('a list of PR numbers: commas or spaces, each once, 1..20 of them', () => {
+  const { parsePrList } = require('../src/lib/github');
+  assert.deepEqual(parsePrList('12,15, 20 12'), [12, 15, 20]);
+  assert.deepEqual(parsePrList([7, '8']), [7, 8]);
+  assert.deepEqual(parsePrList(42), [42]);
+  for (const bad of ['', 'x', '0', '1.5', '-3', Array.from({ length: 21 }, (_, i) => i + 1)]) assert.throws(() => parsePrList(bad), /PR number/);
+});
+

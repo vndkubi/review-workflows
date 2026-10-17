@@ -155,6 +155,18 @@ function targetHash(t) {
   return t.type === 'pr' ? `#/pr/${t.id}` : t.type === 'ticket' ? `#/ticket/${t.key}` : t.type === 'eval' ? '#/evals' : t.type === 'sandbox' ? '#/sandbox' : '#/settings';
 }
 
+// Several PRs: one job each; the Jobs page shows the queue.
+async function queueReviews(body) {
+  try {
+    const { jobs } = await api('POST', '/api/reviews/batch', body);
+    toast(`${jobs.length} review(s) queued`);
+    await refreshJobs();
+    location.hash = '#/jobs';
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
 async function startJob(promise, label) {
   try {
     const job = await promise;
@@ -779,7 +791,14 @@ function repoSelect(optional) {
 
 function renderNewReview() {
   const repo = repoSelect(false);
-  const pr = h('input', { type: 'number', min: '1', placeholder: 'PR number', required: true });
+  // One PR, or several to queue ("12, 15, 20"): one review job each, run one after another.
+  const pr = h('input', { type: 'text', inputmode: 'numeric', pattern: '[0-9][0-9, ]*', placeholder: 'PR number, or several to queue: 12, 15, 20', required: true });
+  const prNumbers = () => [...new Set(pr.value.split(/[\s,]+/).filter(Boolean).map(Number))];
+  const togglePr = (n, on) => {
+    const list = prNumbers().filter((x) => x !== n);
+    if (on) list.push(n);
+    pr.value = list.join(', ');
+  };
   const ticket = h('input', { type: 'text', placeholder: 'optional, e.g. ACME-7 (taken from title/branch otherwise)' });
   const workers = h('input', { type: 'number', min: '1', max: '8', value: String(state.config.workers) });
   const prList = h('div', {});
@@ -791,7 +810,8 @@ function renderNewReview() {
     try {
       const list = await api('GET', `/api/github/prs?repo=${encodeURIComponent(repo.value)}`);
       put(prList, list.length ? h('table', {}, h('tbody', {}, list.map((p) => h('tr', {},
-        h('td', {}, h('button', { type: 'button', class: 'linkbtn', onclick: () => { pr.value = p.number; } }, `#${p.number}`)),
+        h('td', {}, h('input', { type: 'checkbox', 'aria-label': `queue #${p.number}`, checked: prNumbers().includes(p.number), onchange: (e) => togglePr(p.number, e.target.checked) })),
+        h('td', {}, h('button', { type: 'button', class: 'linkbtn', onclick: () => { pr.value = String(p.number); } }, `#${p.number}`)),
         h('td', {}, p.title, p.isDraft ? h('span', { class: 'badge' }, 'draft') : null),
         h('td', { class: 'small muted' }, `${p.author && p.author.login} · ${p.headRefName} · ${fmtTime(p.updatedAt)}`))))) : h('p', { class: 'muted small' }, 'No open PRs.'));
     } catch (err) {
@@ -813,7 +833,8 @@ function renderNewReview() {
   const prPart = h('div', { class: 'stack' },
     h('label', { class: 'field' }, 'Repository', repo),
     prList,
-    h('label', { class: 'field' }, 'Pull request', pr),
+    h('label', { class: 'field' }, 'Pull request(s)', pr),
+    h('p', { class: 'small muted' }, 'Tick several PRs above (or type their numbers) to queue them: each gets its own review, one after another, with the options below. A ticket applies to a single PR only.'),
     h('label', { class: 'field' }, 'Ticket', ticket));
   const localPart = h('div', { class: 'stack', hidden: true },
     h('label', { class: 'field' }, 'Directory', dir, dirList),
@@ -837,9 +858,11 @@ function renderNewReview() {
       startJob(api('POST', '/api/reviews/local', body), 'Local review');
       return;
     }
-    const body = { repo: repo.value, pr: Number(pr.value), ticket: ticket.value.trim() || undefined, workers: Number(workers.value) || undefined };
+    const numbers = prNumbers();
+    const body = { repo: repo.value, workers: Number(workers.value) || undefined };
     for (const k of Object.keys(flags)) body[k] = boxes[k].checked;
-    startJob(api('POST', '/api/reviews', body), 'Review');
+    if (numbers.length > 1) return queueReviews({ ...body, prs: numbers });
+    startJob(api('POST', '/api/reviews', { ...body, pr: numbers[0], ticket: ticket.value.trim() || undefined }), 'Review');
   };
   put($main,
     h('h1', {}, 'New review'),
@@ -877,17 +900,27 @@ function renderNewTicket() {
 
 // ---------- jobs ----------
 function renderJobs() {
-  put($main, 
+  // The queue runs oldest first; position 1 runs next.
+  const waiting = state.jobs.filter((j) => j.status === 'queued').sort((a, b) => String(a.queued_at).localeCompare(String(b.queued_at)));
+  const position = new Map(waiting.map((j, i) => [j.id, i + 1]));
+  const cancel = (j) => async () => {
+    await api('POST', `/api/jobs/${j.id}/cancel`, {});
+    toast(`${j.title}: cancel requested`);
+    await refreshJobs();
+    renderJobs();
+  };
+  put($main,
     h('h1', {}, 'Jobs'),
-    h('p', { class: 'muted small' }, 'Jobs run one at a time. Each is an arw CLI command you can also run in a terminal.'),
+    h('p', { class: 'muted small' }, `Jobs run one at a time, oldest first${waiting.length ? ` · ${waiting.length} waiting` : ''}. Each is an arw CLI command you can also run in a terminal.`),
     state.jobs.length ? h('table', {},
-      h('thead', {}, h('tr', {}, ['Job', 'Status', 'Queued', 'Finished', 'Command'].map((c) => h('th', {}, c)))),
+      h('thead', {}, h('tr', {}, ['Job', 'Status', 'Queued', 'Finished', 'Command', ''].map((c) => h('th', {}, c)))),
       h('tbody', {}, state.jobs.map((j) => h('tr', {},
         h('td', {}, h('a', { href: `#/job/${j.id}` }, `${j.kind} ${j.title}`)),
-        h('td', {}, statusBadge(j.status)),
+        h('td', {}, statusBadge(j.status), position.has(j.id) ? h('span', { class: 'small muted' }, ` #${position.get(j.id)} in queue`) : null),
         h('td', { class: 'small muted' }, fmtTime(j.queued_at)),
         h('td', { class: 'small muted' }, fmtTime(j.finished_at)),
-        h('td', { class: 'mono small' }, j.command))))) : h('p', { class: 'muted' }, 'No jobs yet.'),
+        h('td', { class: 'mono small' }, j.command),
+        h('td', {}, ['queued', 'running'].includes(j.status) ? h('button', { class: 'btn danger', onclick: cancel(j) }, 'Cancel') : null))))) : h('p', { class: 'muted' }, 'No jobs yet.'),
   );
   state.viewTimer = setInterval(() => { if (location.hash === '#/jobs') renderJobs(); }, 3000);
 }

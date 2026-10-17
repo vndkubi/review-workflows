@@ -120,6 +120,22 @@ function prNumber(v) {
   return n;
 }
 
+function checkKey(key) {
+  if (!data.TICKET_KEY.test(key)) throw data.httpError(400, 'ticket key must look like ABC-123');
+  return key;
+}
+
+// The queue job for reviewing one PR with the options of a request body.
+function reviewJob(repo, pr, body) {
+  const args = ['review', '--repo', repo, '--pr', String(pr)];
+  if (body.ticket) args.push('--ticket', checkKey(body.ticket));
+  if (body.workers) args.push('--workers', String(Math.max(1, Math.min(8, Number(body.workers) || 4))));
+  for (const flag of ['singleRole', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'noRepro', 'refresh']) {
+    if (body[flag]) args.push(`--${flag.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`);
+  }
+  return { kind: 'review', title: `${repo}#${pr}`, args, target: { type: 'pr', id: `${repo.replace('/', '__')}__${pr}` } };
+}
+
 function createServer({ port, token = crypto.randomBytes(24).toString('hex'), queue = new JobQueue(), githubApi = github.apiGet } = {}) {
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   const who = `${os.userInfo().username} (dashboard)`;
@@ -188,14 +204,19 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
 
     ['POST', /^\/api\/reviews$/, async (m, q, body) => {
       const repo = knownRepo(String(body.repo || ''));
-      const pr = prNumber(body.pr);
-      const args = ['review', '--repo', repo, '--pr', String(pr)];
-      if (body.ticket) args.push('--ticket', checkKey(body.ticket));
-      if (body.workers) args.push('--workers', String(Math.max(1, Math.min(8, Number(body.workers) || 4))));
-      for (const flag of ['singleRole', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'noRepro', 'refresh']) {
-        if (body[flag]) args.push(`--${flag.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`);
+      return queue.enqueue(reviewJob(repo, prNumber(body.pr), body));
+    }],
+    // Several PRs of one repository with the same options: one job each,
+    // run one after another by the queue.
+    ['POST', /^\/api\/reviews\/batch$/, async (m, q, body) => {
+      const repo = knownRepo(String(body.repo || ''));
+      let prs;
+      try {
+        prs = github.parsePrList(body.prs);
+      } catch (err) {
+        throw data.httpError(400, err.message);
       }
-      return queue.enqueue({ kind: 'review', title: `${repo}#${pr}`, args, target: { type: 'pr', id: `${repo.replace('/', '__')}__${pr}` } });
+      return { jobs: prs.map((pr) => queue.enqueue(reviewJob(repo, pr, { ...body, ticket: undefined }))) };
     }],
     ['POST', /^\/api\/reviews\/local$/, async (m, q, body) => {
       const { localRunId, MODES } = require('../lib/local-review');
@@ -325,11 +346,6 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
     }],
     ...require('./sandbox-api').routes({ queue }),
   ];
-
-  function checkKey(key) {
-    if (!data.TICKET_KEY.test(key)) throw data.httpError(400, 'ticket key must look like ABC-123');
-    return key;
-  }
 
   function decisionOf(body) {
     if (body.decision === 'approved' || body.decision === 'rejected') return body.decision;

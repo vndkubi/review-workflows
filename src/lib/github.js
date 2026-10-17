@@ -84,4 +84,19 @@ function createPendingReview({ repo, pr, commitId, body, comments }) {
   return JSON.parse(gh(['api', '--method', 'POST', `repos/${repo}/pulls/${pr}/reviews`, '--input', '-'], JSON.stringify(payload)));
 }
 
-module.exports = { gh, prView, reposConfig, sourceCheckoutFor, preparePrWorktree, removeWorktree, createPendingReview, currentLogin, apiGet, graphql };
+// PR numbers to queue: "12,15 20", [12, "15"] or 12 -> [12, 15, 20], each
+// once, in order, at most 20.
+const MAX_QUEUED_PRS = 20;
+function parsePrList(value) {
+  const parts = Array.isArray(value) ? value.map(String) : String(value == null ? '' : value).split(/[\s,]+/);
+  const out = [];
+  for (const p of parts.map((s) => s.trim()).filter(Boolean)) {
+    if (!/^[1-9]\d*$/.test(p)) throw new Error(`"${p}" is not a PR number`);
+    if (!out.includes(Number(p))) out.push(Number(p));
+  }
+  if (!out.length) throw new Error('give at least one PR number');
+  if (out.length > MAX_QUEUED_PRS) throw new Error(`at most ${MAX_QUEUED_PRS} PR numbers at a time`);
+  return out;
+}
+
+module.exports = { gh, prView, reposConfig, sourceCheckoutFor, preparePrWorktree, removeWorktree, createPendingReview, currentLogin, apiGet, graphql, parsePrList };

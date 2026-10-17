@@ -23,7 +23,8 @@ Ticket pipeline (understand the requirement; stops at each human gate):
 PR review (plan -> freeze -> waves -> validate -> report):
   arw review --local [<repo dir>] [--base main] [--mode branch|staged|worktree | --head <commit>]
                                                self-review before a PR (--head: one commit range)
-  arw review --repo owner/name --pr <n> [--ticket KEY] [--workers 4] [--single-role]
+  arw review --repo owner/name --pr <n>[,<n>...] [--ticket KEY] [--workers 4] [--single-role]
+                                               several PRs: reviewed one after another
              [--skip-seams] [--skip-rebuttals] [--skip-synthesis] [--refresh] [--no-repro] [--no-pr-intent]
              [--single-agent]   baseline: one reviewer over the whole diff, no planner/seams/red team/synthesis
   arw validate --repo owner/name --pr <n>      re-validate on disk, no model calls
@@ -138,11 +139,31 @@ async function cmdReview(argv) {
     args.pr = local.pr;
     console.error(`local review of ${local.prepared.info.title}: run ${local.repo.replace('/', '__')}__${local.pr}`);
   }
-  if (!args.repo || !args.pr) throw new Error('usage: arw review --repo owner/name --pr <n>  |  arw review --local [dir]');
+  if (!args.repo || !args.pr) throw new Error('usage: arw review --repo owner/name --pr <n>[,<n>...]  |  arw review --local [dir]');
+  // --pr 12,15,20 reviews them one after another; one failing does not stop the rest.
+  const prs = local ? [Number(args.pr)] : github.parsePrList(args.pr);
+  if (prs.length > 1 && args.ticket) throw new Error('--ticket names the ticket of one PR; leave it out when reviewing several PRs');
+  let worst = 0;
+  for (const [i, pr] of prs.entries()) {
+    if (prs.length > 1) console.log(`
+== ${args.repo}#${pr} (${i + 1}/${prs.length})`);
+    try {
+      worst = Math.max(worst, await reviewOne(args, local, pr));
+    } catch (err) {
+      if (prs.length === 1) throw err;
+      console.error(`error: ${args.repo}#${pr}: ${err.message}`);
+      if (process.env.ARW_DEBUG) console.error(err.stack);
+      worst = 2;
+    }
+  }
+  return worst;
+}
+
+async function reviewOne(args, local, pr) {
   const pfDir = path.join(RUNS, '.preflight');
   const res = await reviewPr({
     repo: args.repo,
-    pr: Number(args.pr),
+    pr,
     ticket: args.ticket,
     prIntent: !args.noPrIntent,
     executor,
