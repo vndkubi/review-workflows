@@ -6,26 +6,31 @@
 #   for PRs   GitHub CLI (+ gh auth login): GitHub PR reviews and publishing
 #   optional  JDK 17 (--with-java): precise Java impact analysis, repro of Java PRs on this machine
 #             Docker (--with-docker): sandboxed repro; then no Java or Maven is needed here
-# Then creates .env and config/repos.json if they are missing, and runs `arw doctor`.
+# Then runs `arw setup` (project files, --preset fast|thorough|java-docker) and `arw doctor`.
 # It asks before every install (unless --yes) and is safe to run again.
 #
 #   scripts/setup.sh [--check-only] [--yes] [--with-java] [--with-docker] [--skip-login] [--skip-doctor]
+#                    [--preset fast|thorough|java-docker]
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CHECK_ONLY=0 YES=0 WITH_JAVA=0 WITH_DOCKER=0 SKIP_LOGIN=0 SKIP_DOCTOR=0
-for arg in "$@"; do
-  case "$arg" in
+CHECK_ONLY=0 YES=0 WITH_JAVA=0 WITH_DOCKER=0 SKIP_LOGIN=0 SKIP_DOCTOR=0 PRESET=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
     --check-only) CHECK_ONLY=1 ;;
     --yes) YES=1 ;;
     --with-java) WITH_JAVA=1 ;;
     --with-docker) WITH_DOCKER=1 ;;
     --skip-login) SKIP_LOGIN=1 ;;
     --skip-doctor) SKIP_DOCTOR=1 ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
-    *) echo "unknown option: $arg" >&2; exit 2 ;;
+    --preset) shift; PRESET="${1:-}" ;;
+    --preset=*) PRESET="${1#--preset=}" ;;
+    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
+  shift
 done
+case "$PRESET" in ""|fast|thorough|java-docker) ;; *) echo "unknown preset: $PRESET (fast, thorough, java-docker)" >&2; exit 2 ;; esac
 
 MISSING=()
 has() { command -v "$1" >/dev/null 2>&1; }
@@ -99,16 +104,6 @@ if ! has docker && [ "$WITH_DOCKER" = 1 ]; then
 fi
 if has docker; then ok docker "$(docker --version)"; else echo "  --    docker         optional (--with-docker): runs PR code in containers (then set ARW_SANDBOX=docker)"; fi
 
-echo
-echo "Project files"
-if [ -f "$ROOT/.env" ]; then ok .env exists
-elif [ "$CHECK_ONLY" = 1 ]; then miss .env "would be copied from .env.example"
-else cp "$ROOT/.env.example" "$ROOT/.env" && ok .env "created from .env.example"; fi
-
-if [ -f "$ROOT/config/repos.json" ]; then ok repos.json exists
-elif [ "$CHECK_ONLY" = 1 ]; then miss repos.json "would be created empty"
-else printf '{\n  "repos": {}\n}\n' > "$ROOT/config/repos.json" && ok repos.json "created empty: add repositories later"; fi
-
 if [ "$SKIP_LOGIN" = 0 ]; then
   echo
   echo "Sign-in"
@@ -122,6 +117,15 @@ if [ "$SKIP_LOGIN" = 0 ]; then
     elif ask "Sign in to codex now (codex login)?"; then codex login
     else miss "codex login" "run: codex login"; fi
   fi
+fi
+
+# Project files and the preset: the same core as the dashboard's setup wizard.
+if [ "$(node_major)" -ge 20 ]; then
+  echo
+  echo "arw setup"
+  if [ "$CHECK_ONLY" = 1 ]; then node "$ROOT/src/cli/arw.js" setup --check
+  elif [ -n "$PRESET" ]; then node "$ROOT/src/cli/arw.js" setup --preset "$PRESET"
+  else node "$ROOT/src/cli/arw.js" setup; fi
 fi
 
 if [ "$SKIP_DOCTOR" = 0 ] && [ "$CHECK_ONLY" = 0 ] && [ "$(node_major)" -ge 20 ]; then

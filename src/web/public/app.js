@@ -201,6 +201,7 @@ async function render() {
     else if (view === 'jobs') renderJobs();
     else if (view === 'job') renderJob(arg);
     else if (view === 'settings' || view === 'system') await renderSettings();
+    else if (view === 'setup') await renderSetup();
     else renderHome();
   } catch (err) {
     put($main, h('div', { class: 'notice bad' }, err.message));
@@ -220,7 +221,7 @@ function renderHome() {
       stat(state.runs.tickets.length, 'tickets'),
       stat(open, 'open P1/P2'),
       stat(state.jobs.filter((j) => ['queued', 'running'].includes(j.status)).length, 'active jobs')),
-    !state.config.repos.length ? h('div', { class: 'notice' }, 'No repositories configured. Copy config/repos.example.json to config/repos.json and map owner/name to a local clone.') : null,
+    !state.config.repos.length ? h('div', { class: 'notice' }, h('strong', {}, 'New here? '), 'Set up arw in three steps: check this machine, choose how to review, add a repository. ', h('a', { class: 'btn primary', href: '#/setup' }, 'Start setup')) : null,
     ...section('Recent reviews', prs.length ? prTable(prs.slice(0, 15)) : h('p', { class: 'muted' }, 'Start one with “New review”.')),
     acceptance,
   );
@@ -847,7 +848,9 @@ function renderNewReview() {
   const workers = h('input', { type: 'number', min: '1', max: '8', value: String(state.config.workers) });
   const prList = h('div', {});
   const flags = { singleRole: 'Single role (business units: business pass only)', skipSeams: 'Skip seams', skipRebuttals: 'Skip red-team', skipSynthesis: 'Skip synthesis', noRepro: 'Skip repro tests', refresh: 'Refresh (re-plan, re-freeze)' };
-  const boxes = Object.fromEntries(Object.keys(flags).map((k) => [k, h('input', { type: 'checkbox' })]));
+  // A preset's defaults show as ticked: the CLI applies them anyway.
+  const presetOn = { noRepro: state.config.repro === 'off' };
+  const boxes = Object.fromEntries(Object.keys(flags).map((k) => [k, h('input', { type: 'checkbox', checked: Boolean(presetOn[k]) })]));
   const loadPrs = async () => {
     if (!repo.value) return;
     put(prList, h('p', { class: 'muted small' }, 'Loading open PRs…'));
@@ -917,7 +920,7 @@ function renderNewReview() {
       localPart,
       h('label', { class: 'field' }, 'Parallel workers', workers),
       h('div', { class: 'checks' }, Object.entries(flags).map(([k, label]) => h('label', {}, boxes[k], ` ${label}`))),
-      h('p', { class: 'small muted' }, 'Opt-outs are recorded in validation.json and shown in the report.'),
+      h('p', { class: 'small muted' }, `Defaults from Settings${state.config.preset ? ` (preset ${state.config.preset})` : ''}: ${state.config.review_mode === 'single-agent' ? 'one reviewer over the whole diff' : 'multi-agent review'} · reproduction ${state.config.repro === 'off' ? 'off' : 'on'}. Opt-outs are recorded in validation.json and shown in the report.`),
       h('div', {}, h('button', { class: 'btn primary', type: 'submit' }, 'Start review'))),
   );
   loadPrs();
@@ -1223,6 +1226,17 @@ async function ticketExtras(key) {
 }
 
 // ---------- settings ----------
+// Plain names for the settings a new user sees first.
+const FRIENDLY = {
+  CODEX_MODEL: 'Model',
+  CODEX_EFFORT: 'Reasoning effort',
+  ARW_OUTPUT_LANGUAGE: 'Language of findings and reports',
+  ARW_WORKERS: 'Reviewers working in parallel',
+  ARW_MAX_CALLS: 'Budget: model calls per review (0 = no limit)',
+  ARW_PR_INTENT: 'A PR without a ticket',
+  ARW_SANDBOX: 'Where PR code runs (repro, tests)',
+};
+
 const GROUP_TITLES = { executor: 'Executor (codex)', review: 'Review', static: 'Machine evidence (linters)', repro: 'Reproduction tests', automation: 'Automation (watch and notifications)' };
 
 // One input per setting; returns { row, read } where read() yields the
@@ -1238,7 +1252,7 @@ function settingField(s) {
   const clear = s.type === 'secret' && s.set ? h('label', { class: 'small' }, h('input', { type: 'checkbox', onchange: (e) => { reset = e.target.checked; } }), ' clear') : null;
   const resetBtn = s.source === '.env' && s.type !== 'secret' ? h('button', { type: 'button', class: 'linkbtn small', title: `back to default (${s.default || 'empty'})`, onclick: () => { reset = true; input.disabled = true; } }, 'reset') : null;
   const row = h('div', { class: 'setting' },
-    h('label', { for: id, class: 'setting-key' }, h('code', {}, s.key), h('span', { class: `badge ${s.source === '.env' ? 'ok' : ''}` }, s.source)),
+    h('label', { for: id, class: 'setting-key' }, FRIENDLY[s.key] ? h('strong', {}, FRIENDLY[s.key]) : null, h('code', {}, s.key), h('span', { class: `badge ${s.source === '.env' ? 'ok' : ''}` }, s.source)),
     h('div', {}, h('div', { class: 'row' }, input, clear, resetBtn), h('div', { class: 'small muted' }, s.help, s.default && s.type !== 'secret' ? ` Default: ${s.default}.` : '')));
   const read = () => {
     if (reset) return null;
@@ -1614,7 +1628,10 @@ async function memoryPanel() {
 
 async function renderSettings() {
   const s = await api('GET', '/api/settings');
-  const by = (g) => s.env.filter((e) => e.group === g);
+  // Essentials first; the groups below hold everything else (Advanced).
+  const by = (g) => s.env.filter((e) => e.group === g && !e.essential && e.key !== 'ARW_PRESET');
+  const essentials = s.env.filter((e) => e.essential);
+  const preset = (s.env.find((e) => e.key === 'ARW_PRESET') || {}).value;
   const jira = by('jira');
   const active = s.mcp ? 'MCP server' : jira.find((e) => e.key === 'JIRA_URL').value ? 'Jira REST' : 'files only (--from-file / paste)';
   const mcpSecret = settingsSection('Secret for the MCP server', by('mcp'), s.models);
@@ -1627,27 +1644,88 @@ async function renderSettings() {
     diag = h('div', {}, h('div', { class: 'row' }, h('span', { class: 'label' }, 'Last check'), statusBadge(last.status), h('span', { class: 'small muted' }, fmtTime(last.finished_at))), pre);
     followJob(last.id, { pre });
   }
+  const advancedOpen = (() => { try { return localStorage.getItem('settings-advanced') === '1'; } catch { return false; } })();
   put($main,
     h('h1', {}, 'Settings'),
     h('p', { class: 'muted small' }, 'Saved to .env and config/*.json. New jobs use the new values right away; secrets are never shown again after saving.'),
     h('datalist', { id: 'model-list' }, s.models.map((m) => h('option', { value: m }))),
-    ['executor', 'review', 'static', 'repro', 'automation'].map((g) => settingsSection(GROUP_TITLES[g], by(g), s.models)),
     h('section', { class: 'panel' },
-      h('h2', {}, 'Ticket source'),
-      h('p', {}, 'Active: ', h('strong', {}, active), h('span', { class: 'small muted' }, ' — an MCP server wins, then Jira REST, then files.')),
-      h('h3', {}, 'MCP server (when Jira/Confluence are not reachable from this machine)'),
-      mcpEditor(s.mcp, mcpSecret)),
-    settingsSection('Jira / Confluence REST', jira, s.models),
+      h('h2', {}, 'Setup'),
+      h('p', {}, 'Preset: ', h('strong', {}, preset || 'none (your own values)'), h('span', { class: 'small muted' }, ' — a preset sets the few settings that decide cost and depth.'),
+        ' ', h('a', { class: 'btn', href: '#/setup' }, preset ? 'Change preset or check this machine' : 'Open setup'))),
+    settingsSection('Essentials', essentials, s.models),
     h('section', { class: 'panel' }, h('h2', {}, 'Repositories'), reposEditor(s.repos)),
-    await watchPanel(),
-    await memoryPanel(),
-    await diskPanel(),
     h('section', { class: 'panel' },
       h('h2', {}, 'Diagnostics'),
       h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: () => startJob(api('POST', '/api/doctor', {}), 'Doctor') }, 'Run doctor'),
         h('span', { class: 'small muted' }, 'git, gh, codex (a real call that must read a file), repositories and the ticket source.')),
       diag),
+    h('details', { class: 'advanced', open: advancedOpen, ontoggle: (e) => { try { localStorage.setItem('settings-advanced', e.target.open ? '1' : '0'); } catch { /* storage blocked */ } } },
+      h('summary', {}, h('strong', {}, 'Advanced'), h('span', { class: 'small muted' }, ` — ${s.env.length - essentials.length - 1} more settings, tickets (Jira/MCP), the watcher, rejected findings and disk usage. Their defaults are fine to start.`)),
+      ['executor', 'review', 'static', 'repro', 'automation'].map((g) => settingsSection(GROUP_TITLES[g], by(g), s.models)),
+      h('section', { class: 'panel' },
+        h('h2', {}, 'Ticket source'),
+        h('p', {}, 'Active: ', h('strong', {}, active), h('span', { class: 'small muted' }, ' — an MCP server wins, then Jira REST, then files.')),
+        h('h3', {}, 'MCP server (when Jira/Confluence are not reachable from this machine)'),
+        mcpEditor(s.mcp, mcpSecret)),
+      settingsSection('Jira / Confluence REST', jira, s.models),
+      await watchPanel(),
+      await memoryPanel(),
+      await diskPanel()),
     h('p', { class: 'small muted' }, `Files: ${s.files.env} · ${s.files.repos} · ${s.files.mcp}`),
+  );
+}
+
+// ---------- setup wizard ----------
+// The same core as `arw setup`: this machine, a preset, a repository, a first review.
+async function renderSetup() {
+  const [s, cfg] = await Promise.all([api('GET', '/api/setup'), api('GET', '/api/settings')]);
+  const env = s.environment;
+  const status = (i) => (i.ok ? h('span', { class: 'badge ok' }, 'ok') : h('span', { class: `badge ${i.required ? 'bad' : ''}` }, i.required ? 'missing' : 'optional'));
+  const have = new Map(env.items.map((i) => [i.id, i.ok]));
+  const apply = (p, force = false) => async () => {
+    try {
+      if (!s.state.env) await api('POST', '/api/setup/init', {});
+      const r = await api('POST', '/api/setup/preset', { id: p.id, force });
+      toast(`Preset ${p.name} applied: ${r.updated.join(', ')}`);
+      await loadConfig();
+      render();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  const presetCard = (p) => {
+    const missing = p.needs.filter((n) => !have.get(n));
+    const current = s.state.preset === p.id;
+    return h('div', { class: `panel preset${current ? ' current' : ''}` },
+      h('div', { class: 'row' }, h('strong', {}, p.name), current ? h('span', { class: 'badge ok' }, 'current') : null),
+      h('p', { class: 'small' }, p.summary),
+      p.leavesOut.length ? h('ul', { class: 'small muted' }, p.leavesOut.map((x) => h('li', {}, x))) : null,
+      p.needs.length ? h('p', { class: 'small' }, 'Needs: ', p.needs.map((n) => h('span', { class: `badge ${have.get(n) ? 'ok' : 'bad'}` }, n))) : null,
+      missing.length
+        ? h('div', { class: 'row' }, h('button', { class: 'btn', disabled: true }, `${missing.join(' and ')} not ready (see step 1)`),
+          h('button', { class: 'linkbtn small', onclick: () => confirm(`${p.name} needs ${missing.join(' and ')}. Apply anyway? Reviews will report those steps as blocked.`) && apply(p, true)() }, 'apply anyway'))
+        : h('button', { class: `btn${current ? '' : ' primary'}`, onclick: apply(p) }, current ? 'Apply again' : 'Use this preset'));
+  };
+  put($main,
+    h('h1', {}, 'Set up arw'),
+    h('p', { class: 'muted' }, 'Three steps, the same as ', h('code', {}, 'arw setup'), ' on the command line. Everything else can stay at its default; Settings has it under Advanced.'),
+    h('section', { class: 'panel' },
+      h('h2', {}, '1. This machine'),
+      table(['', 'Tool', 'Found', 'How to fix'], env.items.map((i) => [status(i), i.label, h('span', { class: 'small' }, i.detail), i.fix ? h('span', { class: 'small' }, i.fix) : ''])),
+      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => render() }, 'Check again'),
+        env.ready ? h('span', { class: 'small' }, 'Everything required is here.') : h('span', { class: 'small err' }, 'Install what is missing (or run scripts/setup), then check again.'))),
+    h('section', { class: 'panel' },
+      h('h2', {}, '2. How to review'),
+      h('p', { class: 'small muted' }, 'A preset sets effort, review depth, reproduction, where PR code runs and a budget. You can change any of them later in Settings.'),
+      h('div', { class: 'preset-grid' }, s.presets.map(presetCard))),
+    h('section', { class: 'panel' },
+      h('h2', {}, '3. A repository'),
+      h('p', { class: 'small muted' }, 'Map owner/name to a local clone. To also build it in a sandbox, use Sandbox → Set up from a source folder.'),
+      reposEditor(cfg.repos)),
+    h('section', { class: 'panel' },
+      h('h2', {}, 'Then'),
+      h('div', { class: 'row' }, h('a', { class: 'btn primary', href: '#/new-review' }, 'Review a PR or local changes'), h('a', { class: 'btn', href: '#/new-ticket' }, 'Analyse a ticket'), h('a', { class: 'btn', href: '#/settings' }, 'Settings'))),
   );
 }
 

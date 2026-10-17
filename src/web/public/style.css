@@ -195,3 +195,11 @@ section.panel h2 { margin-top: 0; }
 /* logs: errors only */
 .log-errors-only .log-line:not(.log-bad) { display: none; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* setup wizard and settings */
+.preset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.preset { margin: 0; }
+.preset.current { border-color: var(--ok); }
+details.advanced { margin-top: 16px; }
+details.advanced > summary { cursor: pointer; padding: 10px 0; }
+.setting-key strong { display: block; }

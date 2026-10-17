@@ -191,6 +191,27 @@ test('dashboard server', async (t) => {
     assert.match(r.json.error, /not in config\/repos\.json/);
   });
 
+  await t.test('first-run setup: environment, project files, presets; applying one needs the token', async () => {
+    const s = await call(port, 'GET', '/api/setup');
+    assert.equal(s.status, 200);
+    assert.deepEqual(s.json.presets.map((p) => p.id), ['fast', 'thorough', 'java-docker']);
+    assert.ok(s.json.environment.items.some((i) => i.id === 'codex'));
+    assert.equal(typeof s.json.environment.ready, 'boolean');
+    assert.deepEqual(Object.keys(s.json.state).sort(), ['env', 'preset', 'repos']);
+    assert.deepEqual(s.json.essentials, ['CODEX_MODEL', 'CODEX_EFFORT', 'ARW_OUTPUT_LANGUAGE', 'ARW_WORKERS', 'ARW_MAX_CALLS', 'ARW_PR_INTENT', 'ARW_SANDBOX']);
+    assert.equal((await call(port, 'POST', '/api/setup/preset', { body: { id: 'fast' } })).status, 403, 'writes need the token');
+    assert.equal((await call(port, 'POST', '/api/setup/preset', { body: { id: 'nope' }, headers: auth })).status, 400);
+    const applied = await call(port, 'POST', '/api/setup/preset', { body: { id: 'fast' }, headers: auth });
+    assert.deepEqual([applied.status, applied.json.preset], [200, 'fast']);
+    const env = (await call(port, 'GET', '/api/settings')).json.env;
+    assert.equal(env.find((e) => e.key === 'ARW_REVIEW_MODE').value, 'single-agent');
+    assert.equal(env.find((e) => e.key === 'CODEX_MODEL').essential, true);
+    const init = await call(port, 'POST', '/api/setup/init', { body: {}, headers: auth });
+    assert.equal(init.status, 200);
+    assert.ok(Array.isArray(init.json.created));
+    await call(port, 'PUT', '/api/settings/env', { body: { changes: { ARW_PRESET: null, CODEX_EFFORT: null, ARW_REVIEW_MODE: null, ARW_REPRO: null, ARW_MAX_CALLS: null, ARW_SANDBOX: null, ARW_RUN_IMPACTED_TESTS: null } }, headers: auth });
+  });
+
   await t.test('several PRs of a repository are queued in one request, one review job each', async () => {
     fs.writeFileSync(process.env.ARW_REPOS_FILE, JSON.stringify({ repos: { 'acme/shop': { checkout: tmpDir() } } }));
     try {

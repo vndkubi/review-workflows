@@ -22,6 +22,11 @@ const HINTS = [
     darwin: 'optional: brew install --cask temurin@17 (or set ARW_JAVA_HOME); without it set ARW_JAVA_AST=off',
     linux: 'optional: sudo apt install openjdk-17-jdk (or set ARW_JAVA_HOME); without it set ARW_JAVA_AST=off',
   }],
+  [/^docker$/, {
+    win32: 'optional: winget install Docker.DockerDesktop, then start Docker Desktop (PR code then runs in containers: no JDK or Maven needed here)',
+    darwin: 'optional: brew install --cask docker, then start Docker (PR code then runs in containers)',
+    linux: 'optional: install Docker Engine (https://docs.docker.com/engine/install/) and start it (PR code then runs in containers)',
+  }],
   [/^config\/repos\.json$/, { local: true, all: 'add a repository: node src/cli/arw.js sandbox setup <folder> --register (or edit config/repos.json)' }],
   [/^codex preflight\b/, { local: true, all: 'codex login; if the model is not offered to your login, set CODEX_MODEL in .env to one that is' }],
   [/^Jira\b/, { local: true, all: 'optional: set JIRA_URL and a token in .env, configure config/mcp.json, or use arw ticket KEY --from-file' }],

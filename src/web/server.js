@@ -154,6 +154,10 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
         language: process.env.ARW_OUTPUT_LANGUAGE || 'English',
         jira: Boolean(process.env.JIRA_URL),
         workers: Number(process.env.ARW_WORKERS) || 4,
+        // Review defaults from Settings (a preset); flags add to them.
+        review_mode: process.env.ARW_REVIEW_MODE || 'multi-agent',
+        repro: process.env.ARW_REPRO || 'on',
+        preset: process.env.ARW_PRESET || null,
       };
     }],
     ['GET', /^\/api\/runs$/, () => data.listRuns()],
@@ -208,6 +212,13 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
       return JSON.parse(out);
     }],
 
+    // First-run setup: the same core as `arw setup` and the setup scripts.
+    ['GET', /^\/api\/setup$/, () => {
+      const setup = require('../lib/setup');
+      return { environment: setup.checkEnvironment(), state: setup.projectState(), presets: setup.PRESETS, essentials: require('../lib/settings').ESSENTIAL_KEYS };
+    }],
+    ['POST', /^\/api\/setup\/init$/, () => require('../lib/setup').init()],
+    ['POST', /^\/api\/setup\/preset$/, (m, q, body) => require('../lib/setup').applyPreset(String(body.id || ''), { force: Boolean(body.force) })],
     ['POST', /^\/api\/reviews$/, async (m, q, body) => {
       const repo = knownRepo(String(body.repo || ''));
       return queue.enqueue(reviewJob(repo, prNumber(body.pr), body));

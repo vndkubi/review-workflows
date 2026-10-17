@@ -8,7 +8,7 @@
     for PRs   GitHub CLI (+ gh auth login): GitHub PR reviews and publishing
     optional  JDK 17 (-WithJava): precise Java impact analysis, repro of Java PRs on this machine
               Docker Desktop (-WithDocker): sandboxed repro; then no Java or Maven is needed here
-  Then creates .env and config/repos.json if they are missing, and runs `arw doctor`.
+  Then runs `arw setup` (project files, -Preset fast|thorough|java-docker) and `arw doctor`.
   It asks before every install (unless -Yes) and is safe to run again.
 
 .EXAMPLE
@@ -22,7 +22,9 @@ param(
   [switch]$WithJava,    # also offer Temurin JDK 17
   [switch]$WithDocker,  # also offer Docker Desktop
   [switch]$SkipLogin,   # do not run gh auth login / codex login
-  [switch]$SkipDoctor   # do not run arw doctor (it makes one tiny codex call)
+  [switch]$SkipDoctor,  # do not run arw doctor (it makes one tiny codex call)
+  [ValidateSet('', 'fast', 'thorough', 'java-docker')]
+  [string]$Preset = ''  # apply a preset: fast | thorough | java-docker (see arw setup)
 )
 
 $ErrorActionPreference = 'Continue'
@@ -124,18 +126,6 @@ if (-not $hasDocker -and $WithDocker) {
 }
 if ($hasDocker) { Ok 'docker' ((& docker --version) | Select-Object -First 1) } else { Say '  --    docker         optional (-WithDocker): runs PR code in containers (then set ARW_SANDBOX=docker)' }
 
-Say ''
-Say 'Project files'
-$envFile = Join-Path $Root '.env'
-if (Test-Path $envFile) { Ok '.env' 'exists' }
-elseif ($CheckOnly) { Miss '.env' 'would be copied from .env.example' }
-else { Copy-Item (Join-Path $Root '.env.example') $envFile; Ok '.env' 'created from .env.example' }
-
-$reposFile = Join-Path $Root 'config\repos.json'
-if (Test-Path $reposFile) { Ok 'repos.json' 'exists' }
-elseif ($CheckOnly) { Miss 'repos.json' 'would be created empty' }
-else { Set-Content -Path $reposFile -Value "{`n  `"repos`": {}`n}" -Encoding ascii; Ok 'repos.json' 'created empty: add repositories later' }
-
 if (-not $SkipLogin) {
   Say ''
   Say 'Sign-in'
@@ -151,6 +141,16 @@ if (-not $SkipLogin) {
     elseif (Ask 'Sign in to codex now (codex login)?') { Run-Codex login }
     else { Miss 'codex login' 'run: codex login' }
   }
+}
+
+# Project files and the preset: the same core as the dashboard's setup wizard.
+if ((Node-Major) -ge 20) {
+  Say ''
+  Say 'arw setup'
+  $setupArgs = @('setup')
+  if ($CheckOnly) { $setupArgs += '--check' }
+  elseif ($Preset) { $setupArgs += @('--preset', $Preset) }
+  & node (Join-Path $Root 'src\cli\arw.js') @setupArgs
 }
 
 if (-not $SkipDoctor -and -not $CheckOnly -and (Node-Major) -ge 20) {

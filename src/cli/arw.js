@@ -70,6 +70,9 @@ Other:
   arw clean [--older-than 14] [--runs] [--no-worktrees] [--no-attempts] [--apply]
                     disk usage and cleanup of old runs (preview unless --apply)
   arw status        list runs
+  arw setup [--preset fast|thorough|java-docker] [--force] [--check]
+                    what this machine has (and how to fix what is missing), the project files,
+                    and a preset for the settings that matter; --check changes nothing
   arw doctor        check git, gh, codex, config`;
 
 function models() {
@@ -161,6 +164,8 @@ async function cmdReview(argv) {
 
 async function reviewOne(args, local, pr) {
   const pfDir = path.join(RUNS, '.preflight');
+  // ARW_REVIEW_MODE / ARW_REPRO (a preset) unless a flag says so.
+  const defaults = require('../lib/setup').reviewDefaults(args);
   const res = await reviewPr({
     repo: args.repo,
     pr,
@@ -171,12 +176,12 @@ async function reviewOne(args, local, pr) {
     models: models(),
     workers: Number(args.workers) || envInt('ARW_WORKERS', 4),
     singleRole: args.singleRole,
-    singleAgent: args.singleAgent,
+    singleAgent: defaults.singleAgent,
     skipSeams: args.skipSeams,
     skipRebuttals: args.skipRebuttals,
     skipSynthesis: args.skipSynthesis,
     refresh: args.refresh,
-    noRepro: args.noRepro,
+    noRepro: defaults.noRepro,
     prepared: local ? local.prepared : undefined,
     log,
   });
@@ -419,6 +424,35 @@ function cmdStatus() {
   return 0;
 }
 
+// First run: the same core as the dashboard's setup wizard and the scripts.
+function cmdSetup(argv) {
+  const args = parseArgs(argv, ['check', 'force']);
+  const setup = require('../lib/setup');
+  const env = setup.checkEnvironment();
+  console.log('Environment');
+  for (const i of env.items) {
+    console.log(`  ${i.ok ? 'ok  ' : i.required ? 'MISS' : '--  '} ${i.label.padEnd(32)} ${i.detail}`);
+    if (i.fix) console.log(`       ${''.padEnd(32)} fix: ${i.fix}`);
+  }
+  if (!args.check) {
+    const { created } = setup.init();
+    if (created.length) console.log(`\nCreated ${created.join(' and ')}.`);
+    if (args.preset) {
+      const r = setup.applyPreset(String(args.preset), { force: args.force });
+      console.log(`\nApplied preset ${r.preset}: ${r.updated.join(', ')}`);
+    }
+  }
+  const state = setup.projectState();
+  console.log('\nPresets (arw setup --preset <id>, or Settings in the dashboard)');
+  for (const p of setup.PRESETS) {
+    console.log(`  ${p.id.padEnd(12)} ${p.name}${state.preset === p.id ? ' (current)' : ''}: ${p.summary}`);
+    if (p.needs.length) console.log(`  ${''.padEnd(12)} needs: ${p.needs.join(', ')}`);
+  }
+  console.log(`\nRepositories: ${state.repos || 'none yet'}${state.repos ? '' : ' (add one: node src/cli/arw.js sandbox setup <folder> --register, or Settings > Repositories)'}`);
+  console.log('Dashboard: npm start');
+  return env.ready ? 0 : 1;
+}
+
 async function cmdDoctor() {
   const checks = [];
   const tryRun = (name, fn) => {
@@ -593,6 +627,8 @@ async function main(argv) {
       return cmdWatch(rest);
     case 'status':
       return cmdStatus();
+    case 'setup':
+      return cmdSetup(rest);
     case 'doctor':
       return cmdDoctor();
     case 'ui':

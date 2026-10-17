@@ -23,6 +23,8 @@ const ENV_SETTINGS = [
   ['CODEX_WINDOWS_SANDBOX', 'executor', 'enum', 'unelevated', 'Windows sandbox for workers (codex >= 0.162).', ['unelevated', 'elevated']],
   ['CODEX_TIMEOUT_MS', 'executor', 'number', '1800000', 'Timeout per model call (ms).', null, [60000, 7200000]],
   ['ARW_WORKERS', 'review', 'number', '4', 'Parallel review workers.', null, [1, 8]],
+  ['ARW_REVIEW_MODE', 'review', 'enum', 'multi-agent', 'How a review runs unless a flag says otherwise. multi-agent: planner, units, seams, red team, synthesis. single-agent: one reviewer over the whole diff (cheaper, less coverage).', ['multi-agent', 'single-agent']],
+  ['ARW_PRESET', 'review', 'enum', '', 'The preset last applied from Settings or arw setup (informational).', ['', 'fast', 'thorough', 'java-docker']],
   ['ARW_REPAIR_ATTEMPTS', 'review', 'number', '2', 'Repairs of an invalid model answer before one fresh retry.', null, [0, 5]],
   ['ARW_OUTPUT_LANGUAGE', 'review', 'string', 'English', 'Language of titles, explanations and given/when/then. Quotes stay verbatim.'],
   ['ARW_PR_INTENT', 'review', 'enum', 'review', 'A PR review without a ticket run derives the intent (business or technical) from the PR description, linked issues, commit messages and the comments and test names its author added (never the code) and builds the usual spec tables. review: reviews right away against that spec, labelled unconfirmed until a person approves it. confirm: the review waits until a person approves it. off: no intent.', ['review', 'confirm', 'off']],
@@ -49,6 +51,7 @@ const ENV_SETTINGS = [
   ['ARW_NOTIFY_WEBHOOK', 'automation', 'secret', '', 'Any URL that accepts a JSON POST when a review finishes.'],
   ['ARW_NOTIFY_ON', 'automation', 'enum', 'findings', 'Notify for every review, only with findings, or only with P1/P2 (or a failed review).', ['all', 'findings', 'blocking']],
   ['ARW_DASHBOARD_URL', 'automation', 'url', '', 'Base URL of this dashboard, for links in notifications.'],
+  ['ARW_REPRO', 'repro', 'enum', 'on', 'Reproduce blocking findings with a test after the review unless a flag says otherwise (executes PR code: on the host unless ARW_SANDBOX is set).', ['on', 'off']],
   ['REPRO_TIMEOUT_MS', 'repro', 'number', '900000', 'Timeout per repro test run (ms).', null, [30000, 3600000]],
   ['ARW_SANDBOX', 'repro', 'enum', 'off', 'Where repro and impacted tests run. docker: a container with the images below. bootstrap: offline in an environment set up per review (image found from the source, dependencies resolved at base, in-house libraries built; see the Sandbox page).', ['off', 'docker', 'bootstrap']],
   ['ARW_SANDBOX_RESOLVE_NETWORK', 'repro', 'string', '', 'Docker network for the dependency resolution step of bootstrap (the only step with network). Empty = bridge.'],
@@ -72,6 +75,10 @@ const ENV_SETTINGS = [
 ].map(([key, group, type, def, help, options, range]) => ({ key, group, type, default: def, help, options: options || null, range: range || null }));
 
 const BY_KEY = new Map(ENV_SETTINGS.map((s) => [s.key, s]));
+
+// What a new user needs to look at (with the repositories); the rest is
+// Advanced and fine at its default.
+const ESSENTIAL_KEYS = ['CODEX_MODEL', 'CODEX_EFFORT', 'ARW_OUTPUT_LANGUAGE', 'ARW_WORKERS', 'ARW_MAX_CALLS', 'ARW_PR_INTENT', 'ARW_SANDBOX'];
 
 // ---------- .env ----------
 function parseEnvFile(text) {
@@ -105,7 +112,7 @@ function readEnvSettings() {
     // say so instead of showing a file value that is not in effect.
     const shadowed = inFile && process.env[s.key] !== undefined && process.env[s.key] !== fileValues.get(s.key);
     const source = shadowed ? 'environment (overrides .env)' : inFile ? '.env' : process.env[s.key] !== undefined ? 'environment' : 'default';
-    const base = { key: s.key, group: s.group, type: s.type, default: s.default, help: s.help, options: s.options, range: s.range, source };
+    const base = { key: s.key, group: s.group, type: s.type, default: s.default, help: s.help, options: s.options, range: s.range, source, essential: ESSENTIAL_KEYS.includes(s.key) };
     if (s.type === 'secret') return { ...base, set: Boolean(value) };
     return { ...base, value: value === undefined ? '' : value };
   });
@@ -301,4 +308,9 @@ function addRepo(name, checkout) {
   return { ...writeRepos(list), added: true };
 }
 
-module.exports = { ENV_SETTINGS, readAll, readEnvSettings, writeEnvSettings, readRepos, writeRepos, addRepo, readMcp, writeMcp, parseEnvFile, modelSuggestions };
+// Where the settings live (tests point them elsewhere).
+function files() {
+  return { env: ENV_FILE(), repos: REPOS_FILE(), mcp: MCP_FILE() };
+}
+
+module.exports = { ENV_SETTINGS, ESSENTIAL_KEYS, files, readAll, readEnvSettings, writeEnvSettings, readRepos, writeRepos, addRepo, readMcp, writeMcp, parseEnvFile, modelSuggestions };

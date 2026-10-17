@@ -232,9 +232,23 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 [-WithJava] [-WithDoc
 scripts/setup.sh [--with-java] [--with-docker]
 ```
 
-It installs what is missing (winget on Windows, brew/apt/dnf elsewhere), creates `.env` and an empty
-`config/repos.json`, signs in to gh and codex, and runs `arw doctor`, which prints a `fix:` line for anything
-still missing. There are no npm dependencies: Node is only the runtime.
+It installs what is missing (winget on Windows, brew/apt/dnf elsewhere), signs in to gh and codex, then runs
+`arw setup` and `arw doctor` (a `fix:` line for anything still missing). There are no npm dependencies: Node is
+only the runtime.
+
+`arw setup [--preset fast|thorough|java-docker] [--check]` is the shared core, also behind the dashboard's
+**Set up** wizard (`#/setup`, offered on the home page while no repository is configured): what this machine
+has and how to fix what is missing, `.env` and an empty `config/repos.json` when they do not exist, and a
+preset for the settings that decide cost and depth:
+
+| Preset | What it sets | Needs |
+|---|---|---|
+| `fast` | one reviewer over the whole diff (`ARW_REVIEW_MODE=single-agent`), no reproduction (`ARW_REPRO=off`), low effort, 20 calls | — |
+| `thorough` | every wave, reproduction in Docker containers, high effort, 120 calls | Docker |
+| `java-docker` | thorough + per-repository bootstrap sandbox, impacted tests, javac call resolution, 150 calls | Docker, JDK 11+ |
+
+Settings shows seven **Essentials** (model, effort, language, workers, call budget, ticketless PRs, where PR
+code runs) and the repositories; the rest is under **Advanced** and fine at its default.
 
 | Needed | For |
 |---|---|
