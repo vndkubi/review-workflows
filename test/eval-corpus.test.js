@@ -123,6 +123,36 @@ test('mining: without a merge commit the introducing commit itself is the case',
   assert.ok(!fs.existsSync(path.join(evals.evalDir(), 'cases', `${c.id}.json`)));
 });
 
+// Incident (Mindustry #12659): a squash-merged PR is one commit on main. A
+// later merge of main into another branch also "brings it in" from that
+// branch's point of view; taking that merge made the case range wider than the PR.
+test('mining: a commit on the main line is its own PR, whatever merges follow', () => {
+  fs.rmSync(path.join(evals.evalDir(), 'candidates'), { recursive: true, force: true });
+  const dir = tmpDir('arw-corpus-sq-');
+  sh(dir, ['init', '-q', '-b', 'main']);
+  write(dir, 'src/A.java', 'class A {\n  int f() { return 1; }\n}\n');
+  sh(dir, ['add', '-A']);
+  sh(dir, ['commit', '-q', '-m', 'base']);
+  sh(dir, ['checkout', '-q', '-b', 'other']);
+  write(dir, 'src/B.java', 'class B {}\n');
+  sh(dir, ['add', '-A']);
+  sh(dir, ['commit', '-q', '-m', 'other work']);
+  sh(dir, ['checkout', '-q', 'main']);
+  write(dir, 'src/A.java', 'class A {\n  int f() { return 2; }\n}\n');
+  sh(dir, ['commit', '-q', '-am', 'Change f (#12)']);
+  const intro = sh(dir, ['rev-parse', 'HEAD']);
+  sh(dir, ['checkout', '-q', 'other']);
+  sh(dir, ['merge', '-q', '--no-ff', '-m', 'Merge main into other', 'main']);
+  sh(dir, ['checkout', '-q', 'main']);
+  sh(dir, ['merge', '-q', '--no-ff', '-m', 'Merge pull request #13 from other', 'other']);
+  write(dir, 'src/A.java', 'class A {\n  int f() { return 1; }\n}\n');
+  sh(dir, ['commit', '-q', '-am', 'Fix f regression']);
+  const c = corpus.mineFixes({ repo: dir, prefix: 'sq' }).candidates[0];
+  assert.equal(c.source.range, 'commit');
+  assert.deepEqual([c.base, c.head], [sh(dir, ['rev-parse', `${intro}^`]), intro]);
+  assert.equal(c.source.pr, 12);
+});
+
 test('martian import: prose comments become path-scoped keyword labels on the PR range', () => {
   const dir = tmpDir('arw-corpus-m-');
   sh(dir, ['init', '-q', '-b', 'main']);

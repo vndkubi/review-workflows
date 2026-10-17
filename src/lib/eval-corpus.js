@@ -58,15 +58,17 @@ function blame(repo, rev, r) {
   return rows;
 }
 
-// The PR that brought `sha` in: the oldest merge on the way to `tip` whose
-// second parent has it and first parent does not. null for squash/rebase.
+// The PR that brought `sha` in: the first commit on tip's first-parent line
+// that descends from it, when that is a merge whose second parent has it.
+// null for squash/rebase or a commit made on the main line. One rev-list,
+// not one process per merge (Mindustry has thousands).
 function mergeOf(repo, sha, tip) {
-  const out = git.git(repo, ['rev-list', '--merges', '--ancestry-path', '--reverse', `${sha}..${tip}`], { allowFail: true }) || '';
+  const out = git.git(repo, ['rev-list', '--first-parent', '--ancestry-path', '--reverse', `${sha}..${tip}`], { allowFail: true }) || '';
+  const m = out.split(/\s+/).filter(Boolean)[0];
+  if (!m) return null;
   const isAnc = (a, b) => git.git(repo, ['merge-base', '--is-ancestor', a, b], { allowFail: true }) !== null;
-  for (const m of out.split(/\s+/).filter(Boolean)) {
-    if (isAnc(sha, `${m}^2`) && !isAnc(sha, `${m}^1`)) return m;
-  }
-  return null;
+  const second = git.git(repo, ['rev-parse', '--verify', '--quiet', `${m}^2`], { allowFail: true });
+  return second && isAnc(sha, `${m}^2`) && !isAnc(sha, `${m}^1`) ? m : null;
 }
 
 // Where a block of lines sits in `rev`: exactly one place, or null.
