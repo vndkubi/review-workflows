@@ -58,9 +58,11 @@ const RULES = [
   { id: 'CK-JV-3', paths: /mapper[^/]*\.xml$/i, lines: [/@Mapper\b|@(Select|Insert|Update|Delete)\(|resultMap|<(select|insert|update|delete)\b/] },
 ];
 
+// No cap by default: quality first, a needless viewpoint costs one
+// "not_applicable" row. ARW_UNIT_CHECKS caps it when a run must be cheaper.
 function maxChecks() {
   const n = Number(process.env.ARW_UNIT_CHECKS);
-  return Number.isInteger(n) && n > 0 ? n : 12;
+  return Number.isInteger(n) && n > 0 ? n : Infinity;
 }
 
 // Checklist ids in the order the checklist lists them, each once.

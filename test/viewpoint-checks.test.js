@@ -69,6 +69,29 @@ test('selectChecks: a unit answers at most max viewpoints, the first in checklis
   assert.deepEqual(selectChecks(service, CHECKLIST, { max: 2 }), ['CK-TX-1', 'CK-TX-3']);
 });
 
+test('selectChecks: no cap unless ARW_UNIT_CHECKS sets one', () => {
+  // A busy legacy method touches more than a dozen viewpoints; every one is asked.
+  const busy = parsePatch(diff(SERVICE, [
+    '    @Transactional @KafkaListener',
+    '    public void settle(BigDecimal amount, LocalDate day) {',
+    '        if (repo.existsById(id) && amount > LIMIT) { rest.postForObject(url, o, R.class); }',
+    '        try (InputStream in = open()) { repo.save(o); } catch (Exception e) { log.info("token " + token); }',
+    '        retry(3); counter = new AtomicLong(); equals(o);',
+    '    }',
+  ]));
+  const full = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'config', 'policies', 'checklist.md'), 'utf8');
+  const before = process.env.ARW_UNIT_CHECKS;
+  try {
+    delete process.env.ARW_UNIT_CHECKS;
+    assert.ok(selectChecks(busy, full).length > 12, `got ${selectChecks(busy, full).join(', ')}`);
+    process.env.ARW_UNIT_CHECKS = '3';
+    assert.deepEqual(selectChecks(PATCH.filter((p) => p.path === SERVICE), CHECKLIST), ['CK-TX-1', 'CK-TX-3', 'CK-TX-4']);
+  } finally {
+    if (before === undefined) delete process.env.ARW_UNIT_CHECKS;
+    else process.env.ARW_UNIT_CHECKS = before;
+  }
+});
+
 test('assignChecks: substantive units get their files\' viewpoints; sweeps and seams get none', () => {
   const units = [
     { id: 'B1', kind: 'business', covers: [`file:${SERVICE}`, 'I1'], roles: ['business', 'technical'] },
