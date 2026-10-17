@@ -47,6 +47,7 @@ function checkLabel(l, at, errors) {
     if (!Array.isArray(l.keywords) || !l.keywords.length) errors.push(`${at}: a prose label needs keywords`);
     if (l.paths !== undefined && !(Array.isArray(l.paths) && l.paths.every((p) => typeof p === 'string' && p))) errors.push(`${at}.paths: list of files`);
     if (l.min_keywords !== undefined && !(Number.isInteger(l.min_keywords) && l.min_keywords >= 1)) errors.push(`${at}.min_keywords: a positive integer`);
+    for (const [i, a] of (l.anchors || []).entries()) if (!a || typeof a.path !== 'string' || !(Array.isArray(a.lines) && a.lines.length === 2)) errors.push(`${at}.anchors[${i}]: { path, lines: [start, end] }`);
   } else if (!l.path || typeof l.path !== 'string') errors.push(`${at}.path: the file the defect is in`);
   if (l.lines !== undefined && !(Array.isArray(l.lines) && l.lines.length === 2 && l.lines.every(Number.isInteger) && l.lines[0] <= l.lines[1])) errors.push(`${at}.lines: [start, end]`);
   if (l.keywords !== undefined && !(Array.isArray(l.keywords) && l.keywords.every((k) => typeof k === 'string' && k.trim()))) errors.push(`${at}.keywords: list of words`);
@@ -119,6 +120,36 @@ function matches(f, label) {
   return true;
 }
 
+// Prose labels of one case often share identifiers (the PR's main class), so
+// a shared keyword alone does not tell them apart. A label with keywords of
+// its own needs one of them; each finding then meets only its best label.
+// Returns { labelId: [findingId, ...] }.
+function assignProse(findings, labels) {
+  const prose = labels.filter((l) => l.approx);
+  const count = new Map();
+  for (const l of prose) for (const k of new Set(l.keywords.map((x) => x.toLowerCase()))) count.set(k, (count.get(k) || 0) + 1);
+  const out = {};
+  for (const f of findings) {
+    const text = `${f.title} ${f.asis} ${f.tobe} ${f.impact || ''}`.toLowerCase();
+    let best = null;
+    for (const l of prose) {
+      // Anchors are a person's links of earlier findings to this comment.
+      if ((l.anchors || []).some((a) => matches(f, { path: a.path, lines: a.lines }))) {
+        best = { id: l.id, score: Infinity };
+        break;
+      }
+      if (!matches(f, l)) continue;
+      const own = l.keywords.filter((k) => count.get(k.toLowerCase()) === 1);
+      const ownHits = own.filter((k) => text.includes(k.toLowerCase())).length;
+      if (own.length && !ownHits) continue;
+      const score = 2 * ownHits + l.keywords.filter((k) => text.includes(k.toLowerCase())).length - ownHits;
+      if (!best || score > best.score) best = { id: l.id, score };
+    }
+    if (best) (out[best.id] = out[best.id] || []).push(f.id);
+  }
+  return out;
+}
+
 function ratio(a, b) {
   return b ? Math.round((a / b) * 1000) / 1000 : null;
 }
@@ -127,8 +158,11 @@ function scoreCase(c, runDir) {
   const res = runDir && reviewFindings(runDir);
   if (!res) return { id: c.id, status: 'NO_RESULT', expected: (c.expected || []).length, found: 0, recall: (c.expected || []).length ? 0 : null, tp: 0, fp: 0, unlabelled: 0, precision: null, details: { expected: [], findings: [] } };
   const { validation, shown, withdrawn } = res;
+  const proseShown = assignProse(shown, c.expected || []);
+  const proseWithdrawn = assignProse(withdrawn, c.expected || []);
+  const hitsOf = (list, assigned, e) => (e.approx ? list.filter((f) => (assigned[e.id] || []).includes(f.id)) : list.filter((f) => matches(f, e)));
   const expected = (c.expected || []).map((e) => {
-    const hits = shown.filter((f) => matches(f, e));
+    const hits = hitsOf(shown, proseShown, e);
     const best = hits.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity])[0];
     return {
       id: e.id,
@@ -138,11 +172,11 @@ function scoreCase(c, runDir) {
       severity: best ? best.severity : null,
       severity_ok: best ? !e.severity_at_least || SEVERITY_RANK[best.severity] <= SEVERITY_RANK[e.severity_at_least] : null,
       // The red team withdrew a real defect: a cost of the rebuttal stage.
-      withdrawn_by: withdrawn.filter((f) => matches(f, e)).map((f) => f.id),
+      withdrawn_by: hitsOf(withdrawn, proseWithdrawn, e).map((f) => f.id),
     };
   });
   const findings = shown.map((f) => {
-    const exp = (c.expected || []).filter((e) => matches(f, e)).map((e) => e.id);
+    const exp = (c.expected || []).filter((e) => hitsOf([f], proseShown, e).length).map((e) => e.id);
     const fps = (c.not_expected || []).filter((e) => matches(f, e)).map((e) => e.id);
     return { id: f.id, severity: f.severity, label: f.label, title: f.title, path: ((f.evidence || []).find((e) => e.kind === 'code') || {}).path || null, verdict: exp.length ? 'tp' : fps.length ? 'fp' : 'unlabelled', labels: exp.length ? exp : fps };
   });
@@ -425,8 +459,9 @@ function caseFromRun(runDir, { id, force } = {}) {
 
 // Label one finding of an eval run as a true (tp) or false (fp) positive in
 // its case file.
-function labelFinding({ runId, caseId, findingId, as, severity }) {
+function labelFinding({ runId, caseId, findingId, as, severity, linkTo }) {
   if (!['tp', 'fp'].includes(as)) throw new Error('--as tp|fp');
+  if (linkTo && as !== 'tp') throw new Error('--label links a true positive to a prose label');
   const card = loadRun(runId);
   const s = card.cases.find((x) => x.id === caseId);
   if (!s || !s.run_dir) throw new Error(`case ${caseId} has no run in ${runId}`);
@@ -435,6 +470,15 @@ function labelFinding({ runId, caseId, findingId, as, severity }) {
   if (!f) throw new Error(`no finding ${findingId} in ${runId}/${caseId}`);
   const c = loadCases({ only: [caseId] })[0];
   if (!c) throw new Error(`no case ${caseId}`);
+  if (linkTo) {
+    const target = (c.expected || []).find((e) => e.id === linkTo && e.approx);
+    if (!target) throw new Error(`no prose label ${linkTo} in ${caseId}`);
+    const anchor = labelFrom(f, linkTo);
+    if (!anchor) throw new Error(`${findingId} cites no code to anchor a label on`);
+    target.anchors = [...(target.anchors || []), { path: anchor.path, lines: anchor.lines, from_finding: f.id, title: f.title }];
+    writeCase(c, { force: true });
+    return { ...anchor, linked: linkTo };
+  }
   const list = as === 'tp' ? (c.expected = c.expected || []) : (c.not_expected = c.not_expected || []);
   const label = labelFrom(f, `${as === 'tp' ? 'E' : 'N'}${list.length + 1}`, as === 'tp' ? { severity_at_least: severity || f.severity } : { why: 'labelled false positive' });
   if (!label) throw new Error(`${findingId} cites no code to anchor a label on`);
@@ -443,4 +487,4 @@ function labelFinding({ runId, caseId, findingId, as, severity }) {
   return label;
 }
 
-module.exports = { CONFIGS, evalDir, casesDir, writeCase, loadCases, validateCase, scoreCase, aggregate, renderScorecard, runEval, rescore, listRuns, loadRun, compare, caseFromRun, labelFinding, matches, keywordsOf };
+module.exports = { CONFIGS, evalDir, casesDir, writeCase, loadCases, validateCase, scoreCase, aggregate, renderScorecard, runEval, rescore, listRuns, loadRun, compare, caseFromRun, labelFinding, matches, assignProse, keywordsOf };

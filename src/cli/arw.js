@@ -365,7 +365,11 @@ async function cmdEval(argv) {
   }
   if (sub === 'label') {
     if (!args.run || !args.case || !args.finding || !args.as) throw new Error('usage: arw eval label --run <eval run> --case <id> --finding <id> --as tp|fp [--severity P2]');
-    const label = evals.labelFinding({ runId: String(args.run), caseId: String(args.case), findingId: String(args.finding), as: String(args.as), severity: args.severity });
+    const label = evals.labelFinding({ runId: String(args.run), caseId: String(args.case), findingId: String(args.finding), as: String(args.as), severity: args.severity, linkTo: args.to ? String(args.to) : undefined });
+    if (label.linked) {
+      console.log(`linked ${args.finding} to ${label.linked}: anchor ${label.path}:${label.lines.join('-')} — re-score with: arw eval rescore ${args.run}`);
+      return 0;
+    }
     console.log(`added ${label.id}: ${label.path}:${label.lines.join('-')} keywords ${label.keywords.join(', ')} — re-score with: arw eval rescore ${args.run}`);
     return 0;
   }
@@ -407,7 +411,8 @@ async function cmdEval(argv) {
   arw eval run [--case a,b] [--label name] [--config single-agent|multi-agent|multi-agent+repro]
                                                   review every case (one process and runs dir each), then score
   arw eval list | show <run> | rescore <run> | compare <run A> <run B>
-  arw eval label --run <run> --case <id> --finding <id> --as tp|fp [--severity P2]
+  arw eval label --run <run> --case <id> --finding <id> --as tp|fp [--severity P2] [--to <prose label id>]
+                                                  --to: the finding says what a prose label says, in other words
   arw eval add (--repo owner/name --pr <n> | --run <run dir>) [--id name] [--force]
                                                   a case from a reviewed PR: kept findings expected, dropped/rejected not
   arw eval mine --repo <clone> [--prefix x] [--limit 20]

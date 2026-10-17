@@ -34,6 +34,27 @@ test('prose labels: matched by path scope and keywords, never by prose alone', (
   assert.match(evals.validateCase({ id: 'p', repo: r, base: head, head, expected: [{ id: 'M3', keywords: ['x'] }] }).join(';'), /expected\[0\]\.path/);
 });
 
+// Incident (martian-sentry-1): one finding about math.floor on datetimes was
+// counted for three comments because all of them name the PR's main class.
+test('prose labels: a shared identifier is not enough, and one finding meets one label', () => {
+  const p = 'src/sentry/api/paginator.py';
+  const labels = [
+    { id: 'M1', prose: 'negative slicing', paths: [p], keywords: ['optimizedcursorpaginator', 'organization_auditlogs', 'assertionerror'], min_keywords: 1, approx: true },
+    { id: 'M3', prose: 'math.floor on datetime', paths: [p], keywords: ['get_item_key', 'order_by', 'math.floor', 'typeerror'], min_keywords: 1, approx: true },
+    { id: 'M4', prose: 'missing import', paths: [p], keywords: ['optimizedcursorpaginator'], min_keywords: 1, approx: true },
+  ];
+  const f1 = finding(p, 'OptimizedCursorPaginator passes the datetime to math.floor');
+  assert.deepEqual(evals.assignProse([f1], labels), { M3: ['F1'] });
+  const f2 = { ...finding(p, 'OptimizedCursorPaginator is imported but never defined'), id: 'F2' };
+  assert.deepEqual(evals.assignProse([f1, f2], labels), { M3: ['F1'], M4: ['F2'] }, 'a label of shared keywords only can still be met by another finding');
+  // A person linked a finding in other words to M1: its code anchor counts from then on.
+  const f3 = { ...finding(p, 'Negative cursor offsets break pagination', [240, 244]), id: 'F3' };
+  assert.deepEqual(evals.assignProse([f3], labels), {});
+  const linked = labels.map((l) => (l.id === 'M1' ? { ...l, anchors: [{ path: p, lines: [242, 242] }] } : l));
+  assert.deepEqual(evals.assignProse([f1, f3], linked), { M3: ['F1'], M1: ['F3'] });
+  assert.deepEqual(evals.assignProse([{ ...f3, evidence: [{ kind: 'code', path: p, start_line: 300, end_line: 301 }] }], linked), {}, 'anchors are line-precise');
+});
+
 function repoWithFix({ merge = true } = {}) {
   const dir = tmpDir('arw-corpus-repo-');
   sh(dir, ['init', '-q', '-b', 'main']);
