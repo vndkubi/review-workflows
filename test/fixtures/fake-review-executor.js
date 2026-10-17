@@ -5,6 +5,7 @@
 // covers, and nothing else.
 const fs = require('node:fs');
 const path = require('node:path');
+const { viewpointVerdicts } = require('../helpers');
 
 function result(output, prompt) {
   return { ok: true, output, exit_code: 0, elapsed_ms: 1, usage: { input_tokens: Math.ceil(prompt.length / 4), cached_input_tokens: 0, output_tokens: 50, reasoning_output_tokens: 0 }, turns: 1, commands: 0, error_class: null, error_message: null, model: 'fake', prompt_bytes: prompt.length };
@@ -59,7 +60,7 @@ function packet(prompt, cwd) {
       }
     }
   }
-  return { schema_version: '1.0', context_digest: digest, unit_id: unit.id, role, summary: `${unit.id} reviewed`, dependency_refs: [], coverage, item_verdicts: [], findings, recommendation: findings.length ? 'findings' : 'no_findings' };
+  return { schema_version: '1.0', context_digest: digest, unit_id: unit.id, role, summary: `${unit.id} reviewed`, dependency_refs: [], coverage, item_verdicts: [], viewpoint_verdicts: viewpointVerdicts(prompt), findings, recommendation: findings.length ? 'findings' : 'no_findings' };
 }
 
 module.exports = async function fakeExecutor(opts) {

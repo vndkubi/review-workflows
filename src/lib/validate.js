@@ -8,6 +8,7 @@ const { sha256, sha256Value } = require('./util');
 const { validateAgainst } = require('./schema');
 const git = require('./git');
 const { readInput, revisionDir } = require('./freeze');
+const { checkRole } = require('./viewpoint-checks');
 
 const MAX_RANGE = 200;
 const END_SLACK = 5;
@@ -356,6 +357,29 @@ function validatePacket(packet, env) {
   for (const [id, n] of verdictItems) if (n > 1) errors.push(`$.item_verdicts: ${id} appears ${n} times`);
   if (role === 'business') {
     for (const id of coveredItems) if (!verdictItems.has(id)) errors.push(`$.item_verdicts: missing a verdict for ${id}`);
+  }
+
+  // Viewpoint matrix: the runtime assigned the unit's checklist viewpoints;
+  // the answering role gives exactly one verdict for each, the other none.
+  const checks = unit.checks || [];
+  const answering = checks.length && unit.roles ? checkRole(unit) : role;
+  const vpVerdicts = packet.viewpoint_verdicts || [];
+  if (role !== answering && vpVerdicts.length) {
+    errors.push(`$.viewpoint_verdicts: must be []; the ${answering} reviewer of ${unit.id} answers them`);
+  } else {
+    const seenVp = new Map();
+    vpVerdicts.forEach((v, i) => {
+      const at = `$.viewpoint_verdicts[${i}]`;
+      seenVp.set(v.viewpoint, (seenVp.get(v.viewpoint) || 0) + 1);
+      if (!checks.includes(v.viewpoint)) errors.push(`${at}.viewpoint: ${v.viewpoint} is not a viewpoint assigned to unit ${unit.id} (${checks.join(', ') || 'none'})`);
+      const under = packet.findings.filter((f) => f.authority.kind === 'curated_viewpoint' && f.authority.id === v.viewpoint);
+      if (v.verdict === 'pass' && !v.evidence.some((ev) => ev.kind === 'code')) errors.push(`${at}: "pass" needs code evidence; without it use "cannot_determine"`);
+      if (v.verdict === 'fail' && !under.length) errors.push(`${at}: "fail" for ${v.viewpoint} needs a finding whose authority is curated_viewpoint ${v.viewpoint}`);
+      if (v.verdict !== 'fail' && under.length) errors.push(`${at}: ${under.map((f) => f.id).join(', ')} violates ${v.viewpoint}, but its verdict is "${v.verdict}"; use "fail"`);
+      v.evidence.forEach((ev, j) => errors.push(...validateEvidence(ev, sources, `${at}.evidence[${j}]`)));
+    });
+    for (const [id, n] of seenVp) if (n > 1) errors.push(`$.viewpoint_verdicts: ${id} appears ${n} times`);
+    if (role === answering) for (const id of checks) if (!seenVp.has(id)) errors.push(`$.viewpoint_verdicts: missing a verdict for ${id}`);
   }
 
   // Findings.

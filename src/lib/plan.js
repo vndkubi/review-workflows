@@ -172,9 +172,9 @@ function renderPlanMarkdown({ identity, plan, units, items, reviewable, skipped 
   out.push('## Hypotheses', '');
   if (!plan.hypotheses.length) out.push('(none)');
   plan.hypotheses.forEach((h) => out.push(`- **${h.id}** [${h.confidence}] ${h.statement}${h.items.length ? ` — ${h.items.join(', ')}` : ''}`));
-  out.push('', '## Units', '', '| Unit | Kind | Roles | Covers | Depends on | Description |', '|---|---|---|---|---|---|');
+  out.push('', '## Units', '', '| Unit | Kind | Roles | Covers | Viewpoint checks | Depends on | Description |', '|---|---|---|---|---|---|---|');
   for (const u of units) {
-    out.push(`| ${u.id} | ${u.kind} | ${u.roles.join(', ')} | ${u.covers.length} | ${u.depends_on.join(', ') || '—'} | ${u.desc.replace(/\|/g, '\\|')} |`);
+    out.push(`| ${u.id} | ${u.kind} | ${u.roles.join(', ')} | ${u.covers.length} | ${(u.checks || []).join(', ') || '—'} | ${u.depends_on.join(', ') || '—'} | ${u.desc.replace(/\|/g, '\\|')} |`);
   }
   out.push('', `## Coverage ledger (${reviewable.length} reviewable files)`, '');
   for (const f of reviewable) {

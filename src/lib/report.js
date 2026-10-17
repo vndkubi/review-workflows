@@ -149,6 +149,23 @@ function renderReport(runDir, validation, identity) {
       out.push(`| ${r.id} | ${r.kind} | ${r.risk} | **${r.result}** | ${cell(item.expected)} | ${cell(notes).slice(0, 400)} |`);
     }
   }
+  if (validation.checks && validation.checks.length) {
+    const tally = {};
+    for (const c of validation.checks) tally[c.verdict] = (tally[c.verdict] || 0) + 1;
+    const unitIds = [...new Set(validation.checks.map((c) => c.unit_id))];
+    const viewpoints = [...new Set(validation.checks.map((c) => c.viewpoint))].sort();
+    const MARK = { pass: 'pass', fail: '**FAIL**', not_applicable: 'n/a', cannot_determine: '?', not_answered: '—' };
+    out.push('', `## Viewpoint checks (${Object.entries(tally).map(([k, n]) => `${k} ${n}`).join(' · ')})`, '');
+    out.push('Viewpoints the runtime assigned from what each unit\'s changed lines touch. "?" could not be determined; "—" no valid packet answered.', '');
+    out.push(`| Viewpoint | ${unitIds.join(' | ')} |`, `|---|${unitIds.map(() => '---').join('|')}|`);
+    for (const vp of viewpoints) {
+      const row = unitIds.map((u) => {
+        const c = validation.checks.find((x) => x.unit_id === u && x.viewpoint === vp);
+        return c ? MARK[c.verdict] || c.verdict : '';
+      });
+      out.push(`| ${vp} | ${row.join(' | ')} |`);
+    }
+  }
   if (synthesis) {
     out.push('', '## Overview', '');
     for (const flow of synthesis.overview) out.push(`- **${flow.flow}** — ${flow.change}${flow.finding_ids.length ? ` (${flow.finding_ids.join(', ')})` : ''}`);

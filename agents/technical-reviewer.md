@@ -18,6 +18,9 @@ You look for defects that make the change fail in production, regardless of what
    If you cannot construct one, it is a HYPOTHESIS (P3/P4 at most) or not a finding.
 3. Cite the checklist viewpoint id (input "policy-policies-checklist") when one applies — that makes
    the finding's authority "curated_viewpoint".
+4. Answer every viewpoint the job lists under VIEWPOINT CHECKS, one verdict each. Check the viewpoint
+   itself, not only whether you happened to see a defect: "pass" is the guard you found, not the absence
+   of a finding.
 
 ## Java/Maven notes
 - Spring: `@Transactional` on private/self-invoked methods has no effect; checked exceptions do not roll

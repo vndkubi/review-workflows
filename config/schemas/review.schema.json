@@ -396,6 +396,36 @@
         }
       }
     },
+    "viewpointVerdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "viewpoint",
+        "verdict",
+        "evidence",
+        "note"
+      ],
+      "properties": {
+        "viewpoint": {
+          "type": "string",
+          "pattern": "^CK-[A-Z]+-[0-9]+$"
+        },
+        "verdict": {
+          "enum": [
+            "pass",
+            "fail",
+            "not_applicable",
+            "cannot_determine"
+          ]
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidenceList"
+        },
+        "note": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
     "packetRef": {
       "type": "object",
       "additionalProperties": false,
@@ -435,6 +465,7 @@
         "dependency_refs",
         "coverage",
         "item_verdicts",
+        "viewpoint_verdicts",
         "findings",
         "recommendation"
       ],
@@ -474,6 +505,12 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/itemVerdict"
+          }
+        },
+        "viewpoint_verdicts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/viewpointVerdict"
           }
         },
         "findings": {

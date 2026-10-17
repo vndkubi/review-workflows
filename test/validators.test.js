@@ -70,6 +70,7 @@ function goodPacket() {
       { id: `file:${ORDER}`, disposition: 'reviewed', evidence: [codeEv], note: 'n' },
     ],
     item_verdicts: [{ item: 'I1', verdict: 'fail', evidence: [codeEv], note: 'n' }, { item: 'I2', verdict: 'cannot_determine', evidence: [codeEv], note: 'negative totals fall through to zero discount' }],
+    viewpoint_verdicts: [],
     findings: [goodFinding()],
     recommendation: 'findings',
   };

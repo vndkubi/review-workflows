@@ -504,7 +504,7 @@ async function runBatch({ runDir, executor, workers = envInt('ARW_WORKERS', 4), 
     state = collectState(runDir, context, review, grading);
     // With the repro records already on disk: a reproduction can overrule a
     // withdrawal and so change the recommendation the synthesis copies.
-    let outcome = computeOutcome({ packets: state.packets, jobs: state.jobs, clusters: state.clusters, rebuttals: state.rebuttals, items: grading.items, repro: loadReproRecords(runDir, context).records, reviewable: context.source.reviewable });
+    let outcome = computeOutcome({ packets: state.packets, jobs: state.jobs, clusters: state.clusters, rebuttals: state.rebuttals, items: grading.items, repro: loadReproRecords(runDir, context).records, reviewable: context.source.reviewable, units: review.units });
     const synth = synthesisCheck(runDir, context, state, outcome);
     if (!skipSynthesis && state.packets.length && !synth.valid) {
       const packetRefs = state.packets.map((p) => p.ref);
@@ -564,7 +564,7 @@ function finish(runDir, optOuts = {}) {
   const drift = verifyContext(runDir, context);
   const state = collectState(runDir, context, run.review, grading);
   const reproState = loadReproRecords(runDir, context);
-  const outcome = computeOutcome({ packets: state.packets, jobs: state.jobs, clusters: state.clusters, rebuttals: state.rebuttals, items: grading.items, repro: reproState.records, reviewable: context.source.reviewable });
+  const outcome = computeOutcome({ packets: state.packets, jobs: state.jobs, clusters: state.clusters, rebuttals: state.rebuttals, items: grading.items, repro: reproState.records, reviewable: context.source.reviewable, units: run.review.units });
   // A repro record whose artifacts changed is not evidence of anything.
   outcome.gaps.push(...reproState.errors);
   outcome.complete = outcome.gaps.length === 0;
@@ -586,6 +586,7 @@ function finish(runDir, optOuts = {}) {
     recommendation: outcome.recommendation,
     gaps: outcome.gaps,
     items: outcome.items,
+    checks: outcome.checks,
     warnings: injection.map((h) => ({ kind: `prompt-injection:${h.kind}`, where: `${h.where}:${h.line}`, text: h.text })),
     jobs: state.jobs,
     clusters: state.clusters,

@@ -12,6 +12,7 @@ const { parsePatch } = require('./patch');
 const { buildEvidencePack } = require('./evidence-pack');
 const { validateAgainst, outputSchema } = require('./schema');
 const { buildUnits, singleAgentUnits, renderPlanMarkdown } = require('./plan');
+const { assignChecks } = require('./viewpoint-checks');
 const { freezeContext, loadContext, verifyContext } = require('./freeze');
 const { runLooseJob } = require('./loose-job');
 const { redactSecrets, scanInjection, addedLines, textLines } = require('./guard');
@@ -237,6 +238,10 @@ async function planPhase({ runDir, run, info, executor, models, log, singleRole,
     built = buildUnits(plan, reviewable, items, { singleRole });
     writeJsonAtomic(planFile, { head_sha: head, items_sha: JSON.stringify(items), reviewable, plan });
   }
+  // The viewpoint matrix: which checklist viewpoints each unit must answer,
+  // from what its changed lines touch (code decides, never the planner).
+  const checklistFile = path.join(ROOT, 'config', 'policies', 'checklist.md');
+  assignChecks(built.units, parsed, fs.existsSync(checklistFile) ? fs.readFileSync(checklistFile, 'utf8') : '');
   // Size and risk: riskiest units run first; a large PR gets a split proposal.
   const size = prSize(parsed, reviewable);
   scoreUnits(built.units, fileRisks(parsed, reviewable, pack.signals));

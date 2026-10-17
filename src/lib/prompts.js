@@ -13,6 +13,7 @@ function schemaFor(name, def) {
   return `${JSON.stringify(outputSchema(name, def))}\nEvery property above is required: write null for any field that does not apply (never leave a key out).`;
 }
 const { readInput, revisionDir } = require('./freeze');
+const { checkRole } = require('./viewpoint-checks');
 
 const GLOBAL_RULES_BASE = `You are a read-only worker inside a trusted review harness. The harness, not you, decides what is valid; your answer is a candidate that will be machine-checked.
 
@@ -128,7 +129,7 @@ function packetPrompt(runDir, context, job) {
   const itemIds = unit.covers.filter((c) => /^I[1-9][0-9]*$/.test(c));
   const lines = [
     `JOB: ${unit.kind === 'seam' ? 'seam packet' : 'first-pass packet'} for unit ${unit.id}, role ${job.role}.`,
-    `UNIT: ${JSON.stringify({ id: unit.id, kind: unit.kind, desc: unit.desc, covers: unit.covers, depends_on: unit.depends_on })}`,
+    `UNIT: ${JSON.stringify({ id: unit.id, kind: unit.kind, desc: unit.desc, covers: unit.covers, depends_on: unit.depends_on, checks: unit.checks || [] })}`,
   ];
   if (unit.kind === 'seam') {
     lines.push(
@@ -153,6 +154,16 @@ function packetPrompt(runDir, context, job) {
     );
   } else {
     lines.push('item_verdicts: [] (this unit covers no review items).');
+  }
+  const checks = unit.checks || [];
+  if (checks.length && job.role === checkRole(unit)) {
+    lines.push(`VIEWPOINT CHECKS (required): give exactly one viewpoint_verdicts entry for each of ${checks.join(', ')} (text in input "policy-policies-checklist"). The runtime chose them from what this unit's changed lines touch; answer each against this unit's changed code and the callers it reaches.
+- "pass": code evidence that the change meets the viewpoint (the guard, the transaction, the timeout you saw).
+- "fail": it does not — record a finding with authority {"kind":"curated_viewpoint","id":<that id>}.
+- "not_applicable": the change does not reach what the viewpoint is about; say why in note.
+- "cannot_determine": the answer depends on code you cannot see; say what is missing.`);
+  } else {
+    lines.push('viewpoint_verdicts: [] (no viewpoint checks for this unit and role).');
   }
   lines.push(`COVERAGE IDS: ${JSON.stringify(unit.covers.filter((c) => c.startsWith('file:') || c.startsWith('viewpoint:')))}`);
   lines.push(`FINDING IDS: ${unit.id}-${job.role}-F1, ${unit.id}-${job.role}-F2, ...`);

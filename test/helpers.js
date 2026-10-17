@@ -146,6 +146,17 @@ function scriptedExecutor(handler) {
   return exec;
 }
 
+// The viewpoint matrix as a scripted reviewer answers it: "fail" for a
+// viewpoint one of its findings cites, "cannot_determine" for the rest.
+function viewpointVerdicts(prompt, findings = []) {
+  const m = prompt.match(/^VIEWPOINT CHECKS \(required\): give exactly one viewpoint_verdicts entry for each of (.*?) \(text/m);
+  if (!m) return [];
+  return m[1].split(', ').map((viewpoint) => {
+    const f = findings.find((x) => x.authority.kind === 'curated_viewpoint' && x.authority.id === viewpoint);
+    return f ? { viewpoint, verdict: 'fail', evidence: f.evidence, note: f.title } : { viewpoint, verdict: 'cannot_determine', evidence: [], note: 'not checked by the scripted reviewer' };
+  });
+}
+
 // Evidence pointing at the first line of `file` at `rev` containing `quote`.
 function evidenceAt(dir, rev, file, quote, extra = {}) {
   const text = sh(dir, ['show', `${rev}:${file}`]);
@@ -155,4 +166,4 @@ function evidenceAt(dir, rev, file, quote, extra = {}) {
   return { kind: 'code', path: file, start_line: i + 1, end_line: i + 1, quote, ...extra };
 }
 
-module.exports = { tmpDir, sh, write, makeRepo, scriptedExecutor, evidenceAt, ORDER_HEAD, FEES_HEAD };
+module.exports = { tmpDir, sh, write, makeRepo, scriptedExecutor, evidenceAt, viewpointVerdicts, ORDER_HEAD, FEES_HEAD };

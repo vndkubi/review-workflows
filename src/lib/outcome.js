@@ -10,7 +10,8 @@ const BLOCKING = new Set(['P1', 'P2']);
 // clusters: findingClusters output; rebuttals: Map finding_id -> rebuttal
 // repro: Map finding_id -> validated repro record (repro.loadReproRecords).
 // reviewable: the frozen reviewable files; each needs a "reviewed" row somewhere.
-function computeOutcome({ packets, jobs, clusters, rebuttals, items, repro = new Map(), reviewable = null }) {
+// units: the review units; their assigned viewpoints form the matrix.
+function computeOutcome({ packets, jobs, clusters, rebuttals, items, repro = new Map(), reviewable = null, units = [] }) {
   const findings = [];
   const clusterOf = new Map();
   for (const c of clusters) for (const id of c.members) clusterOf.set(id, c);
@@ -108,7 +109,22 @@ function computeOutcome({ packets, jobs, clusters, rebuttals, items, repro = new
   if (blockingOpen.length) recommendation = 'changes_requested';
   else if (gaps.length) recommendation = 'needs_investigation';
 
-  return { findings, gaps, complete: gaps.length === 0, recommendation, items: itemResults };
+  return { findings, gaps, complete: gaps.length === 0, recommendation, items: itemResults, checks: viewpointMatrix(units, packets) };
+}
+
+// One cell per assigned viewpoint of each unit. A cell no valid packet
+// answered stays in the matrix as "not_answered": a blind spot is shown, not
+// dropped.
+function viewpointMatrix(units, packets) {
+  const cells = [];
+  for (const u of units || []) {
+    for (const viewpoint of u.checks || []) {
+      const answers = packets.filter((p) => p.unit_id === u.id).flatMap((p) => (p.packet.viewpoint_verdicts || []).filter((v) => v.viewpoint === viewpoint).map((v) => ({ role: p.role, ...v })));
+      const v = answers[0];
+      cells.push({ unit_id: u.id, viewpoint, verdict: v ? v.verdict : 'not_answered', note: v ? v.note : '', role: v ? v.role : null });
+    }
+  }
+  return cells;
 }
 
 // Static, quote-validated evidence is L1 (SUSPECTED); agreement between models
