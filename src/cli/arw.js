@@ -442,7 +442,12 @@ async function cmdDoctor() {
   }
   const pf = await preflight({ cwd: ROOT, attemptDir: path.join(RUNS, '.preflight'), model: executorConfig().model });
   checks.push([`codex preflight (model ${executorConfig().model || 'default'})`, pf.ok ? 'ok' : 'FAIL', pf.ok ? `${pf.elapsed_ms} ms, ${pf.usage.input_tokens} input tokens` : `${pf.error_class}: ${pf.error_message}`]);
-  for (const [name, status, detail] of checks) console.log(`${status.padEnd(4)} ${name.padEnd(36)} ${detail}`);
+  const { fixHint } = require('../lib/setup-hints');
+  for (const [name, status, detail] of checks) {
+    console.log(`${status.padEnd(4)} ${name.padEnd(36)} ${detail}`);
+    const hint = status === 'ok' ? null : fixHint(name);
+    if (hint) console.log(`     ${''.padEnd(36)} fix: ${hint}`);
+  }
   return checks.some((c) => c[1] === 'FAIL') ? 1 : 0;
 }
 

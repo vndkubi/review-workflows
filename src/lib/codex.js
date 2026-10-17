@@ -10,7 +10,9 @@ const { ensureDir, envInt } = require('./util');
 const { redactSecrets } = require('./guard');
 
 function resolveCodex() {
-  if (process.env.CODEX_BIN) return { cmd: process.execPath, pre: [process.env.CODEX_BIN] };
+  // CODEX_BIN: the npm package's JS entry (run with this node) or a
+  // standalone codex binary (run as it is).
+  if (process.env.CODEX_BIN) return /\.[cm]?js$/i.test(process.env.CODEX_BIN) ? { cmd: process.execPath, pre: [process.env.CODEX_BIN] } : { cmd: process.env.CODEX_BIN, pre: [] };
   if (process.platform === 'win32') {
     // npm installs a .cmd shim that cannot be spawned without a shell;
     // run the package's JS entry with this node instead.

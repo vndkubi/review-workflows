@@ -223,6 +223,28 @@ both resolved), 23 s for the next review.
 
 ## Setup
 
+One step on a new machine (asks before every install, safe to run again; `-CheckOnly` / `--check-only` only reports):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 [-WithJava] [-WithDocker]
+```
+```bash
+scripts/setup.sh [--with-java] [--with-docker]
+```
+
+It installs what is missing (winget on Windows, brew/apt/dnf elsewhere), creates `.env` and an empty
+`config/repos.json`, signs in to gh and codex, and runs `arw doctor`, which prints a `fix:` line for anything
+still missing. There are no npm dependencies: Node is only the runtime.
+
+| Needed | For |
+|---|---|
+| Node ≥ 20 (npm comes with it), git, codex CLI + `codex login` | everything |
+| GitHub CLI + `gh auth login` | GitHub PR reviews and publishing (not local reviews or tickets from a file) |
+| JDK 11+ (optional) | precise Java impact analysis; without it a structural index is used (`ARW_JAVA_AST=off`) |
+| Docker (optional) | PR code (repro, impacted tests) in containers: the images bring the JDK, Maven and pytest, so the host needs none of them |
+
+`CODEX_BIN` may point at a standalone codex binary instead of the npm package.
+
 ```bash
 npm run doctor
 ```
