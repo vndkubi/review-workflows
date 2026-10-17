@@ -9,6 +9,7 @@ const { validateAgainst } = require('./schema');
 const git = require('./git');
 const { readInput, revisionDir } = require('./freeze');
 const { checkRole } = require('./viewpoint-checks');
+const { resolveAnchor, hunkAnchors } = require('./anchors');
 
 const MAX_RANGE = 200;
 const END_SLACK = 5;
@@ -54,6 +55,14 @@ function makeSources(runDir, context) {
     },
     inputIds() {
       return context.inputs.map((i) => i.id);
+    },
+    // Hunk ids of the frozen review.patch (verified with the context).
+    anchors() {
+      if (!lineCache.has('anchors')) {
+        const file = path.join(dir, 'review.patch');
+        lineCache.set('anchors', fs.existsSync(file) ? hunkAnchors(fs.readFileSync(file, 'utf8')) : []);
+      }
+      return lineCache.get('anchors');
     },
     policyText() {
       return cached('policy-all', () =>
@@ -229,10 +238,28 @@ function canonicalizeCandidate(candidate, sources) {
     }
   };
   const list = (arr, at) => (Array.isArray(arr) ? arr.forEach((ev, i) => fixEvidence(ev, `${at}[${i}]`)) : null);
+  // Coverage and verdict evidence may cite a diff hunk; the frozen source
+  // supplies path, line and quote. An anchor that does not resolve is left
+  // for the validator to name.
+  const anchors = sources && sources.anchors ? sources.anchors() : null;
+  const anchored = (arr, at) => {
+    if (Array.isArray(arr) && anchors) {
+      arr.forEach((ev, i) => {
+        if (!ev || typeof ev !== 'object' || typeof ev.anchor !== 'string') return;
+        const r = resolveAnchor(ev.anchor, anchors, (file, rev) => sources.code(file, rev));
+        if (!r.evidence) return;
+        changes.push(`${at}[${i}]: anchor ${ev.anchor} -> ${r.evidence.path}:${r.evidence.start_line}`);
+        for (const k of Object.keys(ev)) delete ev[k];
+        Object.assign(ev, r.evidence);
+      });
+    }
+    list(arr, at);
+  };
   if (!candidate || typeof candidate !== 'object') return changes;
   list(candidate.evidence, '$.evidence');
-  (candidate.coverage || []).forEach((c, i) => list(c && c.evidence, `$.coverage[${i}].evidence`));
-  (candidate.item_verdicts || []).forEach((v, i) => list(v && v.evidence, `$.item_verdicts[${i}].evidence`));
+  (candidate.coverage || []).forEach((c, i) => anchored(c && c.evidence, `$.coverage[${i}].evidence`));
+  (candidate.item_verdicts || []).forEach((v, i) => anchored(v && v.evidence, `$.item_verdicts[${i}].evidence`));
+  (candidate.viewpoint_verdicts || []).forEach((v, i) => anchored(v && v.evidence, `$.viewpoint_verdicts[${i}].evidence`));
   (candidate.overview || []).forEach((f, i) => list(f && f.evidence, `$.overview[${i}].evidence`));
   (candidate.findings || []).forEach((f, i) => {
     if (!f || typeof f !== 'object') return;
@@ -252,6 +279,12 @@ function canonicalizeCandidate(candidate, sources) {
 
 function validateEvidence(ev, sources, at) {
   const errors = [];
+  // Canonicalization resolves anchors where they are allowed; one still here
+  // is unknown, or sits where the quote is the claim.
+  if (ev.anchor !== undefined) {
+    const r = sources.anchors ? resolveAnchor(ev.anchor, sources.anchors(), (file, rev) => sources.code(file, rev)) : { error: 'no diff anchors in this context' };
+    return [`${at}.anchor: ${r.error || 'only coverage and verdict evidence may cite a hunk; quote the code verbatim'}`];
+  }
   if (ev.kind === 'code') {
     if (path.isAbsolute(ev.path) || ev.path.split('/').includes('..')) {
       return [`${at}.path: must be repository-relative, got "${ev.path}"`];

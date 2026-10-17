@@ -131,11 +131,14 @@ function itemsOf(feature) {
   return spec().review_items.filter((i) => i.feature === feature);
 }
 
-function coverage(unit) {
+// A reviewer cites the file's diff hunk when the job lists one, else quotes.
+function coverage(unit, prompt = '') {
   return unit.covers.filter((id) => id.startsWith('file:') || id.startsWith('viewpoint:')).map((id) => {
     if (id.startsWith('file:')) {
       const file = id.slice(5);
-      return { id, disposition: 'reviewed', evidence: [code(file, FIRST_QUOTE[file])], note: 'read the changed function' };
+      const anchor = prompt.split('\n').map((l) => l.match(/^- (H\d+) (\S+) lines /)).find((m) => m && m[2] === file);
+      const evidence = anchor ? { kind: 'code', anchor: anchor[1], path: '-', start_line: 0, end_line: 0, quote: '-' } : code(file, FIRST_QUOTE[file]);
+      return { id, disposition: 'reviewed', evidence: [evidence], note: 'read the changed function' };
     }
     return { id, disposition: 'unverified', evidence: [], note: 'whole-diff sweep found nothing specific to cite' };
   });
@@ -178,7 +181,7 @@ function packetFor(prompt) {
   const unit = JSON.parse(prompt.match(/^UNIT: (.*)$/m)[1]);
   const role = prompt.match(/^JOB: .* role (business|technical)\.$/m)[1];
   const repair = prompt.includes('REPAIR MODE');
-  const p = { schema_version: '1.0', context_digest: digest, unit_id: unit.id, role, summary: `${unit.id} reviewed`, dependency_refs: [], coverage: coverage(unit), item_verdicts: [], findings: [], recommendation: 'no_findings' };
+  const p = { schema_version: '1.0', context_digest: digest, unit_id: unit.id, role, summary: `${unit.id} reviewed`, dependency_refs: [], coverage: coverage(unit, prompt), item_verdicts: [], findings: [], recommendation: 'no_findings' };
   const covered = spec().review_items.filter((i) => unit.covers.includes(i.id));
   if (role === 'business') p.item_verdicts = verdictsFor(covered);
   const key = `${unit.id}/${role}`;
@@ -390,6 +393,11 @@ test('ticket pipeline -> PR review, end to end', async (t) => {
     // The ticket and the PR body both try to instruct the reviewer.
     assert.deepEqual(validation.warnings.map((w) => w.where.split(':')[0]).sort(), ['PR description', 'ticket']);
     assert.match(workerPrompts[0].prompt, /Instruction-like text in PR content \(2\)/, 'workers are told where it is');
+    // Coverage cited diff hunks; the stored packet holds the runtime's resolved quote.
+    assert.match(workerPrompts[0].prompt, /^DIFF ANCHORS \(hunks of this unit's files at the reviewed head\):\n- H\d+ /m);
+    const b1 = JSON.parse(fs.readFileSync(path.join(revisionDir(runDir, loadContext(runDir).context_id), 'packets/technical/B1.json'), 'utf8'));
+    const orderRow = b1.coverage.find((r) => r.id === 'file:src/main/java/com/acme/OrderService.java');
+    assert.deepEqual([orderRow.evidence[0].anchor, orderRow.evidence[0].start_line, orderRow.evidence[0].quote], [undefined, 9, IF_LINE]);
     const text = fs.readFileSync(report, 'utf8');
     assert.match(text, /## ⚠ Instruction-like text aimed at AI reviewers \(2\)/);
     assert.match(text, /## Review items \(/);

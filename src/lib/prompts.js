@@ -2,6 +2,7 @@
 // Prompt builders. Order is chosen for provider prefix caching: byte-stable
 // parts first (global rules, then run-level shared inputs, then role charter
 // and schema), the volatile per-job payload last.
+const fs = require('node:fs');
 const path = require('node:path');
 const { prunedSchema, outputSchema, loadSchema } = require('./schema');
 
@@ -14,6 +15,7 @@ function schemaFor(name, def) {
 }
 const { readInput, revisionDir } = require('./freeze');
 const { checkRole } = require('./viewpoint-checks');
+const { hunkAnchors, renderAnchors } = require('./anchors');
 
 const GLOBAL_RULES_BASE = `You are a read-only worker inside a trusted review harness. The harness, not you, decides what is valid; your answer is a candidate that will be machine-checked.
 
@@ -66,6 +68,7 @@ const PACKET_RULES = `FINDINGS
 COVERAGE
 - Exactly one coverage row per "file:..." and "viewpoint:..." id in the unit's covers, and no other rows. Review item ids (I<n>) are not coverage rows; they are answered in item_verdicts.
 - A "reviewed" row needs evidence; a reviewed "file:<path>" row needs at least one code evidence with that path.
+- DIFF ANCHORS: in coverage rows, item_verdicts and viewpoint_verdicts, cite a changed hunk instead of quoting: {"kind":"code","anchor":"H3","path":"-","start_line":0,"end_line":0,"quote":"-"} is the hunk's first changed line; "anchor":"H3:47" is line 47 inside it. The runtime fills path, lines and quote from the frozen diff. Prefer an anchor whenever the code you mean is inside a changed hunk; quote verbatim only for code outside the diff. Findings (evidence, authority, verification) always quote verbatim, never an anchor.
 - An "unverified" row says in its note why it could not be checked.
 - recommendation: "findings" when findings is non-empty, otherwise "no_findings" or "needs_investigation".`;
 
@@ -165,6 +168,9 @@ function packetPrompt(runDir, context, job) {
   } else {
     lines.push('viewpoint_verdicts: [] (no viewpoint checks for this unit and role).');
   }
+  const patchFile = path.join(revisionDir(runDir, context.context_id), 'review.patch');
+  const anchorText = fs.existsSync(patchFile) ? renderAnchors(hunkAnchors(fs.readFileSync(patchFile, 'utf8')), unit.covers.filter((c) => c.startsWith('file:')).map((c) => c.slice(5))) : '';
+  if (anchorText) lines.push(`DIFF ANCHORS (hunks of this unit's files at the reviewed head):\n${anchorText}`);
   lines.push(`COVERAGE IDS: ${JSON.stringify(unit.covers.filter((c) => c.startsWith('file:') || c.startsWith('viewpoint:')))}`);
   lines.push(`FINDING IDS: ${unit.id}-${job.role}-F1, ${unit.id}-${job.role}-F2, ...`);
   lines.push('schema_version, context_digest, unit_id, role and dependency_refs are filled in by the runtime; any value is accepted there.');

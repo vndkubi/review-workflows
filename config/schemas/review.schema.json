@@ -172,6 +172,57 @@
         "$ref": "#/$defs/evidence"
       }
     },
+    "verdictEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "path",
+        "start_line",
+        "end_line",
+        "quote"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "code",
+            "input",
+            "artifact"
+          ]
+        },
+        "anchor": {
+          "type": "string",
+          "pattern": "^H[1-9][0-9]*(:[1-9][0-9]*)?$"
+        },
+        "path": {
+          "$ref": "#/$defs/text"
+        },
+        "revision": {
+          "enum": [
+            "reviewed",
+            "base"
+          ]
+        },
+        "sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "start_line": {
+          "type": "integer"
+        },
+        "end_line": {
+          "type": "integer"
+        },
+        "quote": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "verdictEvidenceList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/verdictEvidence"
+      }
+    },
     "authority": {
       "type": "object",
       "additionalProperties": false,
@@ -360,7 +411,7 @@
           ]
         },
         "evidence": {
-          "$ref": "#/$defs/evidenceList"
+          "$ref": "#/$defs/verdictEvidenceList"
         },
         "note": {
           "$ref": "#/$defs/text"
@@ -389,7 +440,7 @@
           ]
         },
         "evidence": {
-          "$ref": "#/$defs/evidenceList"
+          "$ref": "#/$defs/verdictEvidenceList"
         },
         "note": {
           "$ref": "#/$defs/text"
@@ -419,7 +470,7 @@
           ]
         },
         "evidence": {
-          "$ref": "#/$defs/evidenceList"
+          "$ref": "#/$defs/verdictEvidenceList"
         },
         "note": {
           "$ref": "#/$defs/text"
