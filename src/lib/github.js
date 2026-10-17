@@ -32,14 +32,30 @@ function sourceCheckoutFor(repo) {
   return { checkout: entry.checkout, remote: entry.remote || 'origin', test_command: entry.test_command || null };
 }
 
-// Detached worktree at the PR head; the base is the merge-base with the
-// target branch, so the diff is exactly what the PR adds.
+// The merge-base with the target branch, so the diff is exactly what the PR
+// adds. Once merged, the branch holds the head and the merge-base is the head
+// itself: the base is then the parent of the PR's first commit.
+function prBase(checkout, baseRef, head, firstParent) {
+  const base = mergeBase(checkout, baseRef, head);
+  if (base !== head) return base;
+  const parent = firstParent();
+  const behind = parent && parent !== head && git(checkout, ['merge-base', '--is-ancestor', parent, head], { allowFail: true }) !== null;
+  if (!behind) throw new Error(`cannot tell the base of the merged PR at ${head.slice(0, 12)}: the target branch already contains it`);
+  return revParse(checkout, parent);
+}
+
+function firstCommitParent(repo, pr) {
+  const out = gh(['api', `repos/${repo}/pulls/${pr}/commits?per_page=100`, '--jq', '.[0].parents[0].sha']).trim();
+  return out || null;
+}
+
+// Detached worktree at the PR head, diffed against prBase.
 function preparePrWorktree({ repo, pr, info, worktree }) {
   const { checkout, remote } = sourceCheckoutFor(repo);
   git(checkout, ['fetch', '--no-tags', remote, `+refs/pull/${pr}/head:refs/arw/pr-${pr}`, `+refs/heads/${info.baseRefName}:refs/arw/base-${pr}`]);
   const head = revParse(checkout, `refs/arw/pr-${pr}`);
   if (head !== info.headRefOid) throw new Error(`fetched head ${head} != PR head ${info.headRefOid}; the PR moved, retry`);
-  const base = mergeBase(checkout, `refs/arw/base-${pr}`, head);
+  const base = prBase(checkout, `refs/arw/base-${pr}`, head, () => firstCommitParent(repo, pr));
   if (fs.existsSync(worktree)) {
     const current = git(worktree, ['rev-parse', 'HEAD'], { allowFail: true });
     if (current && current.trim() === head && git(worktree, ['status', '--porcelain']).trim() === '') return { checkout: worktree, head, base, source: checkout };
@@ -99,4 +115,4 @@ function parsePrList(value) {
   return out;
 }
 
-module.exports = { gh, prView, reposConfig, sourceCheckoutFor, preparePrWorktree, removeWorktree, createPendingReview, currentLogin, apiGet, graphql, parsePrList };
+module.exports = { gh, prView, prBase, reposConfig, sourceCheckoutFor, preparePrWorktree, removeWorktree, createPendingReview, currentLogin, apiGet, graphql, parsePrList };
