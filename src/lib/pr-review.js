@@ -24,7 +24,7 @@ const { runImpactedTests, renderImpacted, enabled: impactedEnabled } = require('
 const { makeSources } = require('./validate');
 const { writeReport } = require('./report');
 const { extractTicketKey } = require('./jira');
-const { approvedTicketInputs } = require('./ticket-pipeline');
+const { approvedTicketInputs, advanceTicket } = require('./ticket-pipeline');
 const { prDir, worktreeDir } = require('./runs');
 const github = require('./github');
 const prompts = require('./prompts');
@@ -72,13 +72,48 @@ function prepare({ repo, pr, prepared }) {
 
 // Phase 0.5: review items from the ticket's approved spec when it exists;
 // otherwise one item per requirement item, frozen but labelled unapproved.
-function ticketInputs(run, { ticket, info }) {
+// A ticket named in the PR wins when it has a run; otherwise the run of the
+// intent derived from this PR's description (pr-intent.js), when there is one.
+function ticketInputs(run, { ticket, info, repo = null, pr = null }) {
   const key = ticket || extractTicketKey(info.title, info.headRefName, (info.body || '').slice(0, 2000));
   run.identity.ticket = key || null;
+  const t = key ? approvedTicketInputs(key) : null;
+  if (t) return { key, ...t };
+  if (!ticket && repo && pr) {
+    const prKey = require('./pr-intent').prTicketKey(repo, pr);
+    const fromPr = approvedTicketInputs(prKey);
+    if (fromPr) {
+      run.identity.ticket = prKey;
+      run.identity.ticket_source = 'pr';
+      return { key: prKey, source: 'pr', ...fromPr };
+    }
+  }
   if (!key) return { key: null };
-  const t = approvedTicketInputs(key);
-  if (!t) return { key, note: `no ticket run for ${key}; run "arw ticket ${key}" first for requirement-grounded review` };
-  return { key, ...t };
+  return { key, note: `no ticket run for ${key}; run "arw ticket ${key}" first for requirement-grounded review` };
+}
+
+// No ticket run for this PR: derive the intent from what its author wrote and
+// build the usual requirement items and spec tables (stops at the SPEC gate;
+// unapproved items are labelled so). Off with ARW_PR_INTENT=off; never for a
+// local review, which has no description.
+async function ensurePrIntent({ run, tickets, repo, pr, info, checkout = null, base = null, head = null, commits = null, fetchIssue, executor, models = {}, log = () => {} }) {
+  const intent = require('./pr-intent');
+  if (tickets.items || !repo || !pr || !executor || !intent.enabled()) return tickets;
+  const key = intent.prTicketKey(repo, pr);
+  const msgs = commits || (checkout && base && head ? intent.commitMessages(checkout, base, head) : []);
+  log(`${tickets.key ? `no ticket run for ${tickets.key}` : 'no ticket'}: deriving the intent from the PR description as ${key}`);
+  let res;
+  try {
+    res = await advanceTicket({ key, fromPr: { repo, pr, info, commits: msgs, ...(fetchIssue ? { fetchIssue } : {}) }, repoDir: checkout, executor, models, log });
+  } catch (err) {
+    res = { state: 'FAILED', message: err.message };
+  }
+  if (res.state === 'FAILED') {
+    log(`could not derive the intent from the PR: ${res.message}`);
+    return tickets;
+  }
+  log(`derived the intent from the PR description as ${key} (${res.state}): it is the author's claim; confirm it at the SPEC gate`);
+  return ticketInputs(run, { info, repo, pr });
 }
 
 // The configured repository whose checkout is a local review's directory.
@@ -231,13 +266,16 @@ function freezePhase({ runDir, run, info, tickets, planned }) {
   return context;
 }
 
-async function reviewPr({ repo, pr, ticket, executor, preflight, models = {}, workers, singleRole, singleAgent = false, skipSeams, skipRebuttals, skipSynthesis, refresh, noRepro, reproRunner, testCommand, log = () => {}, prepared, ciApi = null, impactedRunner }) {
+async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight, models = {}, workers, singleRole, singleAgent = false, skipSeams, skipRebuttals, skipSynthesis, refresh, noRepro, reproRunner, testCommand, log = () => {}, prepared, ciApi = null, impactedRunner }) {
   // The single-agent baseline has no seams, red team or synthesis by definition.
   if (singleAgent) [skipSeams, skipRebuttals, skipSynthesis] = [true, true, true];
   const { runDir, run, info } = prepare({ repo, pr, prepared });
   log(`run dir ${runDir}; head ${run.identity.head_sha.slice(0, 12)} base ${run.identity.base_sha.slice(0, 12)}`);
-  const tickets = ticketInputs(run, { ticket, info });
-  if (tickets.note) log(tickets.note);
+  let tickets = ticketInputs(run, { ticket, info, repo: run.identity.local ? null : repo, pr: run.identity.local ? null : pr });
+  if (prIntent && !ticket && !run.identity.local) {
+    tickets = await ensurePrIntent({ run, tickets, repo, pr, info, checkout: run.identity.checkout, base: run.identity.base_sha, head: run.identity.head_sha, executor, models, log });
+  }
+  if (tickets.note && !tickets.items) log(tickets.note);
   if (tickets.items && !tickets.approved) log(`the spec for ${tickets.key} is NOT approved; review items come from raw requirement items and are labelled unapproved`);
   phase(run, runDir, 'ticket', tickets.key ? 'EXECUTED_PASS' : 'SKIPPED', { ticket: tickets.key, spec_approved: Boolean(tickets.approved), items: tickets.items ? tickets.items.length : 0 });
 
@@ -325,4 +363,4 @@ function revalidate(runDir) {
   return { validation, report: writeReport(runDir, validation, run.identity) };
 }
 
-module.exports = { reviewPr, revalidate, prepare, planPhase, freezePhase };
+module.exports = { reviewPr, revalidate, prepare, planPhase, freezePhase, ticketInputs, ensurePrIntent };

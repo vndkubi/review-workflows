@@ -81,13 +81,22 @@ function evidenceDigest(dir) {
   return JSON.stringify({ blocks: evidenceBlocks(dir), images: ticketImages(dir).map((i) => i.sha256) });
 }
 
-async function intake(dir, run, { key, fromFile, extras = [], imageFiles = [], log }) {
+async function intake(dir, run, { key, fromFile, fromPr, extras = [], imageFiles = [], log }) {
   let text;
   let source;
+  let intent = null;
   const pages = [];
   const linked = [];
   const images = [];
-  if (fromFile) {
+  if (fromPr) {
+    // No ticket: what the PR's author wrote, never the diff (see pr-intent.js).
+    const ev = await require('./pr-intent').prIntentEvidence(fromPr);
+    text = ev.text;
+    source = `github-pr:${fromPr.repo}#${fromPr.pr}`;
+    intent = 'pr';
+    linked.push(...ev.linked);
+    for (const n of ev.notes) log(n);
+  } else if (fromFile) {
     text = fs.readFileSync(fromFile, 'utf8');
     source = `file:${path.resolve(fromFile)}`;
   } else {
@@ -117,7 +126,7 @@ async function intake(dir, run, { key, fromFile, extras = [], imageFiles = [], l
   for (const file of extras) {
     writeFileAtomic(path.join(dir, 'evidence', path.basename(file).replace(/[^A-Za-z0-9._-]/g, '_')), clean(fs.readFileSync(file, 'utf8')));
   }
-  setStage(dir, run, 'intake', 'EXECUTED_PASS', { source, confluence_pages: pages.map((p) => ({ id: p.id, title: p.title })), linked: linked.map((l) => ({ key: l.key, relation: l.relation })), images: savedImages.map((i) => ({ name: i.name, bytes: i.bytes, source: i.source })), extras: extras.map((f) => path.basename(f)), redactions: redactions.reduce((n, r) => n + r.count, 0) });
+  setStage(dir, run, 'intake', 'EXECUTED_PASS', { source, ...(intent ? { intent } : {}), confluence_pages: pages.map((p) => ({ id: p.id, title: p.title })), linked: linked.map((l) => ({ key: l.key, relation: l.relation })), images: savedImages.map((i) => ({ name: i.name, bytes: i.bytes, source: i.source })), extras: extras.map((f) => path.basename(f)), redactions: redactions.reduce((n, r) => n + r.count, 0) });
 }
 
 function validateAnalysis(candidate, { key, items, repoDir }) {
@@ -172,7 +181,7 @@ function rejectionFeedback(dir) {
 }
 
 // Advance the pipeline; returns { dir, state, message }.
-async function advanceTicket({ key, fromFile, extras, images: imageFiles = [], repoDir, executor, models = {}, log = () => {}, redo }) {
+async function advanceTicket({ key, fromFile, fromPr, extras, images: imageFiles = [], repoDir, executor, models = {}, log = () => {}, redo }) {
   const dir = ensureDir(ticketDir(key));
   const run = loadRun(dir, key);
   if (redo && redo !== 'intake') {
@@ -180,10 +189,10 @@ async function advanceTicket({ key, fromFile, extras, images: imageFiles = [], r
     for (const stage of order.slice(order.indexOf(redo))) delete run.stages[stage];
   }
 
-  if (!run.stages.intake || run.stages.intake.status !== 'EXECUTED_PASS' || fromFile || imageFiles.length || redo === 'intake') {
+  if (!run.stages.intake || run.stages.intake.status !== 'EXECUTED_PASS' || fromFile || fromPr || imageFiles.length || redo === 'intake') {
     log('intake');
     const before = evidenceDigest(dir);
-    await intake(dir, run, { key, fromFile, extras, imageFiles, log });
+    await intake(dir, run, { key, fromFile, fromPr, extras, imageFiles, log });
     if (evidenceDigest(dir) !== before) {
       // New evidence: everything derived from the old evidence is stale.
       for (const stage of ['requirements', 'spec', 'analysis', 'ready']) delete run.stages[stage];
@@ -257,13 +266,15 @@ async function advanceTicket({ key, fromFile, extras, images: imageFiles = [], r
   }
   const spec = readJson(specFile);
 
+  // Intent read from a PR is its author's claim: no policy confirms it.
+  const fromAuthor = run.stages.intake && run.stages.intake.intent === 'pr';
   if (!isApproved(dir, 'SPEC')) {
-    if (process.env.ARW_AUTO_APPROVE_SPEC === '1' && spec.clean && gateState(dir, 'SPEC').decision !== 'rejected') {
+    if (process.env.ARW_AUTO_APPROVE_SPEC === '1' && spec.clean && !fromAuthor && gateState(dir, 'SPEC').decision !== 'rejected') {
       recordGate(dir, 'SPEC', 'approved', { by: 'policy:clean-spec', note: 'auto-approved: no gaps, no contradictions, no inferred rules' });
       log('SPEC auto-approved by policy (clean spec)');
     } else {
       const g = gateState(dir, 'SPEC');
-      let why = 'waiting for a decision';
+      let why = fromAuthor ? 'waiting for a person to confirm the intent the PR author describes (never auto-approved)' : 'waiting for a decision';
       if (g.decision === 'approved') why = 'the spec changed after approval';
       else if (g.decision === 'rejected') why = g.valid ? 'rejected — the next run rebuilds the spec from your note' : 'rebuilt from your rejection note; waiting for a decision (auto-approval is off after a rejection)';
       const s = spec.stats;

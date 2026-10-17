@@ -17,12 +17,14 @@ const USAGE = `arw — evidence-first ticket analysis and PR review (codex CLI w
 
 Ticket pipeline (understand the requirement; stops at each human gate):
   arw ticket <KEY> [--from-file ticket.md] [--extra notes.md ...] [--image screen.png ...] [--repo owner/name | --repo-dir <path>] [--redo intake|requirements|spec|analysis]
+  arw ticket [KEY] --from-pr owner/name#N      no ticket: the intent the PR author describes (description,
+                                               linked issues, commits; never the diff), confirmed at the SPEC gate
 
 PR review (plan -> freeze -> waves -> validate -> report):
   arw review --local [<repo dir>] [--base main] [--mode branch|staged|worktree | --head <commit>]
                                                self-review before a PR (--head: one commit range)
   arw review --repo owner/name --pr <n> [--ticket KEY] [--workers 4] [--single-role]
-             [--skip-seams] [--skip-rebuttals] [--skip-synthesis] [--refresh] [--no-repro]
+             [--skip-seams] [--skip-rebuttals] [--skip-synthesis] [--refresh] [--no-repro] [--no-pr-intent]
              [--single-agent]   baseline: one reviewer over the whole diff, no planner/seams/red team/synthesis
   arw validate --repo owner/name --pr <n>      re-validate on disk, no model calls
   arw publish  --repo owner/name --pr <n> [--min-severity P3] [--dry-run]
@@ -104,19 +106,29 @@ function multi(argv, flag) {
 
 async function cmdTicket(argv) {
   const args = parseArgs(argv);
+  // --from-pr owner/name#N: no ticket; the intent its author describes.
+  let fromPr = null;
+  if (args.fromPr) {
+    const m = String(args.fromPr).match(/^([\w.-]+\/[\w.-]+)#(\d+)$/);
+    if (!m) throw new Error('usage: arw ticket [KEY] --from-pr owner/name#N');
+    const intent = require('../lib/pr-intent');
+    fromPr = { repo: m[1], pr: Number(m[2]), info: github.prView(m[1], Number(m[2])), commits: intent.ghCommits(m[1], Number(m[2])) };
+    if (!args._[0]) args._[0] = intent.prTicketKey(m[1], m[2]);
+    if (!args.repo && !args.repoDir && github.reposConfig().repos[m[1]]) args.repo = m[1];
+  }
   const key = args._[0];
   if (!key || !/^[A-Z][A-Z0-9]+-\d+$/.test(key)) throw new Error('usage: arw ticket <KEY>');
   let repoDir = args.repoDir ? path.resolve(args.repoDir) : null;
   if (!repoDir && args.repo) repoDir = github.sourceCheckoutFor(args.repo).checkout;
   const images = multi(argv, 'image').map((f) => path.resolve(f));
   for (const f of images) if (!fs.existsSync(f) || !/\.(png|jpe?g|gif|webp)$/i.test(f)) throw new Error(`--image ${f}: not a png, jpg, gif or webp file`);
-  const res = await advanceTicket({ key, fromFile: args.fromFile, extras: multi(argv, 'extra'), images, repoDir, executor, models: models(), log, redo: args.redo });
+  const res = await advanceTicket({ key, fromFile: args.fromFile, fromPr, extras: multi(argv, 'extra'), images, repoDir, executor, models: models(), log, redo: args.redo });
   console.log(`${res.state}: ${res.message}\nrun: ${res.dir}`);
   return res.state === 'FAILED' ? 1 : 0;
 }
 
 async function cmdReview(argv) {
-  const args = parseArgs(argv, ['singleRole', 'singleAgent', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'refresh', 'noRepro']);
+  const args = parseArgs(argv, ['singleRole', 'singleAgent', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'refresh', 'noRepro', 'noPrIntent']);
   let local = null;
   if (args.local) {
     const { prepareLocal } = require('../lib/local-review');
@@ -131,6 +143,7 @@ async function cmdReview(argv) {
     repo: args.repo,
     pr: Number(args.pr),
     ticket: args.ticket,
+    prIntent: !args.noPrIntent,
     executor,
     preflight: customExecutor ? undefined : () => preflight({ cwd: ROOT, attemptDir: pfDir, model: executorConfig().model }),
     models: models(),

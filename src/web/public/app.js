@@ -627,6 +627,9 @@ async function renderTicket(key) {
     h('h1', {}, key),
     h('div', { class: 'row' }, statusBadge(t.state), s ? h('span', { class: `badge ${s.clean ? 'ok' : 'warn'}` }, s.clean ? 'spec clean' : 'spec needs a decision') : null,
       h('span', { class: 'muted small' }, `model calls ${t.usage.calls} · ${fmtNum(t.usage.input_tokens)} input tokens`)),
+    t.stages.intake && t.stages.intake.intent === 'pr'
+      ? h('div', { class: 'notice' }, `No ticket: this intent was read from ${t.stages.intake.source.replace(/^github-pr:/, '')} — the description, linked issues and commit messages its author wrote, never the diff. It is the author's claim. Approving the spec confirms that this is what the change should do; no policy approves it for you.`)
+      : null,
     h('div', { class: 'panel' },
       h('div', { class: 'row' }, h('span', { class: 'label' }, 'Pipeline'), repo,
         h('button', { class: 'btn primary', onclick: advance() }, 'Continue'),
