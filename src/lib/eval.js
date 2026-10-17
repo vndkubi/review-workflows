@@ -40,7 +40,14 @@ const runsDir = () => path.join(evalDir(), 'runs');
 function checkLabel(l, at, errors) {
   if (!l || typeof l !== 'object') return errors.push(`${at}: must be an object`);
   if (!/^[A-Za-z0-9._-]+$/.test(String(l.id || ''))) errors.push(`${at}.id: letters, digits, . _ -`);
-  if (!l.path || typeof l.path !== 'string') errors.push(`${at}.path: the file the defect is in`);
+  // A prose label (a reviewer's comment without coordinates) is scoped to
+  // `paths` when known and always matched by keywords: never by prose alone.
+  if (l.prose !== undefined) {
+    if (typeof l.prose !== 'string' || !l.prose.trim()) errors.push(`${at}.prose: the comment text`);
+    if (!Array.isArray(l.keywords) || !l.keywords.length) errors.push(`${at}: a prose label needs keywords`);
+    if (l.paths !== undefined && !(Array.isArray(l.paths) && l.paths.every((p) => typeof p === 'string' && p))) errors.push(`${at}.paths: list of files`);
+    if (l.min_keywords !== undefined && !(Number.isInteger(l.min_keywords) && l.min_keywords >= 1)) errors.push(`${at}.min_keywords: a positive integer`);
+  } else if (!l.path || typeof l.path !== 'string') errors.push(`${at}.path: the file the defect is in`);
   if (l.lines !== undefined && !(Array.isArray(l.lines) && l.lines.length === 2 && l.lines.every(Number.isInteger) && l.lines[0] <= l.lines[1])) errors.push(`${at}.lines: [start, end]`);
   if (l.keywords !== undefined && !(Array.isArray(l.keywords) && l.keywords.every((k) => typeof k === 'string' && k.trim()))) errors.push(`${at}.keywords: list of words`);
   if (l.severity_at_least !== undefined && !SEVERITY_RANK[l.severity_at_least]) errors.push(`${at}.severity_at_least: P1..P4`);
@@ -101,12 +108,13 @@ function reviewFindings(runDir) {
 }
 
 function matches(f, label) {
-  const ev = (f.evidence || []).filter((e) => e.kind === 'code' && e.path === label.path);
+  const scope = label.path ? [label.path] : label.paths || [];
+  const ev = (f.evidence || []).filter((e) => e.kind === 'code' && (!scope.length || scope.includes(e.path)));
   if (!ev.length) return false;
   if (label.lines && !ev.some((e) => e.start_line <= label.lines[1] + LINE_SLACK && label.lines[0] <= e.end_line + LINE_SLACK)) return false;
   if (label.keywords && label.keywords.length) {
     const text = `${f.title} ${f.asis} ${f.tobe} ${f.impact || ''}`.toLowerCase();
-    if (!label.keywords.some((k) => text.includes(k.toLowerCase()))) return false;
+    if (label.keywords.filter((k) => text.includes(k.toLowerCase())).length < (label.min_keywords || 1)) return false;
   }
   return true;
 }
@@ -126,6 +134,7 @@ function scoreCase(c, runDir) {
       id: e.id,
       found: Boolean(best),
       by: hits.map((f) => f.id),
+      ...(e.approx ? { approx: true, prose: e.prose } : {}),
       severity: best ? best.severity : null,
       severity_ok: best ? !e.severity_at_least || SEVERITY_RANK[best.severity] <= SEVERITY_RANK[e.severity_at_least] : null,
       // The red team withdrew a real defect: a cost of the rebuttal stage.
@@ -207,6 +216,8 @@ function renderScorecard(card) {
   }
   const failed = card.cases.filter((s) => s.error);
   if (failed.length) lines.push('', '## Cases without a clean result', '', ...failed.map((s) => `- ${s.id} (exit ${s.exit_code}): ${s.error}`));
+  const approx = card.cases.flatMap((s) => (s.details.expected || []).filter((e) => e.approx && e.found).map((e) => `- ${s.id} · ${e.id} by \`${e.by.join(', ')}\`: ${String(e.prose || '').slice(0, 160)}`));
+  if (approx.length) lines.push('', '## Prose labels matched by keywords', '', 'These came from comments without coordinates: check each finding says the same thing.', '', ...approx);
   const unl = card.cases.flatMap((s) => (s.details.findings || []).filter((f) => f.verdict === 'unlabelled').map((f) => `- ${s.id} · \`${f.id}\` [${f.severity}] ${f.title}${f.path ? ` (${f.path})` : ''}`));
   if (unl.length) lines.push('', '## Unlabelled findings', '', 'Label them (`arw eval label ...`) so the next run measures them:', '', ...unl);
   return `${lines.join('\n')}\n`;
@@ -432,4 +443,4 @@ function labelFinding({ runId, caseId, findingId, as, severity }) {
   return label;
 }
 
-module.exports = { CONFIGS, evalDir, loadCases, validateCase, scoreCase, aggregate, renderScorecard, runEval, rescore, listRuns, loadRun, compare, caseFromRun, labelFinding, matches, keywordsOf };
+module.exports = { CONFIGS, evalDir, casesDir, writeCase, loadCases, validateCase, scoreCase, aggregate, renderScorecard, runEval, rescore, listRuns, loadRun, compare, caseFromRun, labelFinding, matches, keywordsOf };

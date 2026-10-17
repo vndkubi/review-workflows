@@ -369,6 +369,34 @@ async function cmdEval(argv) {
     console.log(`added ${label.id}: ${label.path}:${label.lines.join('-')} keywords ${label.keywords.join(', ')} — re-score with: arw eval rescore ${args.run}`);
     return 0;
   }
+  if (sub === 'mine' || sub === 'candidates' || sub === 'confirm' || sub === 'reject' || sub === 'import-martian') {
+    const corpus = require('../lib/eval-corpus');
+    if (sub === 'mine') {
+      if (!args.repo) throw new Error('usage: arw eval mine --repo <local clone> [--prefix name] [--limit 20] [--max-lines 4000]');
+      const res = corpus.mineFixes({ repo: path.resolve(String(args.repo)), prefix: args.prefix, limit: args.limit ? Number(args.limit) : undefined, maxLines: args['max-lines'] ? Number(args['max-lines']) : undefined });
+      for (const c of res.candidates) console.log(`candidate ${c.id.padEnd(30)} ${c.source.range} ${c.base.slice(0, 8)}..${c.head.slice(0, 8)} · ${c.expected.map((e) => `${e.path}:${e.lines.join('-')}`).join(', ')}\n          fix: ${c.evidence.fix.subject}`);
+      for (const s of res.skipped) console.log(`skipped   ${s.sha.slice(0, 8)} ${s.subject.slice(0, 60)} — ${s.reason}`);
+      console.log(`${res.candidates.length} new candidate(s); confirm each with: arw eval confirm <id> [--note "..."]`);
+      return 0;
+    }
+    if (sub === 'candidates') {
+      for (const c of corpus.listCandidates()) console.log(`${c.status.padEnd(9)} ${c.id.padEnd(30)} ${(c.evidence && c.evidence.fix.subject) || ''}`);
+      return 0;
+    }
+    if (sub === 'confirm' || sub === 'reject') {
+      const by = (require('../lib/git').git(ROOT, ['config', 'user.name'], { allowFail: true }) || '').trim() || process.env.USERNAME || process.env.USER;
+      const res = corpus.decideCandidate(String(args._[0] || ''), { decision: sub, by, note: args.note ? String(args.note) : '' });
+      console.log(sub === 'confirm' ? `confirmed: ${res.file}` : `rejected: ${args._[0]}`);
+      return 0;
+    }
+    if (!args.file || !args.repo) throw new Error('usage: arw eval import-martian --file <golden_comments/x.json> --repo <local clone> [--name x] [--force]');
+    const res = corpus.importMartian({ file: path.resolve(String(args.file)), repoDir: path.resolve(String(args.repo)), name: args.name, force: args.force });
+    for (const c of res.cases) console.log(`case ${c.id.padEnd(28)} ${c.expected.length} label(s) · ${c.source.title || ''}`);
+    for (const s of res.skipped) console.log(`skipped ${s.url}: ${s.reason}`);
+    for (const u of res.unanchored) console.log(`unanchored (${u.case}): ${u.comment.slice(0, 100)}`);
+    console.log(`${res.cases.length} case(s), ${res.unanchored.length} comment(s) without an anchor`);
+    return 0;
+  }
   if (sub === 'add') {
     const { file, case: c } = evals.caseFromRun(runDirFrom(args), { id: args.id, force: args.force });
     console.log(`wrote ${file}: ${c.expected.length} expected, ${c.not_expected.length} not expected`);
@@ -381,7 +409,13 @@ async function cmdEval(argv) {
   arw eval list | show <run> | rescore <run> | compare <run A> <run B>
   arw eval label --run <run> --case <id> --finding <id> --as tp|fp [--severity P2]
   arw eval add (--repo owner/name --pr <n> | --run <run dir>) [--id name] [--force]
-                                                  a case from a reviewed PR: kept findings expected, dropped/rejected not`);
+                                                  a case from a reviewed PR: kept findings expected, dropped/rejected not
+  arw eval mine --repo <clone> [--prefix x] [--limit 20]
+                                                  fix commits blamed back to the PR that introduced them: candidates
+  arw eval candidates | confirm <id> [--note ..] | reject <id> [--note ..]
+                                                  a person decides each candidate; confirmed ones become cases
+  arw eval import-martian --file <golden.json> --repo <clone> [--name x] [--force]
+                                                  Martian offline golden comments as keyword labels`);
   return sub ? 1 : 0;
 }
 
