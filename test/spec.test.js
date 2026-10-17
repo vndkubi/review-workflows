@@ -103,6 +103,31 @@ test('spec: modelling mistakes go back to the model as precise errors', () => {
   assert.ok(e4.some((e) => /AC1 is not modelled/.test(e)));
 });
 
+// Incident: Date.parse rolls 2026-02-30 over to 2026-03-02, so an impossible
+// day silently moved a class boundary instead of going back to the model.
+test('spec: impossible calendar dates are unparsable, not rolled over', () => {
+  const dated = (min) => {
+    const m = discountModel();
+    m.features[0].variables[1] = {
+      id: 'total',
+      description: 'order date',
+      type: 'date',
+      classes: [
+        { id: 'below', label: 'before', validity: 'valid', max: min, max_inclusive: false },
+        { id: 'from', label: 'from', validity: 'valid', min, min_inclusive: true },
+        { id: 'missing', label: 'missing', validity: 'invalid', special: 'missing' },
+      ],
+    };
+    return buildSpec({ model: m, requirements, ticket: 'ACME-7', blocks }).errors || [];
+  };
+  for (const bad of ['2026-02-30', '2026-02-29', '2026-04-31', '2026-00-10', '2026-13-01']) {
+    assert.ok(dated(bad).some((e) => /"from" has an unparsable min\/max for type date/.test(e)), `${bad}: ${dated(bad).join('\n')}`);
+  }
+  for (const good of ['2024-02-29', '2026-12-31', '2026-01-01']) {
+    assert.ok(!dated(good).some((e) => /unparsable/.test(e)), `${good}: ${dated(good).join('\n')}`);
+  }
+});
+
 test('spec: contradictions and unquotable CONFIRMED rules', () => {
   const m = discountModel();
   m.features[0].rules.push({ id: 'R4', conditions: [{ variable: 'member', classes: ['yes'] }, { variable: 'total', classes: ['from'] }], results: [{ outcome: 'discount', value: '15%' }], acs: ['AC1'], label: 'CONFIRMED', source: { source: 'ticket', quote: 'VIPs get 15%' } });

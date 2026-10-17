@@ -28,8 +28,11 @@ function decimalsOf(step) {
 function parseValue(v, s) {
   if (s == null || s === '') return null;
   if (v.type === 'date') {
-    const t = Date.parse(`${s}T00:00:00Z`);
-    return Number.isNaN(t) ? NaN : Math.round(t / DAY);
+    // Date.parse rolls impossible days over (2026-02-30 -> 2026-03-02), so a
+    // date counts only if it formats back to exactly what was written.
+    const str = String(s);
+    const t = /^\d{4}-\d{2}-\d{2}$/.test(str) ? Date.parse(`${str}T00:00:00Z`) : NaN;
+    return Number.isNaN(t) || new Date(t).toISOString().slice(0, 10) !== str ? NaN : Math.round(t / DAY);
   }
   return Number(String(s).replace(/[,_\s]/g, ''));
 }

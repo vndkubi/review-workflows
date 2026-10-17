@@ -44,7 +44,8 @@ test('CODEX_BIN can be a standalone codex binary, not only the npm JS entry', ()
 
 test('the setup scripts parse', { skip: false }, (t) => {
   const sh = spawnSync('bash', ['-n', path.join(ROOT, 'scripts', 'setup.sh')], { encoding: 'utf8' });
-  if (sh.error) t.diagnostic('bash not available: setup.sh not checked');
+  // Windows' WSL bash stub exists even with no distro installed and fails before running anything.
+  if (sh.error || /WSL .*execvpe\(\/bin\/bash\) failed/.test(sh.stderr || '')) t.diagnostic('bash not available: setup.sh not checked');
   else assert.equal(sh.status, 0, sh.stderr);
   if (process.platform === 'win32') {
     const file = path.join(ROOT, 'scripts', 'setup.ps1').replace(/'/g, "''");
