@@ -93,6 +93,33 @@ function garbledMatches(region, quote) {
   return q.includes(MARK) && /[\p{L}\p{N}]/u.test(q) && r.includes(q);
 }
 
+// Told to copy the garbage verbatim, a model swaps in an ASCII look-alike
+// ("-" for "—", "Gia" for "Giá"), or the console already showed "?" for a
+// letter its codepage lacks ("C?ng" for "Cổng"). Where the cited lines hold
+// non-ASCII text, letters and digits (accents removed) must still appear in
+// order, a "?" or non-ASCII character standing for at most two of them;
+// punctuation and spacing are not compared.
+function fold(s) {
+  return s.normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D');
+}
+function foldedMatches(region, quote) {
+  if (!/[^\x00-\x7f]/.test(region)) return false;
+  const r = fold(region).replace(/[^A-Za-z0-9]/g, '');
+  let pattern = '';
+  let literals = 0;
+  let wild = 0;
+  for (const ch of fold(quote)) {
+    if (/[A-Za-z0-9]/.test(ch)) {
+      pattern += ch;
+      literals += 1;
+    } else if ((ch === '?' || ch > '\x7f') && !pattern.endsWith('}')) {
+      pattern += '[A-Za-z0-9]{0,2}';
+      wild += 1;
+    }
+  }
+  return literals >= 8 && literals >= 3 * wild && new RegExp(pattern).test(r);
+}
+
 function regionMatches(region, quote) {
   if (region.includes(quote)) return 'exact';
   const r = collapse(region);
@@ -100,6 +127,7 @@ function regionMatches(region, quote) {
   if (q && r.includes(q)) return 'whitespace';
   if (fragmentsInOrder(r, quote)) return 'ellipsis';
   if (garbledMatches(r, q)) return 'mojibake';
+  if (foldedMatches(r, q)) return 'folded';
   return null;
 }
 

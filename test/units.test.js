@@ -44,7 +44,19 @@ test('quoteMatchesAt: non-ASCII text the model read garbled still matches; ASCII
   assert.equal(quoteMatchesAt(lines, 2, 2, '# Gi�? tr��< �?\' total').how, 'mojibake');
   assert.equal(quoteMatchesAt(lines, 1, 1, '# Mainnet (TEST MONEY) �?" https://www.binance.com').ok, false, 'ASCII around the garbled run is checked');
   assert.equal(quoteMatchesAt(lines, 3, 3, 'x = 1 �?"').ok, false, 'garbage where the file has no non-ASCII text');
-  assert.equal(quoteMatchesAt(lines, 1, 1, '# Mainnet (REAL MONEY) https://www.binance.com').ok, false, 'a dropped character is not garbling');
+  assert.equal(quoteMatchesAt(lines, 1, 1, '# Mainnet (REAL MONEY) https://www.binance.com').how, 'folded', 'dropped punctuation: letters and digits all there');
+  assert.equal(quoteMatchesAt(lines, 1, 1, '# Mainet (REAL MONEY) https://www.binance.com').ok, false, 'a dropped letter is not');
+  // Seen after the fix (trading#1 re-run): told to copy verbatim, the model
+  // replaced the garbage it saw with an ASCII look-alike.
+  assert.equal(quoteMatchesAt(lines, 1, 1, '# Mainnet (REAL MONEY) - https://www.binance.com').how, 'folded');
+  assert.equal(quoteMatchesAt(lines, 2, 2, '# Gia tri -> total').how, 'folded');
+  assert.equal(quoteMatchesAt(lines, 1, 1, '# Mainnet (REAL MONEY) - https://www.binance.org').ok, false, 'letters and digits stay verbatim');
+  assert.equal(quoteMatchesAt(lines, 3, 3, 'x - 1').ok, false, 'only lines that hold non-ASCII text are folded');
+  // code-graph#2: letters cp1252 lacks came through as "?".
+  const vi = splitLines('1. **contextgate_get_context** - Cổng chính để lấy context repository\n');
+  assert.equal(quoteMatchesAt(vi, 1, 1, '1. **contextgate_get_context** - C?ng ch?nh d? l?y context repository').how, 'folded');
+  assert.equal(quoteMatchesAt(vi, 1, 1, '1. **contextgate_get_context** - C?ng ch?nh d? l?y context repo').how, 'folded', 'a shorter quote inside the line');
+  assert.equal(quoteMatchesAt(vi, 1, 1, '1. **contextgate_get_context** - C?ng ch?nh d? l?y content repository').ok, false);
 });
 
 test('looksLikeCode rejects prose fixes', () => {
