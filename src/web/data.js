@@ -168,6 +168,28 @@ function sumReceipts(receipts) {
   return u;
 }
 
+// The tail of a run's driver log: what happened, also for runs started from
+// a terminal (no dashboard job log).
+const DRIVER_LOG_TAIL = 200 * 1024;
+function prDriverLog(id) {
+  const { dir } = prDirFromId(id);
+  const file = path.join(dir, 'review', 'driver.log');
+  if (!fs.existsSync(file)) return { text: '', truncated: false };
+  const size = fs.statSync(file).size;
+  const start = Math.max(0, size - DRIVER_LOG_TAIL);
+  const fd = fs.openSync(file, 'r');
+  try {
+    const buf = Buffer.alloc(size - start);
+    fs.readSync(fd, buf, 0, buf.length, start);
+    let text = buf.toString('utf8');
+    // Start at a whole line.
+    if (start > 0) text = text.slice(text.indexOf('\n') + 1);
+    return { text, truncated: start > 0 };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function prDetail(id) {
   const { dir } = prDirFromId(id);
   const run = readJsonIfExists(path.join(dir, 'run.json'));
@@ -237,4 +259,4 @@ function sourceSnippet(id, file, { revision = 'reviewed', start = 1, end = start
   return { path: file, revision, sha: rev, from, to, highlight: [Number(start), Number(end)], lines: lines.slice(from - 1, to) };
 }
 
-module.exports = { listRuns, ticketDetail, prDetail, sourceSnippet, prDirFromId, ticketDirFromKey, httpError, PR_ID, TICKET_KEY };
+module.exports = { listRuns, ticketDetail, prDetail, prDriverLog, sourceSnippet, prDirFromId, ticketDirFromKey, httpError, PR_ID, TICKET_KEY };

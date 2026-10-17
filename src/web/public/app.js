@@ -264,7 +264,18 @@ function prTable(prs) {
 
 // ---------- PR view ----------
 async function renderPr(id) {
-  const [d, repro] = await Promise.all([api('GET', `/api/prs/${encodeURIComponent(id)}`), api('GET', `/api/prs/${encodeURIComponent(id)}/repro`).catch(() => [])]);
+  let d;
+  let repro;
+  let progress;
+  try {
+    [d, repro, progress] = await Promise.all([api('GET', `/api/prs/${encodeURIComponent(id)}`), api('GET', `/api/prs/${encodeURIComponent(id)}/repro`).catch(() => []), api('GET', `/api/prs/${encodeURIComponent(id)}/progress`).catch(() => null)]);
+  } catch (err) {
+    // A review that has just been queued has no run yet: show its live panel
+    // (steps appear as soon as the run exists) instead of an error.
+    const pending = activeJobFor('pr', id);
+    if (pending) return put($main, h('h1', {}, pending.title), livePanel(pending, () => prProgressView(id)));
+    throw err;
+  }
   d.reproRecords = new Map(repro.map((r) => [r.finding_id, r]));
   const v = d.validation;
   const idn = d.identity;
@@ -272,7 +283,7 @@ async function renderPr(id) {
   // No ticket: the intent derived from the PR, shown and confirmed here.
   const intent = d.intent && d.intent.key ? d.intent : null;
   const awaiting = d.phases.ticket && d.phases.ticket.status === 'AWAITING_INTENT';
-  const tabs = [...(intent ? ['Spec'] : []), 'Findings', 'Items', 'Progress', 'Calls', 'Timeline', 'Overview', 'Plan', 'Cost'];
+  const tabs = [...(intent ? ['Spec'] : []), 'Findings', 'Items', 'Progress', 'Calls', 'Timeline', 'Overview', 'Plan', 'Cost', 'Logs'];
   // A tab picked on this run wins; a run waiting for its intent opens on Spec.
   const picked = sessionStorage.getItem(`pr-tab:${id}`);
   const saved = sessionStorage.getItem('pr-tab');
@@ -288,7 +299,7 @@ async function renderPr(id) {
       h('span', { class: 'mono' }, `head ${String(idn.head_sha || '').slice(0, 12)}`),
       h('span', { class: 'mono' }, `base ${String(idn.base_sha || '').slice(0, 12)}`),
       idn.ticket ? h('a', { href: `#/ticket/${idn.ticket}` }, idn.ticket) : h('span', {}, 'no ticket')),
-    job ? livePanel(job, () => prProgressView(id)) : null,
+    job ? livePanel(job, () => prProgressView(id)) : progress ? stepsView(progress.steps) : null,
     !job && awaiting
       ? h('div', { class: 'notice' }, 'This PR has no ticket. Its intent (business or technical) was derived from what the author wrote, and the review waits until you confirm it: read the Spec tab below, answer its open questions by approving or rejecting with a note, then review the PR with the confirmed spec.')
       : null,
@@ -303,6 +314,7 @@ async function renderPr(id) {
     body,
   );
   if (current === 'Spec') return add(body, await prSpecView(intent));
+  if (current === 'Logs') return add(body, await prLogsView(id));
   // Progress, calls and timeline are useful while a run is still going.
   if (current === 'Progress') return add(body, await prProgressView(id));
   if (current === 'Calls') return add(body, await callsView(id));
@@ -330,6 +342,38 @@ async function prSpecView(intent) {
       h('a', { class: 'small', href: `#/ticket/${intent.key}` }, `${intent.key}: evidence, requirement items, model calls`)),
     specGate(intent.key, t),
     specView(t.spec));
+}
+
+// Logs of a run that stay readable after its job ended: the latest
+// dashboard job's log (streamed while it runs) and the run's driver log.
+async function prLogsView(id) {
+  const job = state.jobs.filter((j) => j.target && j.target.type === 'pr' && j.target.id === id).sort((a, b) => String(b.queued_at).localeCompare(String(a.queued_at)))[0];
+  const jobPre = h('pre', { class: 'log live-log tall-log' });
+  const driverPre = h('pre', { class: 'log live-log tall-log' });
+  if (job && ['queued', 'running'].includes(job.status)) followJob(job.id, { pre: jobPre });
+  else if (job) logSink(jobPre)(`${(await api('GET', `/api/jobs/${job.id}/log?from=0`).catch(() => ({ text: '' }))).text}\n`);
+  const dl = await api('GET', `/api/prs/${encodeURIComponent(id)}/log`).catch(() => ({ text: '', truncated: false }));
+  logSink(driverPre)(dl.text);
+  return [
+    logTools([jobPre, driverPre], id),
+    h('h3', {}, job ? `Job log: ${job.kind} ${job.title} (${job.status})` : 'Job log'),
+    job ? jobPre : h('p', { class: 'muted small' }, 'No dashboard job for this run: it was started from a terminal, or its job was cleaned up.'),
+    h('h3', {}, `Driver log${dl.truncated ? ' (last 200 KB)' : ''}`),
+    dl.text ? driverPre : h('p', { class: 'muted small' }, 'Empty.'),
+  ];
+}
+
+// Errors only (stack traces included) and a download of what the logs show.
+function logTools(pres, name) {
+  const errorsOnly = h('input', { type: 'checkbox', onchange: (e) => pres.forEach((p) => p.classList.toggle('log-errors-only', e.target.checked)) });
+  const download = () => {
+    const text = pres.map((p) => [...p.childNodes].map((n) => n.textContent).join('\n')).join('\n\n----\n\n');
+    const a = h('a', { href: URL.createObjectURL(new Blob([text], { type: 'text/plain' })), download: `${name}.log` });
+    document.body.append(a);
+    a.click();
+    a.remove();
+  };
+  return h('div', { class: 'row' }, h('label', {}, errorsOnly, ' Errors only'), h('button', { class: 'btn', onclick: download }, 'Download logs'));
 }
 
 function prSummary(d) {
@@ -825,7 +869,7 @@ function renderNewReview() {
     h('option', { value: 'local' }, 'Local changes (before opening a PR)'));
   const dir = h('input', { type: 'text', list: 'arw-checkouts', placeholder: 'absolute path of the repository, e.g. D:\\code\\shop' });
   const dirList = h('datalist', { id: 'arw-checkouts' }, (state.config.checkouts || []).map((c) => h('option', { value: c })));
-  const base = h('input', { type: 'text', value: 'main', pattern: '[A-Za-z0-9._][A-Za-z0-9._/-]*' });
+  const base = h('input', { type: 'text', value: 'main', pattern: '[A-Za-z0-9._][A-Za-z0-9._\\/\\-]*' });
   const mode = h('select', { 'aria-label': 'local mode' },
     h('option', { value: 'branch' }, 'Branch: commits on the current branch since it left the base'),
     h('option', { value: 'staged' }, 'Staged: what is in the index now (git add)'),
@@ -942,7 +986,7 @@ function renderJob(id) {
       ['queued', 'running'].includes(j.status) ? h('button', { class: 'btn danger', onclick: async () => { await api('POST', `/api/jobs/${id}/cancel`, {}); toast('Cancel requested'); } }, 'Cancel') : null,
       j.target && j.target.type !== 'system' && !['queued', 'running'].includes(j.status) ? h('a', { class: 'btn primary', href: targetHash(j.target) }, 'Open result') : null));
   drawHead(job, !['queued', 'running'].includes(job.status));
-  put($main, head, progress, log);
+  put($main, head, progress, logTools([log], `${job.kind}-${job.id}`), log);
   if (job.target && job.target.type === 'pr' && ['queued', 'running'].includes(job.status)) {
     const refresh = async () => {
       try {
@@ -975,6 +1019,8 @@ function closeStreams() {
 }
 
 const LOG_CLASSES = [
+  // Stack traces (dashboard jobs run with ARW_DEBUG) belong with their error.
+  [/^\s+at \S|could not |spawn error/, 'log-bad'],
   [/\b(accepted|-> green|READY|EXECUTED_PASS|RED_PROVEN|fix -> green|succeeded)\b/, 'log-ok'],
   [/\b(rejected|blocked|process failure|invalid JSON|FAIL|failed|error:|Error:|degenerate|-> red|INVALIDATED)\b/, 'log-bad'],
   [/\bW\d\b|batch (start|done)|froze context|^\$ /, 'log-wave'],
@@ -1057,18 +1103,29 @@ function livePanel(job, progressView) {
 // ---------- PR progress, calls, timeline ----------
 const LIVE_CLS = { running: 'warn', accepted: 'ok', rejected: 'bad', failed: 'bad' };
 
+// The pipeline as a row of steps: what is done, running, waiting or failed.
+const STEP_ICON = { done: '✓', running: '●', failed: '✕', skipped: '–', waiting: '⏸', warn: '!', pending: '○' };
+function stepsView(steps) {
+  if (!steps || !steps.length) return null;
+  return h('ol', { class: 'steps', 'aria-label': 'review steps' }, steps.map((s) => h('li', { class: `step ${s.state}`, title: `${s.label}: ${s.state}${s.detail ? ` — ${s.detail}` : ''}` },
+    h('span', { class: 'step-head' }, s.state === 'running' ? h('span', { class: 'pulse' }) : h('span', { class: 'step-icon', 'aria-hidden': 'true' }, STEP_ICON[s.state] || '○'), s.label, h('span', { class: 'sr-only' }, ` ${s.state}`)),
+    s.detail ? h('span', { class: 'step-detail' }, s.detail) : null)));
+}
+
 async function prProgressView(id) {
   const p = await api('GET', `/api/prs/${encodeURIComponent(id)}/progress`);
   const done = p.units.filter((u) => u.status === 'EXECUTED_PASS').length;
   return [
+    stepsView(p.steps),
     h('div', { class: 'row small' },
-      timelineChips(p.phases),
       h('span', { class: 'muted' }, `units ${done}/${p.units.length} · model calls ${p.calls} · tokens in ${fmtNum(p.tokens_in)} / out ${fmtNum(p.tokens_out)}`)),
     p.units.length
-      ? table(['Unit', 'Kind', 'Role', 'Now', 'Status', 'Last error'], p.units.map((u) => [
+      ? table(['Unit', 'Kind', 'Role', 'Now', 'Validated result', 'Last error'], p.units.map((u) => [
         h('span', { class: 'mono' }, u.unit), u.kind, u.role,
         u.live ? h('span', { class: `badge ${LIVE_CLS[u.live] || ''}` }, `${u.live}${u.attempt ? ` #${u.attempt} ${u.mode}` : ''}`) : '—',
-        statusBadge(u.status), h('span', { class: 'small err' }, (u.error || '').slice(0, 160))]))
+        // NOT_RUN next to "running" read as a contradiction: no result yet.
+        u.status === 'NOT_RUN' ? h('span', { class: 'muted small' }, u.live === 'running' ? 'no result yet' : 'not run') : statusBadge(u.status),
+        h('span', { class: 'small err' }, (u.error || '').slice(0, 160))]))
       : h('p', { class: 'muted small' }, 'Planning — units appear after the context is frozen.'),
     p.other.length ? h('div', { class: 'row small mt8' }, p.other.map((o) => h('span', { class: `badge ${LIVE_CLS[o.state] || ''}` }, `${o.label}: ${o.state}`))) : null,
     p.repro.length ? h('div', { class: 'row small mt8' }, p.repro.map((r) => h('span', { class: `badge ${r.status === 'RED_PROVEN' ? 'ok' : 'warn'}` }, `repro ${r.finding}: ${r.status} (${r.runs.join(', ')})${r.fix ? ' · fix verified' : ''}`))) : null,
@@ -1428,7 +1485,7 @@ async function renderEvals(runId) {
   if (runId) return renderEvalRun(runId);
   const e = await api('GET', '/api/evals');
   const running = state.jobs.find((j) => j.kind === 'eval' && ['queued', 'running'].includes(j.status));
-  const label = h('input', { type: 'text', placeholder: 'label, e.g. prompt-v2', pattern: '[A-Za-z0-9._-]{1,40}', class: 'minw' });
+  const label = h('input', { type: 'text', placeholder: 'label, e.g. prompt-v2', pattern: '[A-Za-z0-9._\\-]{1,40}', class: 'minw' });
   const picks = Object.fromEntries(e.cases.filter((c) => !c.errors.length).map((c) => [c.id, h('input', { type: 'checkbox', checked: true })]));
   const pickA = h('select', { 'aria-label': 'baseline run' }, e.runs.map((r, i) => h('option', { value: r.id, selected: i === 1 }, r.id)));
   const pickB = h('select', { 'aria-label': 'new run' }, e.runs.map((r, i) => h('option', { value: r.id, selected: i === 0 }, r.id)));

@@ -176,3 +176,22 @@ textarea { min-height: 160px; font-family: var(--mono); font-size: 12.5px; }
 section.panel h2 { margin-top: 0; }
 @media (max-width: 860px) { .setting { grid-template-columns: 1fr; } }
 [hidden] { display: none !important; }
+
+/* review steps */
+.steps { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; padding: 0; list-style: none; }
+.step { display: flex; flex-direction: column; min-width: 92px; max-width: 220px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+.step .step-head { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.step .step-detail { color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+.step-icon { width: 14px; text-align: center; }
+.step.done { border-color: var(--ok); }
+.step.done .step-icon { color: var(--ok); }
+.step.running { border-color: var(--accent); }
+.step.failed { border-color: var(--bad); }
+.step.failed .step-icon { color: var(--bad); }
+.step.waiting, .step.warn { border-color: var(--warn); }
+.step.waiting .step-icon, .step.warn .step-icon { color: var(--warn); }
+.step.skipped, .step.pending { opacity: .6; }
+
+/* logs: errors only */
+.log-errors-only .log-line:not(.log-bad) { display: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

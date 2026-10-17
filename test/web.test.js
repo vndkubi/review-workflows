@@ -264,3 +264,12 @@ test('a list of PR numbers: commas or spaces, each once, 1..20 of them', () => {
   for (const bad of ['', 'x', '0', '1.5', '-3', Array.from({ length: 21 }, (_, i) => i + 1)]) assert.throws(() => parsePrList(bad), /PR number/);
 });
 
+// Incident: browsers compile pattern="" with the v flag, where an unescaped
+// "/" or "-" in a class is a syntax error; the field then breaks the form.
+test('every input pattern of the dashboard is a valid v-flag regular expression', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'web', 'public', 'app.js'), 'utf8');
+  // Each value as the browser gets it: the JS string literal, evaluated.
+  const patterns = [...src.matchAll(/pattern: ('(?:[^'\\]|\\.)*')/g)].map((m) => new Function(`return ${m[1]};`)());
+  assert.ok(patterns.length >= 4);
+  for (const p of patterns) assert.doesNotThrow(() => new RegExp(`^(?:${p})$`, 'v'), p);
+});

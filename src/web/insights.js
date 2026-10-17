@@ -55,7 +55,89 @@ function parseDriverLog(text) {
   return { jobs: [...jobs.values()], waves };
 }
 
-function prProgress(id) {
+// The review pipeline as steps, each pending | running | done | failed |
+// skipped | waiting | warn, with a short detail. Read from run.json phases and
+// the driver log of the latest batch (the log keeps older batches too).
+// active: a job for this run is queued or running; jobStatus: how the last
+// job ended (a failed job marks the step it was in as failed).
+const STEPS = [
+  ['prepare', 'Prepare'], ['intent', 'Ticket / intent'], ['plan', 'Plan'], ['freeze', 'Freeze'],
+  ['W1', 'W1 first pass'], ['W2', 'W2 seams'], ['W3', 'W3 red team'], ['W4', 'W4 synthesis'],
+  ['validate', 'Validate'], ['repro', 'Repro'], ['report', 'Report'],
+];
+const PASS = /PASS|READY/;
+const FAIL = /FAIL|BLOCK|INVALID/;
+
+function reviewSteps({ run, driverLog = '', active = false, jobStatus = null, hasReport = false }) {
+  const phases = (run && run.phases) || {};
+  const text = String(driverLog);
+  const lastBatch = text.lastIndexOf(' batch start ');
+  const segment = lastBatch < 0 ? '' : text.slice(text.lastIndexOf('\n', lastBatch) + 1);
+  const { jobs, waves } = parseDriverLog(segment);
+  const wave = (w) => waves.find((x) => x.wave === w);
+  const batchDone = waves.some((x) => x.wave === 'done');
+  const out = new Map(STEPS.map(([id, label]) => [id, { id, label, state: 'pending', detail: '' }]));
+  const set = (id, st, detail = '') => Object.assign(out.get(id), { state: st, detail });
+  const fromPhase = (id, p, detail = '') => {
+    if (!p) return;
+    if (PASS.test(p.status)) set(id, 'done', detail);
+    else if (FAIL.test(p.status)) set(id, 'failed', detail || p.status);
+    else if (p.status === 'SKIPPED') set(id, 'skipped', detail || p.reason || '');
+    else set(id, 'running', detail);
+  };
+
+  fromPhase('prepare', phases.prepare);
+  const t = phases.ticket;
+  if (t) {
+    if (t.status === 'RUNNING') set('intent', 'running', t.step || '');
+    else if (t.status === 'AWAITING_INTENT') set('intent', 'waiting', `${t.ticket}: confirm the intent at its SPEC gate`);
+    else if (t.status === 'SKIPPED') set('intent', 'skipped', t.intent_error || 'no ticket');
+    else {
+      const how = t.intent === 'unconfirmed' ? 'not confirmed' : t.intent === 'confirmed' || t.spec_approved ? 'approved spec' : 'unapproved';
+      set('intent', t.intent === 'unconfirmed' ? 'warn' : 'done', [t.ticket, how, t.items != null ? `${t.items} items` : null].filter(Boolean).join(' · '));
+    }
+  }
+  fromPhase('plan', phases.plan, phases.plan && phases.plan.units ? `${phases.plan.units} units` : '');
+  fromPhase('freeze', phases.freeze, phases.freeze && phases.freeze.context_id ? `context ${String(phases.freeze.context_id).slice(0, 8)}` : '');
+
+  // Waves: a wave is done once the next one (or the end of the batch) shows.
+  const unitJobs = jobs.filter((j) => !/^(rebuttal-|synthesis|repro-)/.test(j.label));
+  const counts = (list) => {
+    const n = (s) => list.filter((j) => j.state === s).length;
+    return [n('accepted') && `${n('accepted')} accepted`, n('running') && `${n('running')} running`, n('rejected') && `${n('rejected')} being repaired`, n('failed') && `${n('failed')} failed`].filter(Boolean).join(' · ');
+  };
+  const order = ['W1', 'W2', 'W3'];
+  order.forEach((w, i) => {
+    const seen = wave(w);
+    const later = order.slice(i + 1).some((x) => wave(x)) || batchDone || jobs.some((j) => j.label === 'synthesis');
+    if (!seen) {
+      if (batchDone || (w !== 'W1' && later)) set(w, 'skipped', w === 'W3' ? 'no blocking finding to challenge' : '');
+      return;
+    }
+    const empty = /^0 /.test(seen.text);
+    const detail = [seen.text, w === 'W1' ? counts(unitJobs) : w === 'W3' ? counts(jobs.filter((j) => j.label.startsWith('rebuttal-'))) : ''].filter(Boolean).join(' · ');
+    set(w, later ? (empty ? 'skipped' : 'done') : 'running', detail);
+  });
+  const synth = jobs.find((j) => j.label === 'synthesis');
+  if (synth) set('W4', synth.state === 'accepted' ? 'done' : synth.state === 'running' ? 'running' : 'failed', synth.error || '');
+  else if (batchDone) set('W4', 'skipped');
+
+  if (phases.batch && phases.batch.status !== 'RUNNING') fromPhase('validate', phases.batch, phases.batch.status);
+  else if (batchDone) set('validate', 'running');
+  fromPhase('repro', phases.repro, phases.repro && phases.repro.results ? `${phases.repro.results.length} finding(s) reproduced` : '');
+  if (!phases.repro && phases.batch && PASS.test(phases.batch.status) && active) set('repro', 'running');
+  if (hasReport) set('report', 'done');
+
+  const steps = [...out.values()];
+  // A job that ended without finishing: the step it was in failed.
+  if (!active && jobStatus === 'failed') {
+    const current = steps.find((s) => s.state === 'running');
+    if (current) current.state = 'failed';
+  }
+  return steps;
+}
+
+function prProgress(id, { active = false, jobStatus = null } = {}) {
   const { dir } = prDirFromId(id);
   const run = readJsonIfExists(path.join(dir, 'run.json'), {});
   const rev = currentRevision(dir);
@@ -63,6 +145,7 @@ function prProgress(id) {
   const logFile = path.join(dir, 'review', 'driver.log');
   const parsed = fs.existsSync(logFile) ? parseDriverLog(fs.readFileSync(logFile, 'utf8')) : { jobs: [], waves: [] };
   out.waves = parsed.waves.slice(-12);
+  out.steps = reviewSteps({ run, driverLog: fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '', active, jobStatus, hasReport: Boolean(rev && fs.existsSync(path.join(rev.dir, 'report.md'))) });
   const live = new Map(parsed.jobs.map((j) => [j.label, j]));
   const state = rev ? readJsonIfExists(path.join(rev.dir, 'jobs.json'), {}) : {};
   for (const unit of (run.review && run.review.units) || []) {
@@ -179,4 +262,4 @@ function ticketIntake(key) {
   return { source: intake.source || null, confluence_pages: intake.confluence_pages || [], extras: intake.extras || [], evidence, spec_history: history, docs };
 }
 
-module.exports = { safeRead, prFile, ticketFile, prProgress, prCalls, ticketCalls, prRepro, ticketIntake, parseDriverLog };
+module.exports = { safeRead, prFile, ticketFile, prProgress, prCalls, ticketCalls, prRepro, ticketIntake, parseDriverLog, reviewSteps };

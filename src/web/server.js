@@ -179,7 +179,13 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
       return checkMcp({ server: { name: 'atlassian', ...body.server }, tools });
     }],
     ['POST', /^\/api\/doctor$/, () => queue.enqueue({ kind: 'doctor', title: 'system check', args: ['doctor'], target: { type: 'system' } })],
-    ['GET', /^\/api\/prs\/([^/]+)\/progress$/, (m) => insights.prProgress(m[1])],
+    ['GET', /^\/api\/prs\/([^/]+)\/progress$/, (m) => {
+      // The run's latest job: still active, or how it ended.
+      const mine = queue.list().filter((j) => j.target && j.target.type === 'pr' && j.target.id === m[1]);
+      const latest = mine.sort((a, b) => String(b.queued_at).localeCompare(String(a.queued_at)))[0];
+      return insights.prProgress(m[1], { active: mine.some((j) => ['queued', 'running'].includes(j.status)), jobStatus: latest ? latest.status : null });
+    }],
+    ['GET', /^\/api\/prs\/([^/]+)\/log$/, (m) => data.prDriverLog(m[1])],
     ['GET', /^\/api\/prs\/([^/]+)\/calls$/, (m) => insights.prCalls(m[1])],
     ['GET', /^\/api\/prs\/([^/]+)\/repro$/, (m) => insights.prRepro(m[1])],
     ['GET', /^\/api\/prs\/([^/]+)\/file$/, (m, q) => insights.prFile(m[1], q.get('path'))],

@@ -96,7 +96,9 @@ class JobQueue {
     if (!next) return;
     const out = fs.openSync(next.log, 'a');
     fs.writeSync(out, `$ ${next.command}\n`);
-    const child = spawn(process.execPath, [CLI, ...next.args], { cwd: ROOT, stdio: ['ignore', out, out], windowsHide: true, env: process.env, detached: process.platform !== 'win32' });
+    // ARW_DEBUG: an error leaves its stack trace in the job log, for debugging.
+    const env = { ...process.env, ARW_DEBUG: process.env.ARW_DEBUG || '1' };
+    const child = spawn(process.execPath, [CLI, ...next.args], { cwd: ROOT, stdio: ['ignore', out, out], windowsHide: true, env, detached: process.platform !== 'win32' });
     fs.closeSync(out);
     Object.assign(next, { status: 'running', pid: child.pid, started_at: nowIso() });
     this.save();
