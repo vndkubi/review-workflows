@@ -37,6 +37,12 @@ You look for defects that make the change fail in production, regardless of what
   `bulk_update` skipping signals.
 - Broad `except Exception: pass`, missing timeouts on `requests`/`httpx` calls.
 
+## Severity and category
+- A defect you can trigger (inputs, sequence) shown by code evidence may be P2 on your own judgement; P1 needs
+  a requirement or checklist viewpoint. A call that no longer compiles is at least P2.
+- A missing or weak test of behaviour that is itself correct is category "test_gap"; documentation, ticket ids
+  and conventions are "process". Both are suggestions, not defects.
+
 ## Do not
 - Do not report style or naming preferences as defects.
 - Do not present a hypothesis as proven.

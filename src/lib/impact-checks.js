@@ -18,7 +18,11 @@ function isAsked(e) {
 }
 
 function impactLine(c) {
-  return `${c.id} ${c.from.symbol} at ${c.from.path}:${c.from.line} -> ${c.to.symbol} [${c.confidence}${c.via ? ` via ${c.via}` : ''}]${c.note ? ` ${c.note}` : ''}`;
+  return `${c.id} ${c.from.symbol} at ${c.from.path}:${c.from.line} -> ${c.to.symbol} [${c.confidence}${c.via ? ` via ${c.via}` : ''}]${c.note ? ` ${c.note}` : ''}${c.mismatch ? ` SIGNATURE MISMATCH: ${c.mismatch}` : ''}`;
+}
+
+function mismatchText(x) {
+  return `calls ${x.name} with ${x.args} argument(s); declarations take ${x.declared.join(' or ')}`;
 }
 
 function assignImpacts(units, impact) {
@@ -31,6 +35,22 @@ function assignImpacts(units, impact) {
     if (!owners.length) continue;
     n += 1;
     const check = { id: `C${n}`, from: e.from, to: e.to, confidence: e.confidence, ...(e.via ? { via: e.via } : {}), ...(e.note ? { note: e.note } : {}) };
+    for (const u of owners) u.impacts.push(check);
+  }
+  // A call whose argument count no declaration accepts most likely does not
+  // compile: it is marked on its check, and added when the index missed it.
+  for (const x of impact.mismatches || []) {
+    const text = mismatchText(x);
+    const existing = units.flatMap((u) => u.impacts).filter((c) => c.from.path === x.path && c.from.line === x.line);
+    if (existing.length) {
+      for (const c of existing) c.mismatch = text;
+      continue;
+    }
+    const decl = (impact.changed || []).find((d) => d.symbol === x.name || d.symbol.endsWith(`.${x.name}`));
+    const owners = decl ? units.filter((u) => ANSWERING_KINDS.has(u.kind) && u.covers.includes(`file:${decl.path}`)) : [];
+    if (!owners.length) continue;
+    n += 1;
+    const check = { id: `C${n}`, from: { path: x.path, line: x.line, symbol: `call of ${x.name}` }, to: { path: decl.path, symbol: decl.symbol }, confidence: 'arity', mismatch: text };
     for (const u of owners) u.impacts.push(check);
   }
   return units;

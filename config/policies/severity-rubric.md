@@ -10,8 +10,10 @@ Severity = impact × reachability × recoverability.
 | P4 | Minor correctness or maintainability issue with low impact. | Misleading log message; dead branch. |
 
 Rules:
-- P1/P2 need confidence LIKELY (a concrete trigger shown by code evidence) and authority from a requirement
-  or a checklist viewpoint. Inferred authority caps at P3.
+- P1/P2 need confidence LIKELY (a concrete trigger shown by code evidence). P1 also needs authority from a
+  requirement or a checklist viewpoint; inferred authority (engineering judgement) supports at most P2, so a
+  call that no longer compiles or a main flow that now fails can block without a checklist line.
+- Test and process remarks (category test_gap / process) are suggestions: P4, outside the verdict.
 - Not sure whether the path is reachable → lower the severity and say what is unknown.
 - Style and naming preferences are not findings.
 

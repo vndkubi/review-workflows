@@ -11,6 +11,17 @@ const { readInput, revisionDir } = require('./freeze');
 const { checkRole } = require('./viewpoint-checks');
 const { resolveAnchor, hunkAnchors } = require('./anchors');
 
+// Finding categories that are advice, not defects (see canonicalizeCandidate).
+const SUGGESTION = new Set(['test_gap', 'process']);
+
+// The coverage rows a unit's packet answers. The free review (hunt) reads
+// the whole change and answers one row; its files stay in covers so a new
+// push that touches them re-runs it.
+function coverageIds(unit) {
+  if (unit.hunt) return unit.covers.filter((c) => c.startsWith('viewpoint:'));
+  return unit.covers.filter((c) => c.startsWith('file:') || c.startsWith('viewpoint:'));
+}
+
 const MAX_RANGE = 200;
 const END_SLACK = 5;
 
@@ -264,6 +275,11 @@ function canonicalizeCandidate(candidate, sources) {
   (candidate.overview || []).forEach((f, i) => list(f && f.evidence, `$.overview[${i}].evidence`));
   (candidate.findings || []).forEach((f, i) => {
     if (!f || typeof f !== 'object') return;
+    // Test and process remarks are suggestions: P4, outside the verdict.
+    if (SUGGESTION.has(f.category) && f.severity !== 'P4') {
+      changes.push(`$.findings[${i}].severity: ${f.severity} -> P4 (${f.category} is a suggestion)`);
+      f.severity = 'P4';
+    }
     list(f.evidence, `$.findings[${i}].evidence`);
     if (f.verification) list(f.verification.evidence, `$.findings[${i}].verification.evidence`);
     if (f.authority) {
@@ -349,7 +365,7 @@ function validatePacket(packet, env) {
 
   // Coverage: every covered file/viewpoint exactly once, reviewed rows backed
   // by evidence. Review items are accounted for by item_verdicts instead.
-  const coverIds = unit.covers.filter((c) => c.startsWith('file:') || c.startsWith('viewpoint:'));
+  const coverIds = coverageIds(unit);
   const seen = new Map();
   packet.coverage.forEach((row, i) => {
     const at = `$.coverage[${i}]`;
@@ -432,6 +448,8 @@ function validatePacket(packet, env) {
       const c = callers.find((x) => x.id === v.caller);
       if (!c) {
         errors.push(`${at}.caller: ${v.caller} is not a caller assigned to unit ${unit.id} (${callers.map((x) => x.id).join(', ') || 'none'})`);
+      } else if (c.mismatch && ['compatible', 'not_affected'].includes(v.verdict)) {
+        errors.push(`${at}: ${v.caller} ${c.mismatch}: it cannot be "${v.verdict}"; open the call and report it as "broken" with a finding, or "cannot_determine" if an overload elsewhere accepts it`);
       } else if (['compatible', 'not_affected'].includes(v.verdict) && !inCaller(v.evidence, c)) {
         errors.push(`${at}: "${v.verdict}" needs code evidence in the caller ${c.from.path} (around line ${c.from.line}); without it use "cannot_determine"`);
       } else if (v.verdict === 'broken' && !packet.findings.some((f) => inCaller(f.evidence, c))) {
@@ -466,8 +484,11 @@ function validatePacket(packet, env) {
       if (a.source.kind !== 'input' || !['review-items', 'requirements', 'spec'].includes(a.source.path)) errors.push(`${at}.authority.source: cite the frozen input "review-items" (or "requirements" / "spec")`);
     } else if (a.kind === 'curated_viewpoint') {
       if (!sources.policyText().includes(a.id)) errors.push(`${at}.authority.id: "${a.id}" does not occur in any frozen policy/checklist input`);
-    } else if (a.kind === 'inferred' && blocking) {
-      errors.push(`${at}: inferred authority cannot support ${f.severity}; cite a requirement or checklist viewpoint, or downgrade to P3/P4`);
+    } else if (a.kind === 'inferred' && f.severity === 'P1') {
+      // A LIKELY defect shown in code may block on engineering judgement
+      // (P2): a call that no longer compiles has no checklist line of its
+      // own. P1 (data loss, money, security, outage) still needs authority.
+      errors.push(`${at}: inferred authority cannot support P1; cite a requirement or checklist viewpoint, or downgrade to P2`);
     }
 
     if (f.fix.kind === 'code_change') {
@@ -558,4 +579,6 @@ module.exports = {
   validateRebuttal,
   validateSynthesis,
   looksLikeCode,
+  coverageIds,
+  SUGGESTION,
 };

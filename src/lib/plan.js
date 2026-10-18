@@ -28,10 +28,70 @@ function dirSummary(files) {
   return dirs.length <= 3 ? dirs.join(', ') : `${dirs.slice(0, 3).join(', ')} and ${dirs.length - 3} more director${dirs.length - 3 === 1 ? 'y' : 'ies'}`;
 }
 
+// The whole-diff pass is a free review: one senior reviewer reads the whole
+// change and hunts for defects, without per-file rows or checklists. Measured
+// on luna, it found behaviour bugs the planned units missed, where the two
+// old checklist sweeps (V0 technical, V1 business) cost 19% of the tokens for
+// one finding. Its findings go through the same validator and red team.
 const VIEWPOINTS = [
-  { id: 'V0', roles: ['technical'], desc: 'Whole-diff technical sweep: checklist viewpoints, error handling, transactions, concurrency, compatibility, tests.' },
-  { id: 'V1', roles: ['business'], desc: 'Whole-diff business sweep: business invariants, data consistency, behaviour changes the requirements do not mention.' },
+  { id: 'V0', roles: ['technical'], hunt: true, desc: 'Free review of the whole change: read it as a senior engineer would before approving and hunt for defects the planned units can miss (behaviour across files, callers, state, money, security).' },
 ];
+
+// Wraps the whole-diff pass units (chunked on a large PR).
+function huntUnits(reviewableFiles) {
+  const chunks = viewpointChunks(reviewableFiles);
+  const units = [];
+  for (const v of VIEWPOINTS) {
+    chunks.forEach((files, i) => {
+      const id = chunks.length === 1 ? v.id : `${v.id}_${i + 1}`;
+      units.push({
+        id,
+        kind: 'viewpoint',
+        hunt: Boolean(v.hunt),
+        desc: chunks.length === 1 ? v.desc : `${v.desc} Part ${i + 1}/${chunks.length}: ${dirSummary(files)}.`,
+        covers: [`viewpoint:${id}`, ...files.map((f) => `file:${f}`)],
+        depends_on: [],
+        required: true,
+        roles: v.roles,
+        status: 'NOT_RUN',
+      });
+    });
+  }
+  return units;
+}
+
+// A small PR gains nothing from planning: one unit reads all of it (with both
+// reviewers when there are review items), plus the free review.
+function smallPrLimits(env = process.env) {
+  const n = (k, d) => (Number.isInteger(Number(env[k])) && Number(env[k]) >= 0 ? Number(env[k]) : d);
+  return { files: n('ARW_SMALL_PR_FILES', 3), lines: n('ARW_SMALL_PR_LINES', 300) };
+}
+
+function isSmallPr(parsed, reviewableFiles, env = process.env) {
+  const { files, lines } = smallPrLimits(env);
+  if (env.ARW_SMALL_PR === 'off' || reviewableFiles.length > files) return false;
+  const set = new Set(reviewableFiles);
+  const changed = parsed.filter((p) => set.has(p.path)).reduce((s, p) => s + (p.added || 0) + (p.removed || 0), 0);
+  return changed <= lines;
+}
+
+function smallPrUnits(reviewableFiles, items) {
+  const hasItems = Boolean(items && items.length);
+  const id = hasItems ? 'B1' : 'T1';
+  const unit = {
+    id,
+    kind: hasItems ? 'business' : 'technical',
+    desc: 'Small PR: the whole change in one unit.',
+    covers: [...reviewableFiles.map((f) => `file:${f}`), ...(hasItems ? items.map((i) => i.id) : [])],
+    depends_on: [],
+    required: true,
+    roles: hasItems ? ['business', 'technical'] : ['technical'],
+    status: 'NOT_RUN',
+  };
+  const units = [unit, ...huntUnits(reviewableFiles)];
+  const plan = { schema_version: '1.0', hypotheses: [], units: [{ id, kind: unit.kind, desc: unit.desc, files: reviewableFiles, items: hasItems ? items.map((i) => i.id) : [] }], gaps: [], notes: 'small PR (no planner)' };
+  return { units, required_coverage: [...new Set(units.flatMap((u) => u.covers))].sort(), errors: [], plan };
+}
 
 // Returns { units, required_coverage, errors }. Errors are phrased for the
 // planner's repair prompt.
@@ -121,25 +181,9 @@ function buildUnits(plan, reviewableFiles, items, { singleRole = false } = {}) {
     });
   }
 
-  // A viewpoint answers one coverage row per file. On a large PR one sweep
-  // over everything produces an answer too long to stay accurate, so the
-  // sweep is split into parts of related files (sorted by path).
-  const chunks = viewpointChunks(reviewableFiles);
-  for (const v of VIEWPOINTS) {
-    chunks.forEach((files, i) => {
-      const id = chunks.length === 1 ? v.id : `${v.id}_${i + 1}`;
-      units.push({
-        id,
-        kind: 'viewpoint',
-        desc: chunks.length === 1 ? v.desc : `${v.desc} Part ${i + 1}/${chunks.length}: ${dirSummary(files)}.`,
-        covers: [`viewpoint:${id}`, ...files.map((f) => `file:${f}`)],
-        depends_on: [],
-        required: true,
-        roles: v.roles,
-        status: 'NOT_RUN',
-      });
-    });
-  }
+  // The free review; on a large PR it is split into parts of related files
+  // (sorted by path), since one read of everything stays shallow.
+  units.push(...huntUnits(reviewableFiles));
 
   const required_coverage = [...new Set(units.flatMap((u) => u.covers))].sort();
   return { units, required_coverage, errors };
@@ -188,4 +232,4 @@ function renderPlanMarkdown({ identity, plan, units, items, reviewable, skipped 
   return `${out.join('\n')}\n`;
 }
 
-module.exports = { buildUnits, singleAgentUnits, renderPlanMarkdown, VIEWPOINTS };
+module.exports = { buildUnits, singleAgentUnits, smallPrUnits, isSmallPr, huntUnits, renderPlanMarkdown, VIEWPOINTS };

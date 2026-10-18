@@ -31,6 +31,7 @@ Replace or extend this file with your team's own checklist; ids must stay unique
 - CK-CP-1: Public API, message and database contract changes are backward compatible or versioned.
 - CK-CP-2: Database migrations are safe for existing data and for the old code version during rollout.
 - CK-CP-3: Renamed or removed configuration keys keep a fallback or fail fast at startup.
+- CK-CP-4: Changed method signatures, return values and exceptions still fit every caller: callers compile and keep working.
 
 ## Security
 - CK-SC-1: Authorization is checked on the server side for every new or changed entry point.

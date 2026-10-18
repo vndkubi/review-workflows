@@ -5,7 +5,7 @@
 // covers, and nothing else.
 const fs = require('node:fs');
 const path = require('node:path');
-const { viewpointVerdicts, impactVerdicts } = require('../helpers');
+const { viewpointVerdicts, impactVerdicts, coverageIdsOf } = require('../helpers');
 
 function result(output, prompt) {
   return { ok: true, output, exit_code: 0, elapsed_ms: 1, usage: { input_tokens: Math.ceil(prompt.length / 4), cached_input_tokens: 0, output_tokens: 50, reasoning_output_tokens: 0 }, turns: 1, commands: 0, error_class: null, error_message: null, model: 'fake', prompt_bytes: prompt.length };
@@ -32,7 +32,7 @@ function packet(prompt, cwd) {
   const role = prompt.match(/^JOB: .* role (business|technical)\.$/m)[1];
   const files = unit.covers.filter((c) => c.startsWith('file:')).map((c) => c.slice(5));
   const code = (file, hit) => ({ kind: 'code', path: file, start_line: hit.line, end_line: hit.line, quote: hit.text.trim() });
-  const coverage = unit.covers.filter((c) => c.startsWith('file:') || c.startsWith('viewpoint:')).map((id) => {
+  const coverage = coverageIdsOf(prompt).map((id) => {
     if (!id.startsWith('file:')) return { id, disposition: 'unverified', evidence: [], note: 'nothing specific to cite' };
     const first = lineOf(cwd, id.slice(5), (l) => l.trim())[0];
     return { id, disposition: 'reviewed', evidence: [code(id.slice(5), first)], note: 'read the file' };

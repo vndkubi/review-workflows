@@ -12,6 +12,7 @@ const { loadContext, verifyContext, revisionDir, reviewDir, readInput } = requir
 const { makeSources, canonicalizeCandidate, validatePacket, validateRebuttal, validateSynthesis } = require('./validate');
 const { findingClusters } = require('./cluster');
 const { computeOutcome, BLOCKING } = require('./outcome');
+const { effortFor } = require('./effort');
 const prompts = require('./prompts');
 const { loadReproRecords } = require('./repro');
 const { outputSchema, stripNulls } = require('./schema');
@@ -423,7 +424,7 @@ async function runBatch({ runDir, executor, workers = envInt('ARW_WORKERS', 4), 
       label: `${unit.id}-${role}`,
       outRel: packetRel(unit.id, role),
       model: models.review,
-      effort: models.effort,
+      effort: effortFor('packet', unit, models.effort),
       outputSchema: outputSchema('review', 'packet'),
       fill: fillKnown({ schema_version: '1.0', context_digest: context.context_digest, unit_id: unit.id, role, dependency_refs: depRefs }),
       buildPrompt: (repair) => prompts.packetPrompt(runDir, context, { unit, role, dependencyRefs: depRefs, packetPaths: depPaths, repair }),
@@ -488,7 +489,7 @@ async function runBatch({ runDir, executor, workers = envInt('ARW_WORKERS', 4), 
             label: `rebuttal-${id}`,
             outRel: `rebuttals/${id}.json`,
             model: models.judge,
-            effort: models.effort,
+            effort: effortFor('rebuttal', null, models.effort),
             outputSchema: outputSchema('review', 'rebuttal'),
             fill: fillKnown({ schema_version: '1.0', context_digest: context.context_digest, finding_id: id, finding_sha256: findingSha256, role: 'red-team' }),
             buildPrompt: (repair) => prompts.rebuttalPrompt(runDir, context, { finding, findingSha256, repair }),
@@ -514,7 +515,7 @@ async function runBatch({ runDir, executor, workers = envInt('ARW_WORKERS', 4), 
         label: 'synthesis',
         outRel: 'synthesis.json',
         model: models.judge,
-        effort: models.effort,
+        effort: effortFor('synthesis', null, models.effort),
         outputSchema: outputSchema('review', 'synthesis'),
         fill: fillKnown({ schema_version: '1.0', context_digest: context.context_digest, role: 'coordinator', packet_refs: packetRefs }),
         buildPrompt: (repair) =>

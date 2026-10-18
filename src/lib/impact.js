@@ -187,7 +187,7 @@ function indexJava(rel, raw) {
         else if (ch === ',' && level === 0) params += 1;
       }
     }
-    methods.push({ name, owner: type ? type.name : null, start: line, end: lineAt(text, closeBrace(text, bodyOpen)), params });
+    methods.push({ name, owner: type ? type.name : null, start: line, end: lineAt(text, closeBrace(text, bodyOpen)), params, varargs: inner.includes('...') });
   }
   return { lang: 'java', path: rel, text, pkg, imports, types, methods, vars };
 }
@@ -357,6 +357,66 @@ function callSites(target, indexes, hierarchy = hierarchyOf(indexes), ast = null
   return out.filter((s) => { const k = `${s.file}:${s.line}:${s.confidence}`; return !seen.has(k) && seen.add(k); });
 }
 
+// Arguments of the call whose '(' is at text[open]: top-level commas, with
+// generic type arguments (`new Map<K, V>()`) and nested calls skipped.
+function callArity(text, open) {
+  let depth = 0;
+  let angle = 0;
+  let commas = 0;
+  let any = false;
+  for (let i = open; i < text.length && i < open + 4000; i += 1) {
+    const ch = text[i];
+    if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      depth -= 1;
+      if (depth === 0) return any ? commas + 1 : 0;
+    } else if (depth === 1) {
+      if (ch === '<' && /[\w$]/.test(text[i - 1] || '') && /^\s*[A-Z?]/.test(text.slice(i + 1, i + 40))) angle += 1;
+      else if (ch === '>' && angle > 0) angle -= 1;
+      else if (ch === ',' && angle === 0) commas += 1;
+      else if (!/\s/.test(ch)) any = true;
+    }
+  }
+  return null;
+}
+
+// A Java declaration whose parameter count changed, and a call of that name
+// whose argument count no declaration of the name accepts: the call no longer
+// compiles (or calls something else). Text-based: an overload anywhere in the
+// repository with that count, or varargs, silences it.
+const MAX_MISMATCHES = 30;
+function signatureMismatches(indexes, changed, baseIndexes) {
+  const java = indexes.filter((i) => i.lang === 'java');
+  const out = [];
+  const done = new Set();
+  for (const m of changed) {
+    if (m.index.lang !== 'java' || done.has(m.name)) continue;
+    const base = baseIndexes.get(m.path);
+    const before = new Set(base ? base.methods.filter((x) => x.name === m.name && x.owner === m.owner).map((x) => x.params) : []);
+    const decls = java.flatMap((i) => i.methods.filter((x) => x.name === m.name));
+    const after = new Set(decls.filter((x) => x.owner === m.owner).map((x) => x.params));
+    if (!before.size || [...before].every((p) => after.has(p))) continue;
+    done.add(m.name);
+    if (decls.some((x) => x.varargs)) continue;
+    const accepted = new Set(decls.map((x) => x.params));
+    const re = new RegExp(`(^|[^\\w$])(${m.name})\\s*\\(`, 'g');
+    for (const idx of java) {
+      for (const hit of idx.text.matchAll(re)) {
+        const at = hit.index + hit[1].length;
+        const line = lineAt(idx.text, at);
+        if (idx.methods.some((d) => d.name === m.name && d.start === line)) continue;
+        const prev = idx.text.slice(Math.max(0, at - 200), at);
+        if (/[\w$>\]]\s+$/.test(prev) && !/\b(return|new|else|throw|case|yield|await|assert)\s+$/.test(prev)) continue;
+        const args = callArity(idx.text, idx.text.indexOf('(', at));
+        if (args == null || accepted.has(args)) continue;
+        out.push({ path: idx.path, line, name: m.name, args, declared: [...accepted].sort((a, b) => a - b) });
+        if (out.length >= MAX_MISMATCHES) return out;
+      }
+    }
+  }
+  return out;
+}
+
 // Declarations named in configuration (Spring XML, MyBatis mappers, YAML,
 // properties) or looked up by name (reflection, getattr). Raw text, since
 // these references live in strings.
@@ -487,6 +547,7 @@ function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
     if (text != null) baseIndexes.set(rel, indexFile(rel, text));
   }
   const changed = changedMethods(indexes, parsed, baseIndexes);
+  const mismatches = signatureMismatches(indexes, changed, baseIndexes);
   const edges = [];
   let truncated = false;
   let frontier = changed;
@@ -566,6 +627,7 @@ function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
     related: scannedRepos,
     changed: changed.map((m) => ({ path: m.path, symbol: label(m), lines: [m.start, m.end] })),
     edges,
+    mismatches,
     truncated,
   };
 }
@@ -577,6 +639,11 @@ function renderImpact(r) {
   if (!r.changed.length) {
     lines.push('(no changed method or function found)');
     return `${lines.join('\n')}\n`;
+  }
+  if (r.mismatches && r.mismatches.length) {
+    lines.push('', 'Signature mismatches (a changed declaration no longer takes this many arguments; the call most likely does not compile):');
+    for (const x of r.mismatches) lines.push(`- ${x.path}:${x.line} calls ${x.name} with ${x.args} argument(s); declarations take ${x.declared.join(' or ')}`);
+    lines.push('');
   }
   lines.push(`Changed: ${r.changed.map((c) => `${c.symbol} (${c.path}:${c.lines[0]}-${c.lines[1]})`).join(', ')}`);
   const byName = new Set(['config', 'reflection', 'http']);

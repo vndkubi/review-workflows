@@ -6,7 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { tmpDir, sh, write, viewpointVerdicts, impactVerdicts } = require('./helpers');
+const { tmpDir, sh, write, viewpointVerdicts, impactVerdicts, coverageIdsOf } = require('./helpers');
 
 process.env.ARW_RUNS_DIR = tmpDir('arw-control-runs-');
 
@@ -55,7 +55,7 @@ function executor(fixTobe, { verdict = 'FINDING_STANDS' } = {}) {
     }
     const unit = JSON.parse(p.match(/^UNIT: (.*)$/m)[1]);
     const role = p.match(/^JOB: .* role (business|technical)\.$/m)[1];
-    const coverage = unit.covers.filter((c) => c.startsWith('file:') || c.startsWith('viewpoint:')).map((id) => (id.startsWith('file:') ? { id, disposition: 'reviewed', evidence: [code(BAD_LINE)], note: 'read it' } : { id, disposition: 'unverified', evidence: [], note: 'nothing to cite' }));
+    const coverage = coverageIdsOf(p).map((id) => (id.startsWith('file:') ? { id, disposition: 'reviewed', evidence: [code(BAD_LINE)], note: 'read it' } : { id, disposition: 'unverified', evidence: [], note: 'nothing to cite' }));
     const findings = unit.id === 'T1' ? [{
       id: 'T1-technical-F1', severity: 'P2', confidence: 'LIKELY', title: 'Day 30 is charged a late fee',
       asis: 'An invoice paid on day 30 pays 0 only because of the strict comparison change.', tobe: 'Day 30 is still within the grace period.',

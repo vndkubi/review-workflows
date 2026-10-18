@@ -6,7 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { tmpDir, sh, write, makeRepo, scriptedExecutor, evidenceAt, viewpointVerdicts, impactVerdicts } = require('./helpers');
+const { tmpDir, sh, write, makeRepo, scriptedExecutor, evidenceAt, viewpointVerdicts, impactVerdicts, coverageIdsOf } = require('./helpers');
 
 process.env.ARW_RUNS_DIR = tmpDir('arw-runs-');
 process.env.ARW_429_BACKOFF_MS = '1';
@@ -133,7 +133,7 @@ function itemsOf(feature) {
 
 // A reviewer cites the file's diff hunk when the job lists one, else quotes.
 function coverage(unit, prompt = '') {
-  return unit.covers.filter((id) => id.startsWith('file:') || id.startsWith('viewpoint:')).map((id) => {
+  return coverageIdsOf(prompt).map((id) => {
     if (id.startsWith('file:')) {
       const file = id.slice(5);
       const anchor = prompt.split('\n').map((l) => l.match(/^- (H\d+) (\S+) lines /)).find((m) => m && m[2] === file);
@@ -364,7 +364,11 @@ test('ticket pipeline -> PR review, end to end', async (t) => {
     assert.equal(validation.recommendation, 'changes_requested');
     assert.equal(validation.complete, true, validation.gaps.join('; '));
     const units = JSON.parse(fs.readFileSync(path.join(runDir, 'run.json'), 'utf8')).review.units.map((u) => u.id);
-    assert.deepEqual(units, ['B1', 'T1', 'B2', 'S1', 'V0', 'V1']);
+    // One free review of the whole PR (V0) replaces the two checklist sweeps.
+    assert.deepEqual(units, ['B1', 'T1', 'B2', 'S1', 'V0']);
+    const hunt = rexec.calls.find((c) => /^UNIT: \{"id":"V0"/m.test(c.prompt));
+    assert.match(hunt.prompt, /^FREE REVIEW V0: review this pull request as a senior engineer/m);
+    assert.match(hunt.prompt, /^COVERAGE IDS: \["viewpoint:V0"\]$/m);
 
     const s = spec();
     const result = (pred) => validation.items.find((r) => r.id === s.review_items.find(pred).id).result;
@@ -556,7 +560,7 @@ test('ticket pipeline -> PR review, end to end', async (t) => {
     assert.equal(validation.recommendation, 'changes_requested');
     assert.ok(!rexec.calls.some((c) => c.prompt.startsWith('You are a read-only planner')), 'the plan is kept: same files');
     const rerun = rexec.calls.filter((c) => c.prompt.includes('JOB: first-pass packet')).map((c) => JSON.parse(c.prompt.match(/^UNIT: (.*)$/m)[1]).id);
-    assert.deepEqual([...new Set(rerun)].sort(), ['B2', 'V0', 'V1'], 'only units that touch fees.py');
+    assert.deepEqual([...new Set(rerun)].sort(), ['B2', 'V0'], 'only units that touch fees.py');
     assert.deepEqual(validation.carried_over.packets.sort(), ['B1/business', 'B1/technical', 'S1/technical', 'T1/technical']);
     assert.equal(validation.carried_over.rebuttals, 1);
     assert.equal(rexec.calls.filter((c) => c.prompt.includes('JOB: red-team rebuttal')).length, 0, 'the rebuttal of an unchanged finding is reused');

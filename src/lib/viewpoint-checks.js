@@ -44,6 +44,8 @@ const RULES = [
   { id: 'CK-CP-1', paths: /\.(proto|avsc|graphql|wsdl|xsd)$|openapi|swagger/i, removed: [/\bpublic\s|@\w+Mapping|@JsonProperty|@Column|@Table|\bdef\s+\w+\s*\(/] },
   { id: 'CK-CP-2', paths: /(^|\/)(migrations?|flyway|liquibase|changelog|alembic)\/|\.sql$/i, lines: [/\b(ALTER|DROP)\s+TABLE\b|\bADD\s+COLUMN\b|\bRENAME\b/i] },
   { id: 'CK-CP-3', paths: /\.(properties|ya?ml|ini|cfg|toml|env)$/, lines: [/@Value\(|@ConfigurationProperties|getProperty\(|os\.environ|\bgetenv\(/] },
+  // A removed or rewritten declaration: do its callers still compile and work?
+  { id: 'CK-CP-4', source: true, removed: [/\b(public|protected|private|static|final|abstract|synchronized|default)\b[^;=]*[\w$>\]]\s+[\w$]+\s*\([^;]*$/, /^\s*(async\s+)?def\s+\w+\s*\(/, /\bfunction\s+\w+\s*\(|^\s*(export\s+)?(async\s+)?\w+\s*\([^)]*\)\s*[:{]/] },
   { id: 'CK-SC-1', lines: [ENTRY, /@PreAuthorize|@Secured|@RolesAllowed|hasRole|hasAuthority|permission_classes|login_required/] },
   { id: 'CK-SC-2', paths: /Mapper\.xml$/, lines: [/create(Native)?Query\(|executeQuery\(|jdbcTemplate|cursor\.execute\(|\.raw\(|\$\{|ProcessBuilder|Runtime\.getRuntime|\bsubprocess\b|os\.system\(/] },
   { id: 'CK-SC-3', source: true, lines: [/password|passwd|secret|token|credential|\bssn\b|card_?number/i] },

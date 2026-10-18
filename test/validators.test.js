@@ -96,7 +96,9 @@ test('packet rules reject what a reviewer would reject', () => {
 
   p = goodPacket();
   p.findings[0].authority = { kind: 'inferred', id: 'judgement', source: codeEv };
-  has(check(p), /inferred authority cannot support P2/);
+  assert.ok(!check(p).some((e) => /inferred authority/.test(e)), 'inferred authority supports P2');
+  p.findings[0].severity = 'P1';
+  has(check(p), /inferred authority cannot support P1/);
 
   p = goodPacket();
   p.findings[0].authority = { kind: 'curated_viewpoint', id: 'CK-XX-9', source: { kind: 'input', path: 'policy-policies-checklist', start_line: 1, end_line: 1, quote: 'CK-BZ-1' } };

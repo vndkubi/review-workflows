@@ -322,6 +322,13 @@
             "P4"
           ]
         },
+        "category": {
+          "enum": [
+            "defect",
+            "test_gap",
+            "process"
+          ]
+        },
         "confidence": {
           "enum": [
             "LIKELY",

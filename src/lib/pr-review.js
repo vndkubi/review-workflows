@@ -11,9 +11,10 @@ const git = require('./git');
 const { parsePatch } = require('./patch');
 const { buildEvidencePack } = require('./evidence-pack');
 const { validateAgainst, outputSchema } = require('./schema');
-const { buildUnits, singleAgentUnits, renderPlanMarkdown } = require('./plan');
+const { buildUnits, singleAgentUnits, smallPrUnits, isSmallPr, renderPlanMarkdown } = require('./plan');
 const { assignChecks } = require('./viewpoint-checks');
 const { assignImpacts } = require('./impact-checks');
+const { markBoost } = require('./effort');
 const { freezeContext, loadContext, verifyContext } = require('./freeze');
 const { runLooseJob } = require('./loose-job');
 const { redactSecrets, scanInjection, addedLines, textLines } = require('./guard');
@@ -205,6 +206,12 @@ async function planPhase({ runDir, run, info, executor, models, log, singleRole,
     const one = singleAgentUnits(reviewable, items);
     plan = one.plan;
     built = one;
+  } else if (!built && isSmallPr(parsed, reviewable)) {
+    // A small PR: no planner, one unit and the free review.
+    const small = smallPrUnits(reviewable, items);
+    log(`small PR (${reviewable.length} file(s)): one unit and the free review, no planner`);
+    plan = small.plan;
+    built = small;
   }
   if (!built) {
     const res = await runLooseJob({
@@ -248,6 +255,8 @@ async function planPhase({ runDir, run, info, executor, models, log, singleRole,
   // Size and risk: riskiest units run first; a large PR gets a split proposal.
   const size = prSize(parsed, reviewable);
   scoreUnits(built.units, fileRisks(parsed, reviewable, pack.signals));
+  // The riskiest unit reasons at a higher effort (effort.js).
+  markBoost(built.units);
   if (size.large) log(`large PR: ${size.files} files, ${size.lines} changed lines (limits ${size.limits.files} files / ${size.limits.lines} lines); reviewing riskiest units first`);
   run.review = { plan_path: 'pr-review-plan.md', mode: singleAgent ? 'single-agent' : 'multi-agent', required_coverage: built.required_coverage, units: built.units, single_role: Boolean(singleRole), size, split: size.large ? suggestSplit(built.units, parsed) : null };
   const planMd = renderPlanMarkdown({ identity: run.identity, plan, units: built.units, items, reviewable, skipped: pack.skipped.map((f) => f.path) });

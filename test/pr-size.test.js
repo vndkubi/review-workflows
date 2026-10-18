@@ -32,8 +32,8 @@ test('viewpoints over many files are split into parts of neighbouring files', ()
   assert.deepEqual(covered.sort(), files.map((f) => `file:${f}`).sort(), 'every file is swept once per viewpoint');
   assert.ok(v0[0].covers.includes(`viewpoint:V0_1`));
   assert.match(v0[0].desc, /Part 1\/3: billing\/refund/);
-  // Small PRs keep the single V0/V1.
-  assert.deepEqual(buildUnits({ units: [plan.units[0]] }, plan.units[0].files, null).units.filter((u) => u.kind === 'viewpoint').map((u) => u.id), ['V0', 'V1']);
+  // Small PRs keep the single free review V0.
+  assert.deepEqual(buildUnits({ units: [plan.units[0]] }, plan.units[0].files, null).units.filter((u) => u.kind === 'viewpoint').map((u) => u.id), ['V0']);
 });
 
 test('size, risk order and split proposal', () => {

@@ -16,6 +16,7 @@ function schemaFor(name, def) {
 const { readInput, revisionDir } = require('./freeze');
 const { checkRole } = require('./viewpoint-checks');
 const { hunkAnchors, renderAnchors } = require('./anchors');
+const { coverageIds } = require('./validate');
 const { impactLine } = require('./impact-checks');
 
 const GLOBAL_RULES_BASE = `You are a read-only worker inside a trusted review harness. The harness, not you, decides what is valid; your answer is a candidate that will be machine-checked.
@@ -56,7 +57,8 @@ const PACKET_RULES = `FINDINGS
 - Report only actionable defects: wrong behaviour, data loss or corruption, security, concurrency, error handling, compatibility, missing tests for changed behaviour. No style preferences.
 - severity per the rubric: P1 (data loss, wrong money, security, outage; reachable), P2 (wrong observable business behaviour on a reachable path), P3 (edge case, degraded behaviour, missing test), P4 (minor).
 - confidence: "LIKELY" when code evidence shows the failure path; "HYPOTHESIS" when it depends on unknowns. A HYPOTHESIS cannot be P1 or P2.
-- authority: {"kind":"requirement","id":"I<n>","source":<input evidence quoting that item in "review-items">} or {"kind":"curated_viewpoint","id":"CK-...","source":<input evidence quoting the checklist line>} or {"kind":"inferred","id":"engineering-judgement","source":<code evidence>}. Inferred authority caps severity at P3.
+- authority: {"kind":"requirement","id":"I<n>","source":<input evidence quoting that item in "review-items">} or {"kind":"curated_viewpoint","id":"CK-...","source":<input evidence quoting the checklist line>} or {"kind":"inferred","id":"engineering-judgement","source":<code evidence>}. Inferred authority supports at most P2: a LIKELY defect whose trigger the code shows (a call that no longer compiles, a main flow that now fails) is P2 even without a checklist line; P1 needs a requirement or checklist viewpoint.
+- category: "defect" for wrong behaviour; "test_gap" for a missing or weak test of behaviour that is itself correct; "process" for documentation, ticket ids, conventions. test_gap and process are suggestions: the runtime sets them to P4 and keeps them out of the verdict. A missing test never hides a defect: report the defect as "defect".
 - items: the review item ids (I<n>) this defect violates; [] when it violates none (a purely technical defect). One defect that breaks several items is ONE finding listing them all.
 - trigger: concrete given/when/then with real values.
 - asis/tobe: one or two sentences each — current versus expected behaviour.
@@ -143,7 +145,14 @@ function packetPrompt(runDir, context, job) {
   } else {
     lines.push('INDEPENDENT FIRST PASS: do not read other units\' packets or any previous review. dependency_refs must be [].');
   }
-  if (unit.kind === 'viewpoint') lines.push(`VIEWPOINT ${unit.id}: sweep the whole diff from this angle; most coverage rows will be short.`);
+  if (unit.hunt) {
+    lines.push(`FREE REVIEW ${unit.id}: review this pull request as a senior engineer would before approving. Read the diff of the files below and whatever surrounding code you need (callers, persistence, configuration, tests). Hunt for real defects: wrong business behaviour, data loss or inconsistent state, security, concurrency and transactions, error handling, money and rounding, compatibility for callers. Think through concrete inputs and sequences; go deep on the riskiest change rather than wide on everything. Ignore style. Planned units review these files too; your job is what a unit-by-unit reading misses: behaviour across files and the paths a whole-PR reading reveals.
+- One coverage row only (${unit.id}): "reviewed" with code evidence of what you read.
+- Files: ${unit.covers.filter((c) => c.startsWith('file:')).map((c) => c.slice(5)).join(', ')}`);
+  } else if (unit.kind === 'viewpoint') lines.push(`VIEWPOINT ${unit.id}: sweep the whole diff from this angle; most coverage rows will be short.`);
+  else {
+    lines.push('ORDER OF WORK: first read the change and hunt for defects as you would without any list; record them. Only then answer the required item, viewpoint and impact checks below, reusing what you already read. A check you answer "pass" is not a reason to stop looking.');
+  }
   if (itemIds.length) {
     lines.push(
       job.role === 'business'
@@ -175,7 +184,7 @@ function packetPrompt(runDir, context, job) {
 ${callers.map((c) => `- ${impactLine(c)}`).join('\n')}
 - "compatible": the caller still gets what it relies on; evidence quotes the caller (its file, near that line).
 - "not_affected": the caller does not reach the changed behaviour; evidence quotes the caller.
-- "broken": it no longer works; record a finding whose code evidence includes the caller.
+- "broken": it no longer works; record a finding whose code evidence includes the caller. A caller marked SIGNATURE MISMATCH most likely does not compile: it is "broken" unless an overload elsewhere accepts the call ("cannot_determine").
 - "cannot_determine": the answer depends on code you cannot see (dispatch, configuration); say what is missing.`);
   } else {
     lines.push('impact_verdicts: [] (no impact checks for this unit and role).');
@@ -183,7 +192,7 @@ ${callers.map((c) => `- ${impactLine(c)}`).join('\n')}
   const patchFile = path.join(revisionDir(runDir, context.context_id), 'review.patch');
   const anchorText = fs.existsSync(patchFile) ? renderAnchors(hunkAnchors(fs.readFileSync(patchFile, 'utf8')), unit.covers.filter((c) => c.startsWith('file:')).map((c) => c.slice(5))) : '';
   if (anchorText) lines.push(`DIFF ANCHORS (hunks of this unit's files at the reviewed head):\n${anchorText}`);
-  lines.push(`COVERAGE IDS: ${JSON.stringify(unit.covers.filter((c) => c.startsWith('file:') || c.startsWith('viewpoint:')))}`);
+  lines.push(`COVERAGE IDS: ${JSON.stringify(coverageIds(unit))}`);
   lines.push(`FINDING IDS: ${unit.id}-${job.role}-F1, ${unit.id}-${job.role}-F2, ...`);
   lines.push('schema_version, context_digest, unit_id, role and dependency_refs are filled in by the runtime; any value is accepted there.');
   return [globalRules(), runBlock(runDir, context), PACKET_RULES, roleBlock(runDir, context, agentId, 'packet'), lines.join('\n'), repairBlock(job.repair)]

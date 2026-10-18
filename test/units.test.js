@@ -123,7 +123,7 @@ test('plan: orphans, seams and viewpoints are added by code; review item coverag
   const res = buildUnits(plan, files, items);
   assert.deepEqual(res.errors, ['I3 (gap) is not covered by any business (B*) unit']);
   const ids = res.units.map((u) => u.id);
-  assert.deepEqual(ids, ['B1', 'T1', 'O1', 'S1', 'V0', 'V1']);
+  assert.deepEqual(ids, ['B1', 'T1', 'O1', 'S1', 'V0']);
   const seam = res.units.find((u) => u.id === 'S1');
   assert.deepEqual(seam.depends_on, ['B1', 'T1']);
   assert.deepEqual(seam.covers, ['file:a/A.java']);

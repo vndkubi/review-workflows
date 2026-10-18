@@ -157,6 +157,12 @@ function viewpointVerdicts(prompt, findings = []) {
   });
 }
 
+// The coverage ids a job asks for (its "COVERAGE IDS" line).
+function coverageIdsOf(prompt) {
+  const m = prompt.match(/^COVERAGE IDS: (.*)$/m);
+  return m ? JSON.parse(m[1]) : [];
+}
+
 // The impact checks as a scripted reviewer answers them: the `answer`
 // callback, or "cannot_determine" for every caller the job lists.
 function impactVerdicts(prompt, answer = () => null) {
@@ -175,4 +181,4 @@ function evidenceAt(dir, rev, file, quote, extra = {}) {
   return { kind: 'code', path: file, start_line: i + 1, end_line: i + 1, quote, ...extra };
 }
 
-module.exports = { tmpDir, sh, write, makeRepo, scriptedExecutor, evidenceAt, viewpointVerdicts, impactVerdicts, ORDER_HEAD, FEES_HEAD };
+module.exports = { tmpDir, sh, write, makeRepo, scriptedExecutor, evidenceAt, viewpointVerdicts, impactVerdicts, coverageIdsOf, ORDER_HEAD, FEES_HEAD };

@@ -4,6 +4,7 @@
 // separate and recorded only by `arw gate`.
 
 const BLOCKING = new Set(['P1', 'P2']);
+const SUGGESTION = new Set(['test_gap', 'process']);
 
 // packets: [{ unit_id, role, packet }] (valid packets only)
 // jobs:    [{ unit_id, role, required, status }]
@@ -55,6 +56,8 @@ function computeOutcome({ packets, jobs, clusters, rebuttals, items, repro = new
         unit_id,
         role,
         severity: f.severity,
+        // Test and process remarks: shown as suggestions, never in the verdict.
+        suggestion: SUGGESTION.has(f.category),
         confidence: f.confidence,
         title: f.title,
         state,

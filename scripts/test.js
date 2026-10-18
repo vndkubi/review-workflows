@@ -8,5 +8,6 @@ const { spawnSync } = require('node:child_process');
 const dir = path.join(__dirname, '..', 'test');
 const files = fs.readdirSync(dir).filter((f) => f.endsWith('.test.js')).sort().map((f) => path.join(dir, f));
 const only = process.argv.slice(2);
-const res = spawnSync(process.execPath, ['--test', ...(only.length ? only : files)], { stdio: 'inherit' });
+// Fixture PRs are small: keep the planner path unless a test asks otherwise.
+const res = spawnSync(process.execPath, ['--test', ...(only.length ? only : files)], { stdio: 'inherit', env: { ...process.env, ARW_SMALL_PR: process.env.ARW_SMALL_PR || 'off' } });
 process.exit(res.status == null ? 1 : res.status);
