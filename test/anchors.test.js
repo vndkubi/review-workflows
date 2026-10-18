@@ -96,14 +96,25 @@ test('anchors that do not resolve are rejected, and findings must quote', () => 
   p.coverage[0].evidence = [placeholder('H9')];
   has(check(p).errors, /coverage\[0\]\.evidence\[0\]\.anchor: "H9" is not a diff hunk of this review/);
 
+  // A line the file does not have is rejected.
   p = packet();
   p.coverage[0].evidence = [placeholder('H3:40')];
-  has(check(p).errors, /"H3:40": line 40 is outside hunk H3 \(lines 6-14\)/);
+  has(check(p).errors, /"H3:40": src\/main\/java\/com\/acme\/OrderService\.java has no line 40/);
 
-  // A line with nothing to show (a closing brace) is still rejected as a quote.
+  // Incident (v2/v3 runs, 23 repairs): reviewers cite "H3:47" for a line of
+  // the same file just outside the hunk. The line is real code at head, so
+  // it is taken as cited instead of sending the packet back.
+  p = packet();
+  p.coverage[0].evidence = [placeholder('H3:3')];
+  assert.deepEqual(check(p).errors, []);
+  assert.deepEqual([p.coverage[0].evidence[0].start_line, p.coverage[0].evidence[0].quote], [3, 'import java.math.BigDecimal;']);
+
+  // A line with nothing to show (a closing brace) moves to the nearest line
+  // of the hunk that has some (5 repairs: "quote has no letters or digits").
   p = packet();
   p.coverage[0].evidence = [placeholder('H3:11')];
-  has(check(p).errors, /quote has no letters or digits/);
+  assert.deepEqual(check(p).errors, []);
+  assert.deepEqual([p.coverage[0].evidence[0].start_line, p.coverage[0].evidence[0].quote], [10, 'return total.multiply(new BigDecimal("0.10"));']);
 
   p = packet();
   p.findings = [{

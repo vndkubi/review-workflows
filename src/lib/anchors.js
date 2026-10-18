@@ -1,7 +1,7 @@
 'use strict';
 // Diff anchors: every hunk of the frozen review.patch gets an id (H1, H2, ...
 // in patch order). Coverage rows and verdicts may cite "H3" (the hunk's first
-// changed line) or "H3:47" (line 47 inside it) instead of quoting; the runtime
+// changed line) or "H3:47" (line 47 of that file) instead of quoting; the runtime
 // fills in path, lines and quote from the frozen source, so the evidence is
 // as checkable as a quote without the model copying text. Findings still
 // quote verbatim: there the quote is the claim.
@@ -54,10 +54,21 @@ function resolveAnchor(anchor, anchors, code) {
   const m = String(anchor).match(ANCHOR);
   const a = m && anchors.find((x) => x.id === `H${m[1]}`);
   if (!a) return { error: `"${anchor}" is not a diff hunk of this review (ids are listed under DIFF ANCHORS)` };
-  const line = m[2] ? Number(m[2]) : a.first_line;
-  if (line < a.start || line > a.end) return { error: `"${anchor}": line ${line} is outside hunk ${a.id} (lines ${a.start}-${a.end})` };
+  let line = m[2] ? Number(m[2]) : a.first_line;
   const lines = code(a.path, a.revision);
   if (!lines || line > lines.length) return { error: `"${anchor}": ${a.path} has no line ${line}` };
+  // A line just outside the hunk is still real code of the same file; a line
+  // with nothing to show (a brace) moves to the nearest one that has some,
+  // within the hunk when it was inside it, the earlier one on a tie.
+  if (!MEANINGFUL.test(lines[line - 1])) {
+    const inside = line >= a.start && line <= a.end;
+    const lo = inside ? a.start : 1;
+    const hi = inside ? a.end : lines.length;
+    for (let d = 1; line - d >= lo || line + d <= hi; d++) {
+      if (line - d >= lo && MEANINGFUL.test(lines[line - d - 1])) { line -= d; break; }
+      if (line + d <= hi && MEANINGFUL.test(lines[line + d - 1])) { line += d; break; }
+    }
+  }
   return { evidence: { kind: 'code', path: a.path, revision: a.revision, start_line: line, end_line: line, quote: lines[line - 1].trim() || lines[line - 1] } };
 }
 

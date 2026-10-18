@@ -269,3 +269,17 @@ test('driver job: 429 backs off and retries; auth failure blocks without retryin
     assert.equal(calls, 1);
   }
 });
+
+// Incident (v2/v3 runs, 12 repairs): a reviewer passes or fails a gap item
+// although it has no expected result. The runtime turns the verdict into
+// "cannot_determine" (keeping note and evidence) instead of a repair call.
+test('canonicalize: a pass/fail verdict on a gap item becomes cannot_determine', () => {
+  const p = goodPacket();
+  p.item_verdicts[1] = { item: 'I2', verdict: 'pass', evidence: [codeEv], note: 'fine' };
+  const changes = require('../src/lib/validate').canonicalizeCandidate(p, sources);
+  assert.equal(p.item_verdicts[1].verdict, 'cannot_determine');
+  assert.ok(changes.some((c) => /item_verdicts\[1\]\.verdict: pass -> cannot_determine \(I2 is a gap item\)/.test(c)), changes.join('\n'));
+  assert.deepEqual(check(p).filter((e) => /item_verdicts/.test(e)), []);
+  // A rule item keeps its verdict.
+  assert.equal(p.item_verdicts[0].verdict, goodPacket().item_verdicts[0].verdict);
+});

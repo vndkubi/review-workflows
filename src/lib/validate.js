@@ -270,6 +270,16 @@ function canonicalizeCandidate(candidate, sources) {
   list(candidate.evidence, '$.evidence');
   (candidate.coverage || []).forEach((c, i) => anchored(c && c.evidence, `$.coverage[${i}].evidence`));
   (candidate.item_verdicts || []).forEach((v, i) => anchored(v && v.evidence, `$.item_verdicts[${i}].evidence`));
+  // Gap and contradiction items have no expected result: a pass or fail on
+  // one is read as "cannot_determine", note and evidence kept.
+  const kinds = itemKinds(sources);
+  (candidate.item_verdicts || []).forEach((v, i) => {
+    const kind = v && kinds.get(v.item);
+    if ((kind === 'gap' || kind === 'contradiction') && (v.verdict === 'pass' || v.verdict === 'fail')) {
+      changes.push(`$.item_verdicts[${i}].verdict: ${v.verdict} -> cannot_determine (${v.item} is a ${kind} item)`);
+      v.verdict = 'cannot_determine';
+    }
+  });
   (candidate.viewpoint_verdicts || []).forEach((v, i) => anchored(v && v.evidence, `$.viewpoint_verdicts[${i}].evidence`));
   (candidate.impact_verdicts || []).forEach((v, i) => anchored(v && v.evidence, `$.impact_verdicts[${i}].evidence`));
   (candidate.overview || []).forEach((f, i) => list(f && f.evidence, `$.overview[${i}].evidence`));
@@ -292,6 +302,17 @@ function canonicalizeCandidate(candidate, sources) {
     }
   });
   return changes;
+}
+
+// Item id -> kind, from the frozen "review-items" input.
+function itemKinds(sources) {
+  const lines = sources && sources.input ? sources.input('review-items') : null;
+  if (!lines) return new Map();
+  try {
+    return new Map(JSON.parse(lines.join('\n')).map((i) => [i.id, i.kind]));
+  } catch {
+    return new Map();
+  }
 }
 
 function validateEvidence(ev, sources, at) {
