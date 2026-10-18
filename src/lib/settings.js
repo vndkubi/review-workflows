@@ -19,6 +19,7 @@ const ENV_SETTINGS = [
   ['CODEX_EFFORT', 'executor', 'enum', '', 'Reasoning effort. Empty = codex default; managed = never sent (the provider or company fixes it).', ['', 'managed', 'low', 'medium', 'high', 'xhigh', 'max']],
   ['CODEX_REVIEW_MODEL', 'executor', 'string', '', 'Model for the unit reviewers. Empty = CODEX_MODEL.'],
   ['CODEX_HUNT_MODEL', 'executor', 'string', '', 'Model for the free review of the whole PR. Empty = the review model.'],
+  ['ARW_PLAIN_REVIEW', 'review', 'enum', 'on', 'Plain review P0: one free prompt over the whole PR answered in prose, then turned into quoted findings that are checked, red-teamed and reproduced like the rest. off = pipeline units only.', ['on', 'off']],
   ['ARW_HUNT_LENSES', 'review', 'string', '1', 'Free reviews of the whole PR: a number (1-4) or lenses by name (general, business, adversarial, maintainer). More lenses stand in for effort a provider will not raise.'],
   ['ARW_HUNT_MODELS', 'review', 'string', '', 'Comma-separated models given to the free reviews in turn (for example two self-hosted models). Empty = CODEX_HUNT_MODEL.'],
   ['CODEX_OUTPUT_SCHEMA', 'executor', 'bool', '1', 'Enforce JSON output with --output-schema (falls back automatically if output degenerates).'],

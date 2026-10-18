@@ -129,6 +129,48 @@ Previous candidate (raw, possibly malformed):
 ${String(repair.previous).slice(0, 60000)}`;
 }
 
+// The plain review: the prompt a reviewer would get without the harness (PR
+// title and description, the diff, read what you need), answered in prose.
+// Measured on 17 PRs, this reading found defects the unit packets missed.
+function plainPrompt(runDir, context, unit, repair) {
+  let title = '';
+  try {
+    title = JSON.parse(fs.readFileSync(path.join(runDir, 'run.json'), 'utf8')).identity.title || '';
+  } catch {
+    title = '';
+  }
+  const body = readInput(runDir, context, 'pr-body') || '';
+  const { base_sha: base, head_sha: head } = context.source;
+  const parts = [`You are reviewing a pull request in this repository. The working directory is checked out at the PR head (${head}); the PR's change is exactly \`git diff ${base} ${head}\`.
+
+PR title: ${title || '(none)'}
+PR description:
+${wrapUntrusted('PR description', body.slice(0, 6000) || '(none)')}
+
+Review it as a senior engineer would before approving: read the diff and whatever surrounding code you need. Look for bugs, regressions, wrong business behaviour, security problems, concurrency and transaction issues, error handling, compatibility breaks for callers, and missing tests for changed behaviour.
+
+Report only real, actionable issues. For each one give:
+- severity (P1 critical … P4 minor)
+- file:line
+- what is wrong and the concrete situation where it fails
+- a suggested fix
+
+End with a one-line verdict: "approve" or "request changes". Do not modify any file.`];
+  if (repair) {
+    parts.push(`Your previous answer was REJECTED by the harness:
+${repair.errors.map((e) => `- ${e}`).join('\n')}
+Previous answer:
+${String(repair.previous).slice(0, 60000)}
+Answer again in full.`);
+  }
+  return parts.join('\n\n');
+}
+
+function plainText(runDir, context, unit) {
+  const file = path.join(revisionDir(runDir, context.context_id), 'plain', `${unit.id}.json`);
+  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).text : '(missing)';
+}
+
 // job: { type:'packet', unit, role, dependencyRefs, packetPaths, repair }
 function packetPrompt(runDir, context, job) {
   const agentId = job.role === 'business' ? 'business-reviewer' : 'technical-reviewer';
@@ -146,7 +188,15 @@ function packetPrompt(runDir, context, job) {
   } else {
     lines.push('INDEPENDENT FIRST PASS: do not read other units\' packets or any previous review. dependency_refs must be [].');
   }
-  if (unit.hunt) {
+  if (unit.plain) {
+    lines.push(`PLAIN REVIEW ${unit.id}: an independent reviewer read this whole pull request and wrote the review below. This job converts it; it does not review again. Turn every issue it reports into one finding:
+- open the cited code and quote verbatim the lines that show the defect; correct file and line where the reviewer was off;
+- keep the reviewer's severity within the severity rules above; a remark only about tests or process gets category "test_gap" or "process";
+- an issue that, once you read the code, is plainly not real: leave it out and name it in summary as "dropped: <title> - <reason>";
+- add nothing the review does not say.
+- One coverage row only (${unit.id}): "reviewed" with code evidence of what you checked.
+${wrapUntrusted(`plain review ${unit.id}`, plainText(runDir, context, unit))}`);
+  } else if (unit.hunt) {
     const lens = LENSES.find((l) => l.name === unit.lens) || LENSES[0];
     lines.push(`FREE REVIEW ${unit.id}${unit.lens && unit.lens !== 'general' ? ` (lens: ${unit.lens})` : ''}: review this pull request. ${lens.brief} Read the diff of the files below and whatever surrounding code you need (callers, persistence, configuration, tests). Hunt for real defects: wrong business behaviour, data loss or inconsistent state, security, concurrency and transactions, error handling, money and rounding, compatibility for callers. Think through concrete inputs and sequences; go deep on the riskiest change rather than wide on everything. Ignore style. Planned units review these files too; your job is what a unit-by-unit reading misses: behaviour across files and the paths a whole-PR reading reveals.
 - One coverage row only (${unit.id}): "reviewed" with code evidence of what you read.
@@ -364,4 +414,4 @@ function specPrompt({ ticket, requirements, evidenceBlocks, feedback, repair }) 
     .join('\n\n');
 }
 
-module.exports = { packetPrompt, rebuttalPrompt, synthesisPrompt, reproPrompt, planPrompt, requirementsPrompt, auditPrompt, analysisPrompt, specPrompt, wrapUntrusted, globalRules, numbered };
+module.exports = { packetPrompt, plainPrompt, rebuttalPrompt, synthesisPrompt, reproPrompt, planPrompt, requirementsPrompt, auditPrompt, analysisPrompt, specPrompt, wrapUntrusted, globalRules, numbered };

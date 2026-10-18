@@ -9,5 +9,6 @@ const dir = path.join(__dirname, '..', 'test');
 const files = fs.readdirSync(dir).filter((f) => f.endsWith('.test.js')).sort().map((f) => path.join(dir, f));
 const only = process.argv.slice(2);
 // Fixture PRs are small: keep the planner path unless a test asks otherwise.
-const res = spawnSync(process.execPath, ['--test', ...(only.length ? only : files)], { stdio: 'inherit', env: { ...process.env, ARW_SMALL_PR: process.env.ARW_SMALL_PR || 'off' } });
+// The plain review adds a unit to every plan; tests that need it turn it on.
+const res = spawnSync(process.execPath, ['--test', ...(only.length ? only : files)], { stdio: 'inherit', env: { ...process.env, ARW_SMALL_PR: process.env.ARW_SMALL_PR || 'off', ARW_PLAIN_REVIEW: process.env.ARW_PLAIN_REVIEW || 'off' } });
 process.exit(res.status == null ? 1 : res.status);

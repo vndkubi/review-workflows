@@ -9,7 +9,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { sha256, sha256Value, writeJsonAtomic, readJson, readJsonIfExists, parseModelJson, envInt, nowIso, runPool, ensureDir } = require('./util');
 const { loadContext, verifyContext, revisionDir, reviewDir, readInput } = require('./freeze');
-const { makeSources, canonicalizeCandidate, validatePacket, validateRebuttal, validateSynthesis } = require('./validate');
+const { makeSources, canonicalizeCandidate, validatePacket, validateRebuttal, validateSynthesis, validatePlain } = require('./validate');
 const { findingClusters } = require('./cluster');
 const { computeOutcome, BLOCKING } = require('./outcome');
 const { effortFor } = require('./effort');
@@ -283,6 +283,26 @@ async function runModelJob(env, spec) {
     }
     fs.writeFileSync(path.join(attemptDir, 'raw-candidate.txt'), res.output);
     let candidate;
+    // A prose job (the plain review): kept as text, checked by its validator.
+    if (spec.text) {
+      candidate = { text: String(res.output).trim() };
+      const errors = spec.validate(candidate);
+      receipt.validation_errors = errors.length;
+      if (errors.length) receipt.errors = errors.slice(0, 5);
+      flushReceipts();
+      if (errors.length) {
+        lastErrors = errors;
+        repair = { errors, previous: res.output };
+        log(`rejected ${spec.label}: ${errors[0]}`);
+        continue;
+      }
+      const out = path.join(dir, spec.outRel);
+      writeJsonAtomic(out, candidate);
+      receipt.output_sha256 = sha256(fs.readFileSync(out));
+      flushReceipts();
+      log(`accepted ${spec.label}`);
+      return { status: STATUS.PASS, value: candidate };
+    }
     try {
       candidate = stripNulls(parseModelJson(res.output));
     } catch (err) {
@@ -439,6 +459,28 @@ async function runBatch({ runDir, executor, workers = envInt('ARW_WORKERS', 4), 
       .sort((a, b) => order[a.unit.kind] - order[b.unit.kind] || (b.unit.risk || 0) - (a.unit.risk || 0));
     log(`W1 ${w1.length} job(s) (${passed.size} already valid)`);
     await runPool(w1, workers, async ({ unit, role }) => {
+      // The plain review writes its prose first; the packet then converts it.
+      if (unit.plain) {
+        const plainRel = `plain/${unit.id}.json`;
+        const raw = readOrNull(path.join(dir, plainRel));
+        const kept = raw ? JSON.parse(raw) : null;
+        if (!kept || validatePlain(kept).length) {
+          const res = await runModelJob(env, {
+            key: `${unit.id}/plain`,
+            label: `${unit.id}-plain`,
+            outRel: plainRel,
+            text: true,
+            model: modelFor(unit, models),
+            effort: effortFor('packet', unit, models.effort),
+            buildPrompt: (repair) => prompts.plainPrompt(runDir, context, unit, repair),
+            validate: validatePlain,
+          });
+          if (res.status !== STATUS.PASS) {
+            setJob(`${unit.id}/${role}`, { status: res.status, errors: ['plain review: ' + (res.errors || []).join('; ')] });
+            return;
+          }
+        }
+      }
       const spec = packetJob(unit, role);
       setJob(spec.key, await runModelJob(env, spec));
     });

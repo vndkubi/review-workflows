@@ -84,6 +84,24 @@ function huntUnits(reviewableFiles, env = process.env) {
       });
     });
   });
+  // The plain review: one free prompt over the whole PR, never split, as a
+  // senior engineer reads it; its prose is turned into findings afterwards.
+  if (env.ARW_PLAIN_REVIEW !== 'off') {
+    units.push({
+      id: 'P0',
+      kind: 'viewpoint',
+      hunt: true,
+      plain: true,
+      lens: 'plain',
+      ...(models.length ? { model: models[0] } : {}),
+      desc: 'Plain review of the whole PR, as a senior engineer reads it before approving; its findings are then quoted and checked.',
+      covers: ['viewpoint:P0', ...reviewableFiles.map((f) => `file:${f}`)],
+      depends_on: [],
+      required: true,
+      roles: ['technical'],
+      status: 'NOT_RUN',
+    });
+  }
   return units;
 }
 

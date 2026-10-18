@@ -588,7 +588,20 @@ function validateSynthesis(synthesis, env) {
   return errors;
 }
 
+// The plain review is prose: it only has to say something and end with the
+// verdict line its prompt asks for. Its claims are checked once converted.
+const PLAIN_MAX = 200000;
+function validatePlain(candidate) {
+  const text = candidate && typeof candidate.text === 'string' ? candidate.text.trim() : '';
+  if (!text) return ['the review is empty'];
+  if (text.length > PLAIN_MAX) return [`the review is ${text.length} characters; keep it under ${PLAIN_MAX}`];
+  const last = text.split('\n').filter((l) => l.trim()).pop();
+  if (!/\b(approve|request changes)\b/i.test(last)) return ['the review must end with a one-line verdict: "approve" or "request changes"'];
+  return [];
+}
+
 module.exports = {
+  validatePlain,
   splitLines,
   collapse,
   makeSources,
