@@ -22,7 +22,6 @@ function reproDone(prior, { retry = false } = {}) {
   if (!prior || !FINAL.has(prior.status)) return false;
   return !(retry && RETRYABLE.has(prior.status));
 }
-const BLOCKING = new Set(['P1', 'P2']);
 
 // ---------- toolchains ----------
 function detectToolchain(dir, language) {
@@ -112,7 +111,14 @@ function moduleDir(toolchain, wt, testPath) {
   return root;
 }
 
-// Returns { command, junit: absolute JUnit XML path }.
+// The test's module as a relative "/"-separated path, or null at the root.
+function moduleOf(toolchain, wt, testPath) {
+  const rel = path.relative(path.resolve(wt), moduleDir(toolchain, wt, testPath));
+  return rel ? rel.split(path.sep).join('/') : null;
+}
+
+// Returns { command, junit: absolute JUnit XML path }. A test in a module is
+// run in that module (and what it depends on), not the whole build.
 function commandFor(toolchain, test, wt, override, { offline: forceOffline = false, tool = null } = {}) {
   const cls = test.language === 'java' ? javaClass(test.selector) : null;
   const simple = cls ? cls.split('.').pop() : null;
@@ -135,9 +141,12 @@ function commandFor(toolchain, test, wt, override, { offline: forceOffline = fal
   // host shell gets the same words joined (each one is shell-safe).
   const off = forceOffline || process.env.REPRO_MAVEN_OFFLINE === '1';
   const offline = off ? ['-o'] : [];
+  const module = moduleOf(toolchain, wt, test.path);
+  const pl = module && toolchain === 'maven' ? ['-pl', module, '-am'] : [];
+  const task = module && toolchain === 'gradle' ? `:${module.split('/').join(':')}:test` : 'test';
   const argvs = {
-    maven: [tool || 'mvn', '-B', '-q', ...offline, 'test', `-Dtest=${test.selector}`, '-DfailIfNoTests=false', '-Dsurefire.failIfNoSpecifiedTests=false'],
-    gradle: [tool || gradleWrapper(), 'test', '--tests', cls, ...(forceOffline ? ['--offline'] : [])],
+    maven: [tool || 'mvn', '-B', '-q', ...offline, ...pl, 'test', `-Dtest=${test.selector}`, '-DfailIfNoTests=false', '-Dsurefire.failIfNoSpecifiedTests=false'],
+    gradle: [tool || gradleWrapper(), task, '--tests', cls, ...(forceOffline ? ['--offline'] : [])],
     pytest: [sandboxPython(), '-m', 'pytest', '-q', '-p', 'no:cacheprovider', test.selector, `--junitxml=${junitPytest}`],
   };
   const argv = argvs[toolchain];
@@ -485,10 +494,14 @@ function loadReproRecords(runDir, context) {
 // targets: [{ finding, cluster_id }] — blocking, one per cluster. Withdrawn
 // findings are included: a model's withdrawal must not decide that the
 // harness never runs the test that could prove it wrong.
-function reproTargets(validation, findingsById) {
+// Findings worth proving: P1 and P2, or down to ARW_REPRO_SEVERITY (P1..P3).
+// Suggestions are never run.
+function reproTargets(validation, findingsById, env = process.env) {
+  const floor = ['P1', 'P2', 'P3'].includes(env.ARW_REPRO_SEVERITY) ? env.ARW_REPRO_SEVERITY : 'P2';
+  const wanted = (m) => !m.suggestion && /^P[1-3]$/.test(m.severity) && m.severity <= floor;
   const done = new Set();
   const targets = [];
-  const metas = [...validation.findings].filter((m) => BLOCKING.has(m.severity)).sort((a, b) => (a.canonical === b.canonical ? 0 : a.canonical ? -1 : 1));
+  const metas = [...validation.findings].filter(wanted).sort((a, b) => (a.canonical === b.canonical ? 0 : a.canonical ? -1 : 1));
   for (const m of metas) {
     const key = m.cluster_id || m.id;
     if (done.has(key)) continue;
@@ -573,17 +586,19 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
     const target = path.join(wt, test.path);
     let hostRun = null;
     if (onHost && !testCommand && (toolchain === 'maven' || toolchain === 'gradle')) {
-      if (!hostReady.has(toolchain)) {
+      const module = moduleOf(toolchain, wt, test.path);
+      const readyKey = `${toolchain}:${module || ''}`;
+      if (!hostReady.has(readyKey)) {
         const plan = hostEnv.hostPlan({ wt, toolchain });
         let ready = plan.ok ? null : plan.reason;
         if (!ready) {
-          log(`repro: preparing the host (Java ${plan.java}, dependencies at base)`);
-          const deps = await hostEnv.prepareDependencies({ checkout: context.source.checkout, base: context.source.base_sha, toolchain, plan, runner: shellRunner, logDir: outDir });
+          log(`repro: preparing the host (Java ${plan.java}, dependencies at base${module ? ` for ${module}` : ''})`);
+          const deps = await hostEnv.prepareDependencies({ checkout: context.source.checkout, base: context.source.base_sha, toolchain, plan, runner: shellRunner, logDir: outDir, module });
           if (!deps.ok) ready = deps.reason;
         }
-        hostReady.set(toolchain, ready ? { ok: false, reason: ready } : { ok: true, plan });
+        hostReady.set(readyKey, ready ? { ok: false, reason: ready } : { ok: true, plan });
       }
-      const state = hostReady.get(toolchain);
+      const state = hostReady.get(readyKey);
       if (!state.ok) {
         const rec = { ...base, status: 'ENVIRONMENT_BLOCKED', reason: `host: ${state.reason}`, runs: [] };
         writeJsonAtomic(recordFile, rec);
@@ -688,4 +703,4 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
   return results;
 }
 
-module.exports = { reproDone, runRepro, loadReproRecords, validateReproTest, reproTargetNames, applyFix, parseJunit, classify, statusFromRuns, controlOf, trailer, parseTrailer, detectToolchain, commandFor, shellRunner, scrubbedEnv, reproTargets, pythonCommand, sandboxPython, gradleWrapper, defaultRunner };
+module.exports = { reproDone, runRepro, loadReproRecords, validateReproTest, reproTargetNames, applyFix, parseJunit, classify, statusFromRuns, controlOf, trailer, parseTrailer, detectToolchain, commandFor, moduleOf, shellRunner, scrubbedEnv, reproTargets, pythonCommand, sandboxPython, gradleWrapper, defaultRunner };

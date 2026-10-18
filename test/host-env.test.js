@@ -140,3 +140,62 @@ test('sandbox fallback: an unreachable docker daemon falls back to the host unle
   assert.equal(hostEnv.runnerChoice({ mode: 'docker', daemonError: 'cannot connect', env: { ARW_SANDBOX_FALLBACK: 'off' } }), 'blocked');
   assert.equal(hostEnv.runnerChoice({ mode: 'host', daemonError: null, env: {} }), 'host');
 });
+
+// Incident (v3 runs on spring-boot, camel, quarkus): resolving a framework
+// repository whole at base took longer than the 45 min budget, so no finding
+// there was ever run. Only the test's module and what it depends on is
+// prepared (and run), and the budget is ARW_HOST_PREP_TIMEOUT_MS.
+test('dependencies: scoped to the test module, with a configurable budget', async () => {
+  const p = mavenProject(11);
+  write(p.dir, 'core/pom.xml', '<project/>\n');
+  sh(p.dir, ['add', '-A']);
+  sh(p.dir, ['commit', '-q', '-m', 'module']);
+  const base = sh(p.dir, ['rev-parse', 'HEAD']);
+  const calls = [];
+  const runner = async (o) => { calls.push(o); return { exit_code: 0, elapsed_ms: 1 }; };
+  const plan = { ok: true, env: {}, java: 11 };
+  const cache = tmpDir('arw-host-cache-');
+  await hostEnv.prepareDependencies({ checkout: p.dir, base, toolchain: 'maven', plan, runner, cacheDir: cache, logDir: cache, module: 'core', env: { ARW_HOST_PREP_TIMEOUT_MS: '1234' } });
+  assert.match(calls[0].command, / -pl core -am /);
+  assert.equal(calls[0].timeoutMs, 1234);
+  // Another module of the same base is prepared on its own.
+  await hostEnv.prepareDependencies({ checkout: p.dir, base, toolchain: 'maven', plan, runner, cacheDir: cache, logDir: cache, module: null, env: {} });
+  assert.equal(calls.length, 2);
+  assert.doesNotMatch(calls[1].command, / -pl /);
+  assert.equal(calls[1].timeoutMs, 45 * 60 * 1000);
+  // A module the base does not have yet (the PR adds it): the whole build.
+  await hostEnv.prepareDependencies({ checkout: p.dir, base, toolchain: 'maven', plan, runner, cacheDir: tmpDir('arw-host-cache-'), logDir: cache, module: 'brand-new', env: {} });
+  assert.doesNotMatch(calls[2].command, / -pl /);
+  // Gradle runs the module's own task.
+  await hostEnv.prepareDependencies({ checkout: p.dir, base, toolchain: 'gradle', plan: { ...plan, tool: 'gradle' }, runner, cacheDir: tmpDir('arw-host-cache-'), logDir: cache, module: 'core', env: {} });
+  assert.equal(calls[3].command, 'gradle :core:testClasses');
+});
+
+test('head runs are scoped to the test module too', () => {
+  const wt = tmpDir('arw-host-wt-');
+  write(wt, 'pom.xml', '<project/>\n');
+  write(wt, 'core/pom.xml', '<project/>\n');
+  const t = { language: 'java', path: 'core/src/test/java/a/BTest.java', selector: 'a.BTest' };
+  const mvn = commandFor('maven', t, wt, null, { offline: true });
+  assert.match(mvn.command, /^mvn -B -q -o -pl core -am test -Dtest=a\.BTest /);
+  assert.equal(path.relative(wt, mvn.junit).replace(/\\/g, '/'), 'core/target/surefire-reports/TEST-a.BTest.xml');
+  const root = commandFor('maven', { ...t, path: 'src/test/java/a/BTest.java' }, wt, null, { offline: true });
+  assert.doesNotMatch(root.command, / -pl /);
+  write(wt, 'build.gradle', '\n');
+  write(wt, 'core/build.gradle', '\n');
+  assert.match(commandFor('gradle', t, wt, null, {}).command, / :core:test --tests a\.BTest$/);
+  const { moduleOf } = require('../src/lib/repro');
+  assert.equal(moduleOf('maven', wt, t.path), 'core');
+  assert.equal(moduleOf('maven', wt, 'src/test/java/a/BTest.java'), null);
+});
+
+// P3 defects can be proven too when asked (ARW_REPRO_SEVERITY=P3);
+// suggestions (P4) never are.
+test('repro targets: P1/P2 by default, P3 defects with ARW_REPRO_SEVERITY=P3', () => {
+  const { reproTargets } = require('../src/lib/repro');
+  const v = { findings: [{ id: 'A', severity: 'P2', canonical: true }, { id: 'B', severity: 'P3', canonical: true }, { id: 'C', severity: 'P4', canonical: true, suggestion: true }] };
+  const byId = new Map(['A', 'B', 'C'].map((id) => [id, { id }]));
+  assert.deepEqual(reproTargets(v, byId, {}).map((t) => t.finding.id), ['A']);
+  assert.deepEqual(reproTargets(v, byId, { ARW_REPRO_SEVERITY: 'P3' }).map((t) => t.finding.id), ['A', 'B']);
+  assert.deepEqual(reproTargets(v, byId, { ARW_REPRO_SEVERITY: 'P1' }).map((t) => t.finding.id), []);
+});

@@ -58,6 +58,8 @@ const ENV_SETTINGS = [
   ['ARW_REPRO', 'repro', 'enum', 'on', 'Reproduce blocking findings with a test after the review unless a flag says otherwise (executes PR code: on the host unless ARW_SANDBOX is set).', ['on', 'off']],
   ['REPRO_TIMEOUT_MS', 'repro', 'number', '900000', 'Timeout per repro test run (ms).', null, [30000, 3600000]],
   ['ARW_HOST_PREP', 'repro', 'enum', 'on', 'On the host (no sandbox): pick a JDK the project needs and resolve its dependencies once at the trusted base, then run the PR test offline. off = run as configured.', ['on', 'off']],
+  ['ARW_HOST_PREP_TIMEOUT_MS', 'repro', 'number', '2700000', 'Budget for resolving dependencies at base on the host, per test module (ms).', null, [60000, 14400000]],
+  ['ARW_REPRO_SEVERITY', 'repro', 'enum', 'P2', 'Lowest severity of defects a reproduction is written and run for. P3 proves minor defects too; suggestions never run.', ['P1', 'P2', 'P3']],
   ['ARW_SANDBOX_FALLBACK', 'repro', 'enum', 'host', 'When the docker sandbox is configured but its daemon is unreachable: host = run on the prepared host, off = refuse.', ['host', 'off']],
   ['ARW_SANDBOX', 'repro', 'enum', 'off', 'Where repro and impacted tests run. docker: a container with the images below. bootstrap: offline in an environment set up per review (image found from the source, dependencies resolved at base, in-house libraries built; see the Sandbox page).', ['off', 'docker', 'bootstrap']],
   ['ARW_SANDBOX_RESOLVE_NETWORK', 'repro', 'string', '', 'Docker network for the dependency resolution step of bootstrap (the only step with network). Empty = bridge.'],

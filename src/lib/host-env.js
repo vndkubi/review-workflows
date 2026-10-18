@@ -106,19 +106,26 @@ function hostPlan({ wt, toolchain, jdks = findJdks(), which = whichOnPath }) {
 
 // Resolves the project's dependencies once per repository and base, online,
 // by building the trusted base (no tests run) in its own worktree.
-async function prepareDependencies({ checkout, base, toolchain, plan, runner, cacheDir = path.join(os.homedir(), '.arw', 'host-deps'), logDir, timeoutMs = 45 * 60 * 1000 }) {
+// module: the test's module directory (relative, "/"-separated) or null for
+// the root. Only that module and what it depends on is resolved, so a
+// framework repository is not built whole; a module the base does not have
+// yet (the PR adds it) falls back to the whole build.
+async function prepareDependencies({ checkout, base, toolchain, plan, runner, cacheDir = path.join(os.homedir(), '.arw', 'host-deps'), logDir, module = null, env = process.env, timeoutMs = Number(env.ARW_HOST_PREP_TIMEOUT_MS) || 45 * 60 * 1000 }) {
   if (toolchain !== 'maven' && toolchain !== 'gradle') return { ok: true, prepared: false };
   ensureDir(cacheDir);
-  const key = `${sha256(path.resolve(checkout)).slice(0, 12)}-${String(base).slice(0, 12)}-${toolchain}-java${plan.java || 'x'}-p2`;
-  const marker = path.join(cacheDir, `${key}.ok`);
-  if (fs.existsSync(marker)) return { ok: true, prepared: false };
-  const wt = path.join(cacheDir, 'wt', key);
+  const repoKey = `${sha256(path.resolve(checkout)).slice(0, 12)}-${String(base).slice(0, 12)}-${toolchain}-java${plan.java || 'x'}-p2`;
+  const wt = path.join(cacheDir, 'wt', repoKey);
   if (!fs.existsSync(wt)) {
     ensureDir(path.dirname(wt));
     execFileSync('git', ['-C', checkout, 'worktree', 'add', '--detach', '--force', wt, base], { stdio: 'ignore' });
   }
+  if (module && (!/^[\w.-]+(?:\/[\w.-]+)*$/.test(module) || !fs.existsSync(path.join(wt, module)))) module = null;
+  const key = module ? `${repoKey}-${sha256(module).slice(0, 8)}` : repoKey;
+  const marker = path.join(cacheDir, `${key}.ok`);
+  if (fs.existsSync(marker)) return { ok: true, prepared: false };
   const tool = plan.tool || (toolchain === 'maven' ? 'mvn' : 'gradle');
-  const command = toolchain === 'maven' ? `${tool} -B -q test -Dtest=ArwNoSuchTest -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false` : `${tool} testClasses`;
+  const scope = module ? (toolchain === 'maven' ? ` -pl ${module} -am` : `:${module.split('/').join(':')}:`) : '';
+  const command = toolchain === 'maven' ? `${tool} -B -q${scope} test -Dtest=ArwNoSuchTest -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false` : `${tool} ${scope}testClasses`;
   const logFile = path.join(ensureDir(logDir || cacheDir), `host-deps-${key}.log`);
   const res = await runner({ command, cwd: wt, logFile, timeoutMs, env: plan.env });
   if (res.exit_code === 0) {
