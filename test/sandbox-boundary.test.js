@@ -65,12 +65,12 @@ test('built-in test commands reach the container as argv, without a shell', () =
   assert.equal(custom.argv, undefined, 'a configured test_command is a shell string');
 });
 
-test('no docker: the run is ENVIRONMENT_BLOCKED, nothing runs on the host', async () => {
+test('no docker, ARW_SANDBOX_FALLBACK=off: the run is ENVIRONMENT_BLOCKED, nothing runs on the host', async () => {
   const dir = tmpDir('arw-boundary-nodocker-');
   const marker = path.join(dir, 'ran-on-host');
   for (const bin of [path.join(dir, 'no-such-docker'), process.execPath]) {
     // process.execPath stands in for a docker CLI whose daemon does not answer.
-    const res = await withEnv({ ARW_SANDBOX: 'docker', ARW_DOCKER: bin }, () => {
+    const res = await withEnv({ ARW_SANDBOX: 'docker', ARW_DOCKER: bin, ARW_SANDBOX_FALLBACK: 'off' }, () => {
       sandbox._resetDaemon();
       return require('../src/lib/repro').defaultRunner()({ command: `echo x > ${marker}`, argv: ['sh', '-c', `echo x > ${marker}`], cwd: dir, logFile: path.join(dir, 'run.log'), timeoutMs: 20000, toolchain: 'maven' });
     });
@@ -78,6 +78,16 @@ test('no docker: the run is ENVIRONMENT_BLOCKED, nothing runs on the host', asyn
     assert.equal(classify({ ...res, junit: null }), 'environment');
     assert.ok(!fs.existsSync(marker), 'no fallback to the host');
   }
+});
+
+test('no docker, default fallback: the run moves to the (prepared) host runner', () => {
+  const dir = tmpDir('arw-boundary-fallback-');
+  const repro = require('../src/lib/repro');
+  const runner = withEnv({ ARW_SANDBOX: 'docker', ARW_DOCKER: path.join(dir, 'no-such-docker'), ARW_SANDBOX_FALLBACK: undefined }, () => {
+    sandbox._resetDaemon();
+    return repro.defaultRunner(null, () => {});
+  });
+  assert.equal(runner, repro.shellRunner);
 });
 
 test('impacted-test results record where they ran', async () => {

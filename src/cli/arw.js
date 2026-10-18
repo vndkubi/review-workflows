@@ -73,13 +73,15 @@ Other:
   arw setup [--preset fast|thorough|java-docker] [--force] [--check]
                     what this machine has (and how to fix what is missing), the project files,
                     and a preset for the settings that matter; --check changes nothing
-  arw doctor        check git, gh, codex, config`;
+  arw repro --repo owner/name --pr <n> [--no-retry]  re-run reproductions of an existing review (no review model calls)
+  arw doctor [--provider]  check git, gh, codex, config; --provider probes each model (tools, structured output, effort)`;
 
 function models() {
   const cfg = executorConfig();
   return {
-    plan: cfg.model,
-    review: cfg.model,
+    plan: process.env.CODEX_PLAN_MODEL || cfg.model,
+    review: process.env.CODEX_REVIEW_MODEL || cfg.model,
+    hunt: process.env.CODEX_HUNT_MODEL || null,
     judge: cfg.judgeModel,
     requirements: process.env.CODEX_REQUIREMENTS_MODEL || cfg.model,
     audit: process.env.CODEX_AUDIT_MODEL || cfg.judgeModel,
@@ -492,7 +494,23 @@ function cmdSetup(argv) {
   return env.ready ? 0 : 1;
 }
 
-async function cmdDoctor() {
+async function cmdRepro(argv) {
+  const args = parseArgs(argv, ['noRetry']);
+  if (!args.repo || !args.pr) {
+    console.log('usage: arw repro --repo owner/name --pr <n> [--no-retry]');
+    return 1;
+  }
+  const { reproOnly } = require('../lib/pr-review');
+  const { prDir } = require('../lib/runs');
+  const runDir = prDir(args.repo, Number(args.pr));
+  if (!fs.existsSync(path.join(runDir, 'run.json'))) throw new Error(`no review of ${args.repo}#${args.pr} in ${runDir}`);
+  const res = await reproOnly({ runDir, executor, models: models(), log: (m) => console.log(m), retry: !args.noRetry });
+  for (const r of res.results) console.log(`${r.finding_id}: ${r.status}${r.reason ? ` (${r.reason})` : ''}`);
+  console.log(`report: ${res.report}`);
+  return 0;
+}
+
+async function cmdDoctor(argv) {
   const checks = [];
   const tryRun = (name, fn) => {
     try {
@@ -536,12 +554,24 @@ async function cmdDoctor() {
   }
   const pf = await preflight({ cwd: ROOT, attemptDir: path.join(RUNS, '.preflight'), model: executorConfig().model });
   checks.push([`codex preflight (model ${executorConfig().model || 'default'})`, pf.ok ? 'ok' : 'FAIL', pf.ok ? `${pf.elapsed_ms} ms, ${pf.usage.input_tokens} input tokens` : `${pf.error_class}: ${pf.error_message}`]);
+  // --provider: what each configured model's provider supports (a few tiny
+  // calls per model), for self-hosted models behind codex.
+  let recommend = {};
+  if ((argv || []).includes('--provider')) {
+    const { probeProvider } = require('../lib/provider');
+    const m = models();
+    const all = [m.review, m.judge, m.hunt, ...String(process.env.ARW_HUNT_MODELS || '').split(',').map((s) => s.trim())];
+    const probe = await probeProvider({ run: (o) => runCodex(o), models: all, dir: path.join(RUNS, '.preflight', 'provider'), effort: process.env.CODEX_EFFORT || null });
+    checks.push(...probe.checks);
+    recommend = probe.recommend;
+  }
   const { fixHint } = require('../lib/setup-hints');
   for (const [name, status, detail] of checks) {
     console.log(`${status.padEnd(4)} ${name.padEnd(36)} ${detail}`);
     const hint = status === 'ok' ? null : fixHint(name);
     if (hint) console.log(`     ${''.padEnd(36)} fix: ${hint}`);
   }
+  if (Object.keys(recommend).length) console.log(`\nsuggested .env for this provider: ${Object.entries(recommend).map(([k, v]) => `${k}=${v}`).join(' ')}`);
   return checks.some((c) => c[1] === 'FAIL') ? 1 : 0;
 }
 
@@ -668,8 +698,10 @@ async function main(argv) {
       return cmdStatus();
     case 'setup':
       return cmdSetup(rest);
+    case 'repro':
+      return cmdRepro(rest);
     case 'doctor':
-      return cmdDoctor();
+      return cmdDoctor(rest);
     case 'ui':
       return cmdUi(rest);
     case 'sandbox':

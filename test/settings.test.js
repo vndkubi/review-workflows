@@ -28,7 +28,7 @@ test('.env edits keep comments and order, apply to this process, and validate', 
   const bad = (changes, re) => assert.throws(() => settings.writeEnvSettings(changes), re);
   bad({ ARW_WORKERS: '99' }, /between 1 and 8/);
   bad({ CODEX_OUTPUT_SCHEMA: 'yes' }, /0 or 1/);
-  bad({ CODEX_EFFORT: 'extreme' }, /one of low, medium, high/);
+  bad({ CODEX_EFFORT: 'extreme' }, /one of managed, low, medium, high, xhigh, max/);
   bad({ JIRA_URL: 'ftp://x' }, /http\(s\) URL/);
   bad({ CODEX_MODEL: 'x\nCODEX_USE_USER_CONFIG=1' }, /single line/);
   bad({ PATH: '/tmp' }, /not a known setting/);

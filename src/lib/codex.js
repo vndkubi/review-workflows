@@ -37,7 +37,10 @@ function codexArgs({ cwd, outFile, model, effort, sandbox, schemaFile, images = 
     if (process.platform === 'win32') args.push('-c', `windows.sandbox="${process.env.CODEX_WINDOWS_SANDBOX || 'unelevated'}"`);
   } else if (process.env.CODEX_PROFILE) args.push('-p', process.env.CODEX_PROFILE);
   if (model) args.push('-m', model);
-  if (effort) args.push('-c', `model_reasoning_effort="${effort}"`);
+  // CODEX_EFFORT=managed: the provider's own default applies (a company that
+  // fixes the effort, or a server that rejects the parameter); no stage of
+  // the review may send one.
+  if (effort && effort !== 'managed' && process.env.CODEX_EFFORT !== 'managed') args.push('-c', `model_reasoning_effort="${effort}"`);
   if (schemaFile) args.push('--output-schema', schemaFile);
   args.push('-');
   return args;
@@ -199,7 +202,7 @@ async function preflight({ cwd, attemptDir, model }) {
     cwd: canaryDir,
     attemptDir,
     model,
-    effort: 'low',
+    effort: process.env.CODEX_EFFORT === 'managed' ? null : 'low',
     timeoutMs: 180000,
   });
   if (!res.ok) return { ok: false, error_class: res.error_class, error_message: res.error_message };
@@ -216,7 +219,7 @@ function executorConfig() {
   return {
     model,
     judgeModel: process.env.CODEX_JUDGE_MODEL || model,
-    effort: process.env.CODEX_EFFORT || null,
+    effort: process.env.CODEX_EFFORT && process.env.CODEX_EFFORT !== 'managed' ? process.env.CODEX_EFFORT : null,
   };
 }
 

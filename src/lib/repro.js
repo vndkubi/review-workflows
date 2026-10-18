@@ -4,6 +4,7 @@
 // once with the finding's fix applied, and judges from JUnit XML. Only an
 // executed, repeated assertion failure makes a finding CONFIRMED (L3).
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
 const { sha256, writeJsonAtomic, readJson, readJsonIfExists, nowIso, ensureDir, envInt } = require('./util');
@@ -14,6 +15,13 @@ const { collapse } = require('./validate');
 const confine = require('./confine');
 
 const FINAL = new Set(['RED_PROVEN', 'GREEN_NOT_PROVEN', 'FLAKY', 'INCONCLUSIVE', 'ENVIRONMENT_BLOCKED']);
+// With retry, a reproduction that never got to run its test is tried again
+// (after the environment was fixed); a decided one is kept.
+const RETRYABLE = new Set(['INCONCLUSIVE', 'ENVIRONMENT_BLOCKED']);
+function reproDone(prior, { retry = false } = {}) {
+  if (!prior || !FINAL.has(prior.status)) return false;
+  return !(retry && RETRYABLE.has(prior.status));
+}
 const BLOCKING = new Set(['P1', 'P2']);
 
 // ---------- toolchains ----------
@@ -65,8 +73,13 @@ function gradleWrapper() {
 // The runner for PR code: with ARW_SANDBOX=bootstrap the review's prepared
 // environment (runDir/sandbox-env.json; blocked when there is none), with
 // ARW_SANDBOX=docker a container, else the host shell.
-function defaultRunner(runDir = null) {
+function defaultRunner(runDir = null, log = () => {}) {
   const sandbox = require('./sandbox');
+  const choice = require('./host-env').runnerChoice({ mode: sandbox.mode(), daemonError: sandbox.mode() === 'host' ? null : sandbox.daemonError() });
+  if (choice === 'host' && sandbox.mode() !== 'host') {
+    log(`repro: the ${sandbox.mode()} sandbox is unavailable (${sandbox.daemonError()}); running on the host (ARW_SANDBOX_FALLBACK=off to refuse)`);
+    return shellRunner;
+  }
   if (sandbox.mode() === 'bootstrap') {
     const b = require('./bootstrap');
     return b.environmentRunner(runDir ? b.loadReviewEnvironment(runDir) : null);
@@ -100,7 +113,7 @@ function moduleDir(toolchain, wt, testPath) {
 }
 
 // Returns { command, junit: absolute JUnit XML path }.
-function commandFor(toolchain, test, wt, override) {
+function commandFor(toolchain, test, wt, override, { offline: forceOffline = false, tool = null } = {}) {
   const cls = test.language === 'java' ? javaClass(test.selector) : null;
   const simple = cls ? cls.split('.').pop() : null;
   // Validation already allows only plain values; checked again here, where
@@ -120,10 +133,11 @@ function commandFor(toolchain, test, wt, override) {
   }
   // A program and its arguments: the sandbox runs it without a shell; the
   // host shell gets the same words joined (each one is shell-safe).
-  const offline = process.env.REPRO_MAVEN_OFFLINE === '1' ? ['-o'] : [];
+  const off = forceOffline || process.env.REPRO_MAVEN_OFFLINE === '1';
+  const offline = off ? ['-o'] : [];
   const argvs = {
-    maven: ['mvn', '-B', '-q', ...offline, 'test', `-Dtest=${test.selector}`, '-DfailIfNoTests=false', '-Dsurefire.failIfNoSpecifiedTests=false'],
-    gradle: [gradleWrapper(), 'test', '--tests', cls],
+    maven: [tool || 'mvn', '-B', '-q', ...offline, 'test', `-Dtest=${test.selector}`, '-DfailIfNoTests=false', '-Dsurefire.failIfNoSpecifiedTests=false'],
+    gradle: [tool || gradleWrapper(), 'test', '--tests', cls, ...(forceOffline ? ['--offline'] : [])],
     pytest: [sandboxPython(), '-m', 'pytest', '-q', '-p', 'no:cacheprovider', test.selector, `--junitxml=${junitPytest}`],
   };
   const argv = argvs[toolchain];
@@ -177,6 +191,19 @@ function scrubbedEnv() {
   return Object.fromEntries(Object.entries(process.env).filter(([k]) => !SECRET_ENV.test(k)));
 }
 
+// Merges extra variables, matching an existing key case-insensitively
+// (Windows spells it "Path").
+function withEnv(base, extra) {
+  if (!extra) return base;
+  const out = { ...base };
+  for (const [k, v] of Object.entries(extra)) {
+    const existing = Object.keys(out).find((x) => x.toUpperCase() === k.toUpperCase());
+    if (existing && existing !== k) delete out[existing];
+    out[k] = v;
+  }
+  return out;
+}
+
 function killTree(pid) {
   try {
     if (process.platform === 'win32') execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
@@ -189,7 +216,7 @@ function killTree(pid) {
 // Default runner: the command runs in the repro worktree with secrets removed
 // from the environment. Model-written tests execute PR code, as any build of
 // the PR would; keep REPRO off for repositories you do not trust.
-function shellRunner({ command, cwd, logFile, timeoutMs }) {
+function shellRunner({ command, cwd, logFile, timeoutMs, env: extraEnv = null }) {
   return new Promise((resolve) => {
     const started = Date.now();
     const out = fs.openSync(logFile, 'w');
@@ -197,7 +224,7 @@ function shellRunner({ command, cwd, logFile, timeoutMs }) {
     let timedOut = false;
     let child;
     try {
-      child = spawn(command, { cwd, shell: true, env: scrubbedEnv(), stdio: ['ignore', out, out], windowsHide: true, detached: process.platform !== 'win32' });
+      child = spawn(command, { cwd, shell: true, env: withEnv(scrubbedEnv(), extraEnv), stdio: ['ignore', out, out], windowsHide: true, detached: process.platform !== 'win32' });
     } catch (err) {
       fs.closeSync(out);
       resolve({ exit_code: null, spawn_error: err.message, elapsed_ms: 0 });
@@ -473,8 +500,12 @@ function reproTargets(validation, findingsById) {
   return targets;
 }
 
-async function runRepro({ runDir, executor, models = {}, runner = null, log = () => {}, testCommand, prompts, runModelJob, makeSources }) {
-  const execRun = runner || defaultRunner(runDir);
+async function runRepro({ runDir, executor, models = {}, runner = null, log = () => {}, testCommand, prompts, runModelJob, makeSources, retry = false }) {
+  const execRun = runner || defaultRunner(runDir, log);
+  // The host runs PR code itself: prepare it (JDK, dependencies at base).
+  const onHost = !runner && execRun === shellRunner && process.env.ARW_HOST_PREP !== 'off';
+  const hostEnv = require('./host-env');
+  const hostReady = new Map();
   const context = loadContext(runDir);
   const drift = verifyContext(runDir, context);
   if (drift.length) throw new Error(`context no longer holds: ${drift.join('; ')}`);
@@ -500,7 +531,7 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
 
   for (const { finding, cluster_id } of targets) {
     const prior = existing.get(finding.id);
-    if (prior && FINAL.has(prior.status)) {
+    if (reproDone(prior, { retry })) {
       results.push(prior);
       continue;
     }
@@ -540,13 +571,50 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
     // Host-side file access in the worktree goes through confine: PR code
     // (a tracked symlink, or one a build made) can point a path out of it.
     const target = path.join(wt, test.path);
-    const { command, argv, junit } = commandFor(toolchain, test, wt, testCommand);
+    let hostRun = null;
+    if (onHost && !testCommand && (toolchain === 'maven' || toolchain === 'gradle')) {
+      if (!hostReady.has(toolchain)) {
+        const plan = hostEnv.hostPlan({ wt, toolchain });
+        let ready = plan.ok ? null : plan.reason;
+        if (!ready) {
+          log(`repro: preparing the host (Java ${plan.java}, dependencies at base)`);
+          const deps = await hostEnv.prepareDependencies({ checkout: context.source.checkout, base: context.source.base_sha, toolchain, plan, runner: shellRunner, logDir: outDir });
+          if (!deps.ok) ready = deps.reason;
+        }
+        hostReady.set(toolchain, ready ? { ok: false, reason: ready } : { ok: true, plan });
+      }
+      const state = hostReady.get(toolchain);
+      if (!state.ok) {
+        const rec = { ...base, status: 'ENVIRONMENT_BLOCKED', reason: `host: ${state.reason}`, runs: [] };
+        writeJsonAtomic(recordFile, rec);
+        results.push(rec);
+        continue;
+      }
+      hostRun = state.plan;
+    }
+    const { command, argv, junit } = commandFor(toolchain, test, wt, testCommand, { offline: Boolean(hostRun), tool: hostRun ? hostRun.tool : null });
     const runs = [];
+    let runtimeFetched = false;
     const runPhase = async (phase) => {
       confine.removeConfined(wt, junit);
       const logRel = `repro/${finding.id}/${phase}.log`;
       const logFile = path.join(rdir, logRel);
-      const res = await execRun({ command, argv, cwd: wt, logFile, timeoutMs, test, phase, toolchain: toolchain || 'custom' });
+      let res = await execRun({ command, argv, cwd: wt, logFile, timeoutMs, test, phase, toolchain: toolchain || 'custom', ...(hostRun ? { env: hostRun.env } : {}) });
+      // On a prepared host, a test runtime the base never needed (the PR
+      // added JUnit 5 tests to a JUnit 4 module) is fetched outside the
+      // project, then the phase runs once more.
+      if (hostRun && toolchain === 'maven' && res.exit_code !== 0 && !runtimeFetched) {
+        const missing = hostEnv.testRuntimeArtifacts(fs.readFileSync(logFile, 'utf8'));
+        if (missing.length) {
+          runtimeFetched = true;
+          log(`repro ${finding.id}: fetching the test runtime ${missing.join(', ')}`);
+          const got = await hostEnv.fetchArtifacts({ artifacts: missing, plan: hostRun, runner: shellRunner, dir: path.join(os.tmpdir(), `arw-fetch-${process.pid}`) });
+          if (got.ok) {
+            notes.push(`fetched the test runtime ${missing.join(', ')} before ${phase}`);
+            res = await execRun({ command, argv, cwd: wt, logFile, timeoutMs, test, phase, toolchain: toolchain || 'custom', env: hostRun.env });
+          } else notes.push(got.reason);
+        }
+      }
       // Raw evidence, hash-bound: the log ends with the process outcome and
       // the JUnit XML is kept as written. Validation re-derives the status
       // from these, never from the record's own fields.
@@ -620,4 +688,4 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
   return results;
 }
 
-module.exports = { runRepro, loadReproRecords, validateReproTest, reproTargetNames, applyFix, parseJunit, classify, statusFromRuns, controlOf, trailer, parseTrailer, detectToolchain, commandFor, shellRunner, scrubbedEnv, reproTargets, pythonCommand, sandboxPython, gradleWrapper, defaultRunner };
+module.exports = { reproDone, runRepro, loadReproRecords, validateReproTest, reproTargetNames, applyFix, parseJunit, classify, statusFromRuns, controlOf, trailer, parseTrailer, detectToolchain, commandFor, shellRunner, scrubbedEnv, reproTargets, pythonCommand, sandboxPython, gradleWrapper, defaultRunner };

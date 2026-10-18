@@ -37,18 +37,45 @@ const VIEWPOINTS = [
   { id: 'V0', roles: ['technical'], hunt: true, desc: 'Free review of the whole change: read it as a senior engineer would before approving and hunt for defects the planned units can miss (behaviour across files, callers, state, money, security).' },
 ];
 
-// Wraps the whole-diff pass units (chunked on a large PR).
-function huntUnits(reviewableFiles) {
+// Lenses for several free reviews (ARW_HUNT_LENSES): where a model's
+// reasoning effort cannot be raised (a provider that fixes it), several
+// reads from different angles stand in for one deeper read. Duplicate
+// findings cluster into votes.
+const LENSES = [
+  { name: 'general', brief: 'Read it as a senior engineer would before approving.' },
+  { name: 'business', brief: 'Read it as a QA analyst for the business rules: state transitions, money and rounding, limits, permissions and ownership, data consistency, what the user sees.' },
+  { name: 'adversarial', brief: 'Read it as an attacker and a failure tester: malformed and boundary input, missing authorization, retries and duplicates, concurrency, partial failures, resources left open.' },
+  { name: 'maintainer', brief: 'Read it as the maintainer of the code around it: callers of every changed declaration, contracts, configuration, migrations, what breaks for code the diff does not show.' },
+];
+
+function lensesFrom(env = process.env) {
+  const v = String(env.ARW_HUNT_LENSES || '').trim();
+  if (!v) return [LENSES[0]];
+  if (/^\d+$/.test(v)) return LENSES.slice(0, Math.min(LENSES.length, Math.max(1, Number(v))));
+  const picked = v.split(',').map((s) => LENSES.find((l) => l.name === s.trim())).filter(Boolean);
+  return picked.length ? picked : [LENSES[0]];
+}
+
+// The whole-diff free review units: one per lens (V0, V1, ...), each split
+// into parts on a large PR; models from ARW_HUNT_MODELS are given in turn.
+function huntUnits(reviewableFiles, env = process.env) {
   const chunks = viewpointChunks(reviewableFiles);
+  const lenses = lensesFrom(env);
+  const models = String(env.ARW_HUNT_MODELS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const v = VIEWPOINTS[0];
   const units = [];
-  for (const v of VIEWPOINTS) {
+  lenses.forEach((lens, li) => {
+    const base = `V${li}`;
     chunks.forEach((files, i) => {
-      const id = chunks.length === 1 ? v.id : `${v.id}_${i + 1}`;
+      const id = chunks.length === 1 ? base : `${base}_${i + 1}`;
+      const desc = `${v.desc}${lenses.length > 1 ? ` Lens: ${lens.name}.` : ''}`;
       units.push({
         id,
         kind: 'viewpoint',
-        hunt: Boolean(v.hunt),
-        desc: chunks.length === 1 ? v.desc : `${v.desc} Part ${i + 1}/${chunks.length}: ${dirSummary(files)}.`,
+        hunt: true,
+        lens: lens.name,
+        ...(models.length ? { model: models[li % models.length] } : {}),
+        desc: chunks.length === 1 ? desc : `${desc} Part ${i + 1}/${chunks.length}: ${dirSummary(files)}.`,
         covers: [`viewpoint:${id}`, ...files.map((f) => `file:${f}`)],
         depends_on: [],
         required: true,
@@ -56,7 +83,7 @@ function huntUnits(reviewableFiles) {
         status: 'NOT_RUN',
       });
     });
-  }
+  });
   return units;
 }
 
@@ -232,4 +259,4 @@ function renderPlanMarkdown({ identity, plan, units, items, reviewable, skipped 
   return `${out.join('\n')}\n`;
 }
 
-module.exports = { buildUnits, singleAgentUnits, smallPrUnits, isSmallPr, huntUnits, renderPlanMarkdown, VIEWPOINTS };
+module.exports = { buildUnits, singleAgentUnits, smallPrUnits, isSmallPr, huntUnits, renderPlanMarkdown, VIEWPOINTS, LENSES };

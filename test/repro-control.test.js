@@ -161,9 +161,10 @@ test('PR code that rewrites the worktree .git file cannot make the harness run a
   assert.ok(validation.findings.find((x) => x.id === 'T1-technical-F1'));
 });
 
-test('ARW_SANDBOX=bootstrap without docker: the review prepares (and records) a blocked environment, the reproduction is ENVIRONMENT_BLOCKED, nothing runs on the host', async () => {
+test('ARW_SANDBOX=bootstrap without docker and ARW_SANDBOX_FALLBACK=off: the review prepares (and records) a blocked environment, the reproduction is ENVIRONMENT_BLOCKED, nothing runs on the host', async () => {
   const saved = { ...process.env };
   process.env.ARW_SANDBOX = 'bootstrap';
+  process.env.ARW_SANDBOX_FALLBACK = 'off';
   process.env.ARW_DOCKER = path.join(tmpDir('arw-control-nodocker-'), 'no-docker');
   require('../src/lib/sandbox')._resetDaemon();
   try {

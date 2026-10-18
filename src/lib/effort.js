@@ -17,6 +17,8 @@ function setting(env, key, fallback, base) {
 // stage: 'packet' | 'rebuttal' | 'synthesis' | 'plan'; unit: the review unit
 // for a packet; base: the run's effort (null = codex default).
 function effortFor(stage, unit, base, env = process.env) {
+  // Managed by the provider (CODEX_EFFORT=managed): never chosen here.
+  if (env.CODEX_EFFORT === 'managed') return null;
   if (stage === 'synthesis') return setting(env, 'ARW_SYNTHESIS_EFFORT', 'low', base);
   if (stage === 'rebuttal') {
     const cap = setting(env, 'ARW_REDTEAM_EFFORT', 'high', base);

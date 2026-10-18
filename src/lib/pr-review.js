@@ -391,6 +391,20 @@ async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight
   return { runDir, validation, report };
 }
 
+// Reproduction only, on an existing review: no review model call; the
+// tests already written are reused, and with retry the ones that never ran
+// (no build environment then) run again.
+async function reproOnly({ runDir, executor, models = {}, testCommand = null, log = () => {}, retry = true }) {
+  const run = readJson(path.join(runDir, 'run.json'));
+  const repoCfg = github.reposConfig().repos[run.identity.repo] || {};
+  const results = await runRepro({ runDir, executor, models, testCommand: testCommand || repoCfg.test_command || null, log, prompts, runModelJob, makeSources, retry });
+  const validation = finish(runDir, {});
+  run.phases.repro = { status: 'EXECUTED_PASS', at: nowIso(), results: results.map((r) => ({ finding: r.finding_id, status: r.status, fix_verified: r.fix ? r.fix.verified : null })) };
+  writeJsonAtomic(path.join(runDir, 'run.json'), run);
+  const report = writeReport(runDir, validation, run.identity);
+  return { runDir, validation, report, results };
+}
+
 // Re-validate on disk and re-render, with no model calls.
 function revalidate(runDir) {
   const validation = finish(runDir);
@@ -398,4 +412,4 @@ function revalidate(runDir) {
   return { validation, report: writeReport(runDir, validation, run.identity) };
 }
 
-module.exports = { reviewPr, revalidate, prepare, planPhase, freezePhase, ticketInputs, ensurePrIntent };
+module.exports = { reviewPr, reproOnly, revalidate, prepare, planPhase, freezePhase, ticketInputs, ensurePrIntent };

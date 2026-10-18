@@ -367,7 +367,7 @@ test('ticket pipeline -> PR review, end to end', async (t) => {
     // One free review of the whole PR (V0) replaces the two checklist sweeps.
     assert.deepEqual(units, ['B1', 'T1', 'B2', 'S1', 'V0']);
     const hunt = rexec.calls.find((c) => /^UNIT: \{"id":"V0"/m.test(c.prompt));
-    assert.match(hunt.prompt, /^FREE REVIEW V0: review this pull request as a senior engineer/m);
+    assert.match(hunt.prompt, /^FREE REVIEW V0: review this pull request\. Read it as a senior engineer would before approving\./m);
     assert.match(hunt.prompt, /^COVERAGE IDS: \["viewpoint:V0"\]$/m);
 
     const s = spec();

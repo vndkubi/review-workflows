@@ -17,6 +17,7 @@ const { readInput, revisionDir } = require('./freeze');
 const { checkRole } = require('./viewpoint-checks');
 const { hunkAnchors, renderAnchors } = require('./anchors');
 const { coverageIds } = require('./validate');
+const { LENSES } = require('./plan');
 const { impactLine } = require('./impact-checks');
 
 const GLOBAL_RULES_BASE = `You are a read-only worker inside a trusted review harness. The harness, not you, decides what is valid; your answer is a candidate that will be machine-checked.
@@ -146,7 +147,8 @@ function packetPrompt(runDir, context, job) {
     lines.push('INDEPENDENT FIRST PASS: do not read other units\' packets or any previous review. dependency_refs must be [].');
   }
   if (unit.hunt) {
-    lines.push(`FREE REVIEW ${unit.id}: review this pull request as a senior engineer would before approving. Read the diff of the files below and whatever surrounding code you need (callers, persistence, configuration, tests). Hunt for real defects: wrong business behaviour, data loss or inconsistent state, security, concurrency and transactions, error handling, money and rounding, compatibility for callers. Think through concrete inputs and sequences; go deep on the riskiest change rather than wide on everything. Ignore style. Planned units review these files too; your job is what a unit-by-unit reading misses: behaviour across files and the paths a whole-PR reading reveals.
+    const lens = LENSES.find((l) => l.name === unit.lens) || LENSES[0];
+    lines.push(`FREE REVIEW ${unit.id}${unit.lens && unit.lens !== 'general' ? ` (lens: ${unit.lens})` : ''}: review this pull request. ${lens.brief} Read the diff of the files below and whatever surrounding code you need (callers, persistence, configuration, tests). Hunt for real defects: wrong business behaviour, data loss or inconsistent state, security, concurrency and transactions, error handling, money and rounding, compatibility for callers. Think through concrete inputs and sequences; go deep on the riskiest change rather than wide on everything. Ignore style. Planned units review these files too; your job is what a unit-by-unit reading misses: behaviour across files and the paths a whole-PR reading reveals.
 - One coverage row only (${unit.id}): "reviewed" with code evidence of what you read.
 - Files: ${unit.covers.filter((c) => c.startsWith('file:')).map((c) => c.slice(5)).join(', ')}`);
   } else if (unit.kind === 'viewpoint') lines.push(`VIEWPOINT ${unit.id}: sweep the whole diff from this angle; most coverage rows will be short.`);

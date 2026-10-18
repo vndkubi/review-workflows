@@ -423,7 +423,7 @@ async function runBatch({ runDir, executor, workers = envInt('ARW_WORKERS', 4), 
       key: `${unit.id}/${role}`,
       label: `${unit.id}-${role}`,
       outRel: packetRel(unit.id, role),
-      model: models.review,
+      model: modelFor(unit, models),
       effort: effortFor('packet', unit, models.effort),
       outputSchema: outputSchema('review', 'packet'),
       fill: fillKnown({ schema_version: '1.0', context_digest: context.context_digest, unit_id: unit.id, role, dependency_refs: depRefs }),
@@ -622,4 +622,11 @@ function finish(runDir, optOuts = {}) {
   return validation;
 }
 
-module.exports = { runBatch, finish, collectState, runModelJob, acquireLock, acquireLockFile, reclaimStale, ContextDrift, STATUS, packetRel };
+// The model a unit's packet runs on: a free review may carry its own (one
+// of ARW_HUNT_MODELS, in turn), else CODEX_HUNT_MODEL, else the review model.
+function modelFor(unit, models) {
+  if (unit && unit.hunt) return unit.model || models.hunt || models.review;
+  return models.review;
+}
+
+module.exports = { runBatch, finish, collectState, runModelJob, acquireLock, acquireLockFile, reclaimStale, ContextDrift, STATUS, packetRel, modelFor };
