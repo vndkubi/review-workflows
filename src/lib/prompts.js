@@ -16,6 +16,7 @@ function schemaFor(name, def) {
 const { readInput, revisionDir } = require('./freeze');
 const { checkRole } = require('./viewpoint-checks');
 const { hunkAnchors, renderAnchors } = require('./anchors');
+const { impactLine } = require('./impact-checks');
 
 const GLOBAL_RULES_BASE = `You are a read-only worker inside a trusted review harness. The harness, not you, decides what is valid; your answer is a candidate that will be machine-checked.
 
@@ -62,7 +63,7 @@ const PACKET_RULES = `FINDINGS
 - fix: {"kind":"code_change","asis":<the exact current lines, copied verbatim from one of this finding's code evidence ranges>,"tobe":<complete replacement code for exactly those lines>,"reason":<why>} — prose in asis/tobe is rejected. Use {"kind":"not_code","asis":"","tobe":"","reason":<decision needed>} only for design or process decisions.
 - verification: {"method":"inspected","detail":<what you read>,"evidence":[...]} — never "executed"; you cannot run anything.
 - ids: exactly <unit id>-<role>-F<n>, numbered from 1 (the job block names them).
-- The evidence pack's "Impact" section lists call sites of the changed declarations up to three levels, from an index that ignores comments and strings. [resolved] callers import or share the package of the declaring type; [name-only] ones may call a different method of the same name. Read the callers that matter to your unit before judging compatibility; say so in coverage when a caller could not be checked.
+- The evidence pack's "Impact" section lists call sites of the changed declarations up to three levels, from an index that ignores comments and strings. [resolved] callers import or share the package of the declaring type; [name-only] ones may call a different method of the same name. The direct callers you must answer are listed under IMPACT CHECKS; deeper levels tell you how far a defect reaches.
 - The evidence pack's "Machine evidence" section (CI results, linter hits, test impact) gives leads, not findings: check each relevant lead in the code yourself and cite the code. A failing CI check or a linter hit on an added line in your unit deserves a look; a changed source whose tests were not changed supports a "missing tests for changed behaviour" finding only when the changed behaviour is real.
 
 COVERAGE
@@ -167,6 +168,17 @@ function packetPrompt(runDir, context, job) {
 - "cannot_determine": the answer depends on code you cannot see; say what is missing.`);
   } else {
     lines.push('viewpoint_verdicts: [] (no viewpoint checks for this unit and role).');
+  }
+  const callers = unit.impacts || [];
+  if (callers.length && job.role === checkRole(unit)) {
+    lines.push(`IMPACT CHECKS (required): the impact index found these call sites of declarations this unit changes. Give exactly one impact_verdicts entry per caller id. Open each caller and judge whether it still works with the changed behaviour (arguments, return values, exceptions, nulls, side effects, transactions).
+${callers.map((c) => `- ${impactLine(c)}`).join('\n')}
+- "compatible": the caller still gets what it relies on; evidence quotes the caller (its file, near that line).
+- "not_affected": the caller does not reach the changed behaviour; evidence quotes the caller.
+- "broken": it no longer works; record a finding whose code evidence includes the caller.
+- "cannot_determine": the answer depends on code you cannot see (dispatch, configuration); say what is missing.`);
+  } else {
+    lines.push('impact_verdicts: [] (no impact checks for this unit and role).');
   }
   const patchFile = path.join(revisionDir(runDir, context.context_id), 'review.patch');
   const anchorText = fs.existsSync(patchFile) ? renderAnchors(hunkAnchors(fs.readFileSync(patchFile, 'utf8')), unit.covers.filter((c) => c.startsWith('file:')).map((c) => c.slice(5))) : '';

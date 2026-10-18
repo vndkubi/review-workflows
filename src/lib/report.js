@@ -166,6 +166,15 @@ function renderReport(runDir, validation, identity) {
       out.push(`| ${vp} | ${row.join(' | ')} |`);
     }
   }
+  if (validation.impacts && validation.impacts.length) {
+    const tally = {};
+    for (const c of validation.impacts) tally[c.verdict] = (tally[c.verdict] || 0) + 1;
+    const cell = (s) => String(s || '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+    out.push('', `## Impact: callers of changed code (${Object.entries(tally).map(([k, n]) => `${k} ${n}`).join(' · ')})`, '');
+    out.push('Direct call sites of the changed declarations, from the frozen impact index; each was answered by reading the caller.', '');
+    out.push('| Caller | Calls | Unit | Verdict | Note |', '|---|---|---|---|---|');
+    for (const c of validation.impacts) out.push(`| ${c.caller} \`${c.from.path}:${c.from.line}\` ${cell(c.from.symbol)} | ${cell(c.to.symbol)} [${c.confidence}] | ${c.unit_id} | ${c.verdict === 'broken' ? '**broken**' : c.verdict} | ${cell(c.note).slice(0, 300)} |`);
+  }
   if (synthesis) {
     out.push('', '## Overview', '');
     for (const flow of synthesis.overview) out.push(`- **${flow.flow}** — ${flow.change}${flow.finding_ids.length ? ` (${flow.finding_ids.join(', ')})` : ''}`);

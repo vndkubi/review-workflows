@@ -71,6 +71,7 @@ function goodPacket() {
     ],
     item_verdicts: [{ item: 'I1', verdict: 'fail', evidence: [codeEv], note: 'n' }, { item: 'I2', verdict: 'cannot_determine', evidence: [codeEv], note: 'negative totals fall through to zero discount' }],
     viewpoint_verdicts: [],
+    impact_verdicts: [],
     findings: [goodFinding()],
     recommendation: 'findings',
   };

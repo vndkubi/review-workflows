@@ -123,4 +123,4 @@ function checkRole(unit) {
   return unit.roles.includes('technical') ? 'technical' : unit.roles[0];
 }
 
-module.exports = { RULES, checklistIds, selectChecks, assignChecks, checkRole };
+module.exports = { RULES, TEST, checklistIds, selectChecks, assignChecks, checkRole };

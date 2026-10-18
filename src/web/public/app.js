@@ -284,7 +284,7 @@ async function renderPr(id) {
   // No ticket: the intent derived from the PR, shown and confirmed here.
   const intent = d.intent && d.intent.key ? d.intent : null;
   const awaiting = d.phases.ticket && d.phases.ticket.status === 'AWAITING_INTENT';
-  const tabs = [...(intent ? ['Spec'] : []), 'Findings', 'Items', 'Viewpoints', 'Progress', 'Calls', 'Timeline', 'Overview', 'Plan', 'Cost', 'Logs'];
+  const tabs = [...(intent ? ['Spec'] : []), 'Findings', 'Items', 'Viewpoints', 'Impact', 'Progress', 'Calls', 'Timeline', 'Overview', 'Plan', 'Cost', 'Logs'];
   // A tab picked on this run wins; a run waiting for its intent opens on Spec.
   const picked = sessionStorage.getItem(`pr-tab:${id}`);
   const saved = sessionStorage.getItem('pr-tab');
@@ -321,6 +321,8 @@ async function renderPr(id) {
   if (current === 'Calls') return add(body, await callsView(id));
   if (current === 'Timeline') return add(body, timelineView(d));
   if (current === 'Plan') return add(body, h('pre', { class: 'code' }, d.plan || 'No plan yet.'));
+  // The impact index exists from planning on, before any verdict.
+  if (current === 'Impact') return add(body, impactView(d));
   if (!v) return add(body, h('p', { class: 'muted' }, 'Results appear here once the run is validated.'));
   if (current === 'Findings') add(body, findingsView(d));
   else if (current === 'Overview') add(body, overviewView(d));
@@ -680,6 +682,75 @@ function viewpointsView(d) {
     rows.length ? null : h('p', { class: 'muted' }, 'Nothing to look at: every assigned viewpoint passed or does not apply.'),
     detail,
   ];
+}
+
+// Who calls the changed code: each changed declaration with its direct call
+// sites and the verdict its reviewer gave at the caller, then how far the
+// change reaches. In a legacy codebase this is where a diff hides defects.
+const IMP_MARK = { compatible: ['compatible', 'ok'], broken: ['BROKEN', 'bad'], not_affected: ['not affected', ''], cannot_determine: ['?', 'warn'], not_answered: ['—', 'warn'] };
+const IMP_LABEL = { compatible: 'compatible', broken: 'broken', not_affected: 'not affected', cannot_determine: 'could not determine', not_answered: 'no valid answer' };
+const ASKED_CONFIDENCE = new Set(['ast', 'ast-dispatch', 'typed', 'resolved', 'interface', 'config', 'reflection', 'http']);
+
+function impactView(d) {
+  const m = d.impact;
+  if (!m) return [h('p', { class: 'muted' }, 'No impact index: this run has no static evidence (it was planned before impact analysis, or planning failed).')];
+  if (m.error) return [h('div', { class: 'notice bad' }, `Impact analysis failed: ${m.error}`)];
+  const detail = h('div', { class: 'vp-detail' });
+  const site = (e) => ({ kind: 'code', path: e.from.path, start_line: e.from.line, end_line: e.from.line, quote: '' });
+  const open = (e) => put(detail,
+    h('h3', {}, `${e.check.caller} · ${e.from.symbol}`, h('span', { class: 'muted small' }, ` calls ${e.to.symbol} · answered by ${e.check.unit_id}${e.check.role ? `/${e.check.role}` : ''}`)),
+    h('p', {}, h('span', { class: `badge ${IMP_MARK[e.check.verdict][1]}` }, IMP_LABEL[e.check.verdict] || e.check.verdict), ' ', e.check.note || ''),
+    e.check.evidence.length ? h('ul', { class: 'evidence' }, e.check.evidence.map((ev) => evidenceItem(d, ev))) : h('p', { class: 'muted small' }, 'No evidence cited.'));
+  const verdictCell = (e) => {
+    if (e.check) {
+      const [mark, cls] = IMP_MARK[e.check.verdict] || [e.check.verdict, ''];
+      return h('button', { type: 'button', class: `badge vp-cell ${cls}`, title: e.check.note || '', onclick: () => open(e) }, mark);
+    }
+    const why = e.repo ? 'other repository: not asked'
+      : !ASKED_CONFIDENCE.has(e.confidence) ? 'name match only: not asked'
+        : !e.asked ? 'a test: covered by the test viewpoints'
+          : !m.checked ? (d.validation ? 'reviewed before caller checks: re-run' : 'not reviewed yet')
+            : 'no unit owns the changed file';
+    return h('span', { class: 'muted small' }, why);
+  };
+  const callerRows = (callers) => h('div', { class: 'vp-wrap' }, table(['Caller', 'Verdict', 'Match', 'Call site'], callers.map((e) => [
+    h('span', {}, e.repo ? h('span', { class: 'chip' }, e.repo) : null, ' ', h('strong', {}, e.from.symbol), e.note ? h('div', { class: 'small muted' }, e.note) : null),
+    verdictCell(e),
+    h('span', { class: 'mono small' }, `${e.confidence}${e.via ? ` via ${e.via}` : ''}`),
+    h('ul', { class: 'evidence plain' }, evidenceItem(d, site(e))),
+  ])));
+  // Tests that call the changed code are many and not asked: folded.
+  const isTest = (e) => !e.check && !e.repo && ASKED_CONFIDENCE.has(e.confidence) && !e.asked;
+  const callerBlock = (callers) => {
+    const tests = callers.filter(isTest);
+    const rest = callers.filter((e) => !isTest(e));
+    return [
+      rest.length ? callerRows(rest) : null,
+      tests.length ? h('details', { class: 'small' }, h('summary', {}, `${tests.length} caller(s) in tests — covered by the test viewpoints, not asked`), callerRows(tests)) : null,
+    ];
+  };
+  const order = ['broken', 'cannot_determine', 'not_answered', 'compatible', 'not_affected'];
+  const out = [
+    h('p', { class: 'muted small mt12' }, `Call sites of the declarations this PR changes, from a ${m.engine} index of ${m.scanned} files (comments and strings ignored). Direct callers that resolve to the changed declaration are required checks: a reviewer answers each by reading the caller.`),
+    Object.keys(m.tally).length ? h('div', { class: 'stats' }, order.filter((k) => m.tally[k]).map((k) => stat(m.tally[k], IMP_LABEL[k]))) : null,
+    m.truncated ? h('div', { class: 'notice' }, 'The index stopped at its per-level limit: some call sites are not listed, and were not checked.') : null,
+    m.ast_error ? h('div', { class: 'notice' }, `javac call graph unavailable (${m.ast_error}); structural matching only.`) : null,
+    ...m.ast_notes.map((n) => h('div', { class: 'notice' }, n)),
+  ];
+  if (!m.declarations.length) out.push(h('p', { class: 'muted' }, 'No changed method or function was found in Java or Python sources.'));
+  const testDecls = m.declarations.filter((x) => x.test && !x.callers.length);
+  for (const decl of m.declarations.filter((x) => !testDecls.includes(x))) {
+    out.push(h('h3', { class: 'mt12' }, h('span', { class: 'mono' }, decl.symbol), h('span', { class: 'muted small' }, ` ${decl.path}:${decl.lines[0]}-${decl.lines[1]} · ${decl.callers.length} direct caller(s)`)));
+    out.push(...(decl.callers.length ? callerBlock(decl.callers) : [h('p', { class: 'muted small' }, 'No call sites found in this repository or the related ones.')]));
+  }
+  if (testDecls.length) out.push(h('details', { class: 'small mt12' }, h('summary', {}, `${testDecls.length} changed test method(s) with no callers`), h('ul', {}, testDecls.map((x) => h('li', { class: 'mono' }, `${x.symbol} ${x.path}:${x.lines[0]}-${x.lines[1]}`)))));
+  if (m.deeper.length) {
+    out.push(h('h3', { class: 'mt12' }, 'How far it reaches'), h('p', { class: 'muted small' }, 'Callers of the callers: not checked one by one, but a defect in a direct caller travels this far.'));
+    out.push(h('div', { class: 'vp-wrap' }, table(['Level', 'Caller', 'Calls', 'Call site'], m.deeper.map((e) => [String(e.level), h('strong', {}, e.from.symbol), h('span', { class: 'mono small' }, e.to.symbol), h('ul', { class: 'evidence plain' }, evidenceItem(d, site(e)))]))));
+  }
+  if (m.related.length) out.push(h('p', { class: 'muted small' }, `Other repositories searched: ${m.related.map((r) => `${r.name} (${r.files} files)`).join(', ')}.`));
+  out.push(detail);
+  return out;
 }
 
 function unitsView(d) {

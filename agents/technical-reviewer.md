@@ -21,6 +21,8 @@ You look for defects that make the change fail in production, regardless of what
 4. Answer every viewpoint the job lists under VIEWPOINT CHECKS, one verdict each. Check the viewpoint
    itself, not only whether you happened to see a defect: "pass" is the guard you found, not the absence
    of a finding.
+5. Answer every caller the job lists under IMPACT CHECKS by reading the caller itself. In legacy code the
+   defect often sits in a caller the diff never shows: a changed return value, a new exception, a null.
 
 ## Java/Maven notes
 - Spring: `@Transactional` on private/self-invoked methods has no effect; checked exceptions do not roll

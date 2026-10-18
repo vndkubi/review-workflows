@@ -6,7 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { tmpDir, sh, write, makeRepo, scriptedExecutor, evidenceAt, viewpointVerdicts } = require('./helpers');
+const { tmpDir, sh, write, makeRepo, scriptedExecutor, evidenceAt, viewpointVerdicts, impactVerdicts } = require('./helpers');
 
 process.env.ARW_RUNS_DIR = tmpDir('arw-runs-');
 process.env.ARW_429_BACKOFF_MS = '1';
@@ -222,6 +222,8 @@ function packetFor(prompt) {
     p.recommendation = 'findings';
   }
   p.viewpoint_verdicts = viewpointVerdicts(prompt, p.findings);
+  // The controller only subtracts whatever discount() returns.
+  p.impact_verdicts = impactVerdicts(prompt, (c) => (c.symbol === 'CheckoutController.quote' ? { caller: c.caller, verdict: 'compatible', evidence: [code(c.file, 'return total.subtract(orders.discount(member, total));')], note: 'quote subtracts the returned discount; the new branch returns a smaller amount, still valid' } : null));
   return JSON.stringify(p);
 }
 
@@ -405,6 +407,10 @@ test('ticket pipeline -> PR review, end to end', async (t) => {
     const cell = (u, vp) => (validation.checks.find((c) => c.unit_id === u && c.viewpoint === vp) || {}).verdict;
     assert.equal(cell('B1', 'CK-BZ-1'), 'fail');
     assert.ok(validation.checks.every((c) => c.verdict !== 'not_answered'), 'every assigned viewpoint is answered');
+    // The controller calling the changed discount() is a required caller check, answered at the caller.
+    const callers = validation.impacts.filter((c) => c.from.symbol === 'CheckoutController.quote');
+    assert.ok(callers.length && callers.every((c) => c.verdict === 'compatible'), JSON.stringify(validation.impacts));
+    assert.match(text, /## Impact: callers of changed code \(compatible \d+\)[\s\S]*CheckoutController\.java:9` CheckoutController\.quote \| OrderService\.discount/);
     assert.match(text, /## Viewpoint checks \([\s\S]*\| CK-BZ-1 \|[^\n]*\*\*FAIL\*\*/);
     assert.match(text, /### \[P2\] Member discount excludes orders of exactly 1,000,000/);
     assert.match(text, /_Duplicates: B1-technical-F1_/);

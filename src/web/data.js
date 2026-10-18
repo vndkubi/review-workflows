@@ -9,6 +9,8 @@ const { revisionDir } = require('../lib/freeze');
 const { packetRel } = require('../lib/driver');
 const git = require('../lib/git');
 const memory = require('../lib/memory');
+const { isAsked } = require('../lib/impact-checks');
+const { TEST } = require('../lib/viewpoint-checks');
 
 const PR_ID = /^[A-Za-z0-9._-]+__[A-Za-z0-9._-]+__\d+$/;
 const TICKET_KEY = /^[A-Z][A-Z0-9]+-\d+$/;
@@ -209,6 +211,31 @@ function viewpointView(checks, packets, checklistText) {
   return { viewpoints: ids.map((id) => ({ id, text: text.get(id) || '' })), units: [...new Set(checks.map((c) => c.unit_id))], tally, cells };
 }
 
+// The impact view: each changed declaration with its direct call sites, the
+// caller checks the reviewers answered (with evidence), and the deeper
+// levels that show how far a change reaches. Name-only and other-repository
+// edges are listed too, unasked.
+function impactView(impact, cells, packets) {
+  if (!impact) return null;
+  const base = { engine: impact.engine || 'structural', scanned: impact.scanned || 0, truncated: Boolean(impact.truncated), related: impact.related || [], ast_error: impact.ast_error || null, ast_notes: impact.ast_notes || [] };
+  if (impact.error) return { ...base, error: impact.error, declarations: [], deeper: [], tally: {} };
+  const tally = {};
+  for (const c of cells || []) tally[c.verdict] = (tally[c.verdict] || 0) + 1;
+  const checkFor = (e) => {
+    const c = (cells || []).find((x) => x.from.path === e.from.path && x.from.line === e.from.line && x.to.path === e.to.path && x.to.symbol === e.to.symbol);
+    if (!c) return null;
+    const p = packets.find((x) => x.unit_id === c.unit_id && x.role === c.role);
+    const answer = p && (p.packet.impact_verdicts || []).find((v) => v.caller === c.caller);
+    return { ...c, evidence: answer ? answer.evidence : [] };
+  };
+  const edges = impact.edges || [];
+  const declarations = (impact.changed || []).map((d) => ({
+    ...d,
+    callers: edges.filter((e) => e.level === 1 && e.to.path === d.path && e.to.symbol === d.symbol).map((e) => ({ ...e, check: checkFor(e) })),
+  }));
+  return { ...base, checked: Array.isArray(cells), tally, declarations: declarations.map((d) => ({ ...d, test: TEST.test(d.path), callers: d.callers.map((e) => ({ ...e, asked: isAsked(e) })) })), deeper: edges.filter((e) => e.level > 1) };
+}
+
 function prDetail(id) {
   const { dir } = prDirFromId(id);
   const run = readJsonIfExists(path.join(dir, 'run.json'));
@@ -228,6 +255,8 @@ function prDetail(id) {
     overview: null,
     gate: null,
   };
+  // The impact index exists from planning on; caller verdicts join it once validated.
+  out.impact = impactView(out.static && out.static.impact, null, []);
   if (!validation) return out;
   const rdir = revisionDir(dir, validation.context_id);
   const full = new Map();
@@ -239,6 +268,7 @@ function prDetail(id) {
     if (packet) for (const f of packet.findings) full.set(f.id, f);
   }
   const checklistFile = path.join(rdir, 'inputs', 'policy-policies-checklist.txt');
+  out.impact = impactView(out.static && out.static.impact, validation.impacts, packets);
   out.viewpoints = viewpointView(validation.checks, packets, fs.existsSync(checklistFile) ? fs.readFileSync(checklistFile, 'utf8') : '');
   const synthesis = validation.synthesis && validation.synthesis.valid ? readJsonIfExists(path.join(rdir, 'synthesis.json')) : null;
   const aliasOf = new Map((synthesis ? synthesis.aliases : []).map((a) => [a.id, a.duplicate_of]));
@@ -253,7 +283,7 @@ function prDetail(id) {
     return { ...meta, duplicate_of: aliasOf.get(meta.id) || null, detail, rebuttal, rejected, publish_action: detail ? memory.publishAction(detail, rejected) : null };
   });
   out.feedback = readJsonIfExists(path.join(dir, 'feedback.json'));
-  const { findings, clusters, checks, ...rest } = validation;
+  const { findings, clusters, checks, impacts, ...rest } = validation;
   out.validation = { ...rest, counts: countBySeverity(validation.findings, new Set(aliasOf.keys())) };
   out.overview = synthesis ? { flows: synthesis.overview, unverified: synthesis.unverified } : null;
   const frozenItems = readJsonIfExists(path.join(rdir, 'inputs', 'review-items.txt'), []);
@@ -282,4 +312,4 @@ function sourceSnippet(id, file, { revision = 'reviewed', start = 1, end = start
   return { path: file, revision, sha: rev, from, to, highlight: [Number(start), Number(end)], lines: lines.slice(from - 1, to) };
 }
 
-module.exports = { listRuns, ticketDetail, prDetail, viewpointView, prDriverLog, sourceSnippet, prDirFromId, ticketDirFromKey, httpError, PR_ID, TICKET_KEY };
+module.exports = { listRuns, ticketDetail, prDetail, viewpointView, impactView, prDriverLog, sourceSnippet, prDirFromId, ticketDirFromKey, httpError, PR_ID, TICKET_KEY };

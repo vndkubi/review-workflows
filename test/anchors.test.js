@@ -68,6 +68,7 @@ function packet() {
       { id: `file:${FEES}`, disposition: 'reviewed', evidence: [placeholder('H1:2')], note: 'read the new guard' },
     ],
     item_verdicts: [],
+    impact_verdicts: [],
     viewpoint_verdicts: [{ viewpoint: 'CK-BZ-1', verdict: 'pass', evidence: [placeholder('H3')], note: 'checked the comparison' }],
     findings: [],
     recommendation: 'no_findings',

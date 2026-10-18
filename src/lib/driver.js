@@ -587,6 +587,7 @@ function finish(runDir, optOuts = {}) {
     gaps: outcome.gaps,
     items: outcome.items,
     checks: outcome.checks,
+    impacts: outcome.impacts,
     warnings: injection.map((h) => ({ kind: `prompt-injection:${h.kind}`, where: `${h.where}:${h.line}`, text: h.text })),
     jobs: state.jobs,
     clusters: state.clusters,

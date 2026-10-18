@@ -260,6 +260,7 @@ function canonicalizeCandidate(candidate, sources) {
   (candidate.coverage || []).forEach((c, i) => anchored(c && c.evidence, `$.coverage[${i}].evidence`));
   (candidate.item_verdicts || []).forEach((v, i) => anchored(v && v.evidence, `$.item_verdicts[${i}].evidence`));
   (candidate.viewpoint_verdicts || []).forEach((v, i) => anchored(v && v.evidence, `$.viewpoint_verdicts[${i}].evidence`));
+  (candidate.impact_verdicts || []).forEach((v, i) => anchored(v && v.evidence, `$.impact_verdicts[${i}].evidence`));
   (candidate.overview || []).forEach((f, i) => list(f && f.evidence, `$.overview[${i}].evidence`));
   (candidate.findings || []).forEach((f, i) => {
     if (!f || typeof f !== 'object') return;
@@ -413,6 +414,33 @@ function validatePacket(packet, env) {
     });
     for (const [id, n] of seenVp) if (n > 1) errors.push(`$.viewpoint_verdicts: ${id} appears ${n} times`);
     if (role === answering) for (const id of checks) if (!seenVp.has(id)) errors.push(`$.viewpoint_verdicts: missing a verdict for ${id}`);
+  }
+
+  // Impact: the runtime assigned the callers of the unit's changed
+  // declarations; each is answered once, from code read at the caller.
+  const callers = unit.impacts || [];
+  const impactRole = callers.length && unit.roles ? checkRole(unit) : role;
+  const impVerdicts = packet.impact_verdicts || [];
+  if (role !== impactRole && impVerdicts.length) {
+    errors.push(`$.impact_verdicts: must be []; the ${impactRole} reviewer of ${unit.id} answers them`);
+  } else {
+    const seenImp = new Map();
+    const inCaller = (evs, c) => evs.some((ev) => ev.kind === 'code' && ev.path === c.from.path);
+    impVerdicts.forEach((v, i) => {
+      const at = `$.impact_verdicts[${i}]`;
+      seenImp.set(v.caller, (seenImp.get(v.caller) || 0) + 1);
+      const c = callers.find((x) => x.id === v.caller);
+      if (!c) {
+        errors.push(`${at}.caller: ${v.caller} is not a caller assigned to unit ${unit.id} (${callers.map((x) => x.id).join(', ') || 'none'})`);
+      } else if (['compatible', 'not_affected'].includes(v.verdict) && !inCaller(v.evidence, c)) {
+        errors.push(`${at}: "${v.verdict}" needs code evidence in the caller ${c.from.path} (around line ${c.from.line}); without it use "cannot_determine"`);
+      } else if (v.verdict === 'broken' && !packet.findings.some((f) => inCaller(f.evidence, c))) {
+        errors.push(`${at}: "broken" for ${v.caller} needs a finding with code evidence in the caller ${c.from.path}`);
+      }
+      v.evidence.forEach((ev, j) => errors.push(...validateEvidence(ev, sources, `${at}.evidence[${j}]`)));
+    });
+    for (const [id, n] of seenImp) if (n > 1) errors.push(`$.impact_verdicts: ${id} appears ${n} times`);
+    if (role === impactRole) for (const c of callers) if (!seenImp.has(c.id)) errors.push(`$.impact_verdicts: missing a verdict for ${c.id} (${c.from.symbol} at ${c.from.path}:${c.from.line})`);
   }
 
   // Findings.

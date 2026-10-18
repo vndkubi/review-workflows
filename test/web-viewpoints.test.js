@@ -39,3 +39,33 @@ test('viewpointView: a run from before the matrix has none', () => {
   assert.equal(viewpointView(undefined, [], CHECKLIST), null);
   assert.equal(viewpointView([], [], CHECKLIST), null);
 });
+
+// ---------- the Impact tab ----------
+const { impactView } = require('../src/web/data');
+
+test('impactView: callers grouped under each changed declaration, with their verdicts', () => {
+  const impact = {
+    engine: 'structural',
+    scanned: 3,
+    changed: [{ path: 'A.java', symbol: 'A.run', lines: [3, 9] }, { path: 'b.py', symbol: 'fee', lines: [1, 4] }],
+    edges: [
+      { level: 1, to: { path: 'A.java', symbol: 'A.run' }, from: { path: 'C.java', line: 7, symbol: 'C.go' }, confidence: 'resolved' },
+      { level: 2, to: { path: 'C.java', symbol: 'C.go' }, from: { path: 'D.java', line: 2, symbol: 'D.main' }, confidence: 'resolved' },
+      { level: 1, to: { path: 'A.java', symbol: 'A.run' }, from: { path: 'E.java', line: 4, symbol: 'E.x' }, confidence: 'name-only' },
+    ],
+    truncated: false,
+  };
+  const cells = [{ unit_id: 'T1', caller: 'C1', from: { path: 'C.java', line: 7, symbol: 'C.go' }, to: { path: 'A.java', symbol: 'A.run' }, confidence: 'resolved', verdict: 'broken', note: 'null now', role: 'technical' }];
+  const packets = [{ unit_id: 'T1', role: 'technical', packet: { impact_verdicts: [{ caller: 'C1', verdict: 'broken', evidence: [ev], note: 'null now' }] } }];
+  const v = impactView(impact, cells, packets);
+  assert.deepEqual(v.tally, { broken: 1 });
+  assert.deepEqual(v.declarations.map((d) => [d.symbol, d.callers.map((c) => [c.level, c.from.symbol, c.check ? c.check.verdict : null])]), [
+    ['A.run', [[1, 'C.go', 'broken'], [1, 'E.x', null]]],
+    ['fee', []],
+  ]);
+  assert.deepEqual(v.declarations[0].callers[0].check.evidence, [ev]);
+  // Deeper levels show how far a change reaches, keyed by the caller they reach through.
+  assert.deepEqual(v.deeper.map((e) => [e.level, e.from.symbol, e.to.symbol]), [[2, 'D.main', 'C.go']]);
+  assert.equal(impactView(null, [], []), null);
+  assert.equal(impactView({ error: 'boom', changed: [], edges: [] }, [], []).error, 'boom');
+});

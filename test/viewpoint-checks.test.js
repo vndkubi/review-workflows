@@ -162,6 +162,7 @@ function packet() {
     dependency_refs: [],
     coverage: [{ id: `file:${ORDER}`, disposition: 'reviewed', evidence: [codeEv], note: 'n' }],
     item_verdicts: [],
+    impact_verdicts: [],
     viewpoint_verdicts: [
       { viewpoint: 'CK-BZ-1', verdict: 'fail', evidence: [codeEv], note: 'strict > excludes the threshold' },
       { viewpoint: 'CK-BZ-2', verdict: 'pass', evidence: [codeEv], note: 'BigDecimal with compareTo' },

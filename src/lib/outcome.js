@@ -109,7 +109,7 @@ function computeOutcome({ packets, jobs, clusters, rebuttals, items, repro = new
   if (blockingOpen.length) recommendation = 'changes_requested';
   else if (gaps.length) recommendation = 'needs_investigation';
 
-  return { findings, gaps, complete: gaps.length === 0, recommendation, items: itemResults, checks: viewpointMatrix(units, packets) };
+  return { findings, gaps, complete: gaps.length === 0, recommendation, items: itemResults, checks: viewpointMatrix(units, packets), impacts: impactMatrix(units, packets) };
 }
 
 // One cell per assigned viewpoint of each unit. A cell no valid packet
@@ -122,6 +122,18 @@ function viewpointMatrix(units, packets) {
       const answers = packets.filter((p) => p.unit_id === u.id).flatMap((p) => (p.packet.viewpoint_verdicts || []).filter((v) => v.viewpoint === viewpoint).map((v) => ({ role: p.role, ...v })));
       const v = answers[0];
       cells.push({ unit_id: u.id, viewpoint, verdict: v ? v.verdict : 'not_answered', note: v ? v.note : '', role: v ? v.role : null });
+    }
+  }
+  return cells;
+}
+
+// One cell per assigned caller of each unit, like the viewpoint matrix.
+function impactMatrix(units, packets) {
+  const cells = [];
+  for (const u of units || []) {
+    for (const c of u.impacts || []) {
+      const v = packets.filter((p) => p.unit_id === u.id).flatMap((p) => (p.packet.impact_verdicts || []).filter((x) => x.caller === c.id).map((x) => ({ role: p.role, ...x })))[0];
+      cells.push({ unit_id: u.id, caller: c.id, from: c.from, to: c.to, confidence: c.confidence, verdict: v ? v.verdict : 'not_answered', note: v ? v.note : '', role: v ? v.role : null });
     }
   }
   return cells;

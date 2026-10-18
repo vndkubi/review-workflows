@@ -6,7 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { tmpDir, sh, write, viewpointVerdicts } = require('./helpers');
+const { tmpDir, sh, write, viewpointVerdicts, impactVerdicts } = require('./helpers');
 
 process.env.ARW_RUNS_DIR = tmpDir('arw-control-runs-');
 
@@ -64,7 +64,7 @@ function executor(fixTobe, { verdict = 'FINDING_STANDS' } = {}) {
       verification: { method: 'inspected', detail: 'read late_fee', evidence: [] },
       authority: { kind: 'curated_viewpoint', id: 'CK-BZ-1', source: inputEv(p, 'policy-policies-checklist', 'CK-BZ-1: Boundary conditions match the requirement wording') }, items: [],
     }] : [];
-    return ok({ schema_version: '1.0', context_digest: p.match(/context_digest: ([a-f0-9]{64})/)[1], unit_id: unit.id, role, summary: 'done', dependency_refs: [], coverage, item_verdicts: [], viewpoint_verdicts: viewpointVerdicts(p, findings), findings, recommendation: findings.length ? 'findings' : 'no_findings' });
+    return ok({ schema_version: '1.0', context_digest: p.match(/context_digest: ([a-f0-9]{64})/)[1], unit_id: unit.id, role, summary: 'done', dependency_refs: [], coverage, item_verdicts: [], viewpoint_verdicts: viewpointVerdicts(p, findings), impact_verdicts: impactVerdicts(p), findings, recommendation: findings.length ? 'findings' : 'no_findings' });
   };
 }
 

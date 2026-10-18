@@ -214,3 +214,5 @@ details.advanced > summary { cursor: pointer; padding: 10px 0; }
 .vp-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .vp-empty { background: var(--panel-2); }
 .vp-detail:not(:empty) { margin-top: 16px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
+ul.evidence.plain { list-style: none; margin: 0; padding: 0; }
+ul.evidence.plain pre.code { max-width: 640px; }

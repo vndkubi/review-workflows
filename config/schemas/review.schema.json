@@ -477,6 +477,36 @@
         }
       }
     },
+    "impactVerdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "caller",
+        "verdict",
+        "evidence",
+        "note"
+      ],
+      "properties": {
+        "caller": {
+          "type": "string",
+          "pattern": "^C[1-9][0-9]*$"
+        },
+        "verdict": {
+          "enum": [
+            "compatible",
+            "broken",
+            "not_affected",
+            "cannot_determine"
+          ]
+        },
+        "evidence": {
+          "$ref": "#/$defs/verdictEvidenceList"
+        },
+        "note": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
     "packetRef": {
       "type": "object",
       "additionalProperties": false,
@@ -517,6 +547,7 @@
         "coverage",
         "item_verdicts",
         "viewpoint_verdicts",
+        "impact_verdicts",
         "findings",
         "recommendation"
       ],
@@ -562,6 +593,12 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/viewpointVerdict"
+          }
+        },
+        "impact_verdicts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/impactVerdict"
           }
         },
         "findings": {

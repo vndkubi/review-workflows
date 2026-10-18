@@ -157,6 +157,15 @@ function viewpointVerdicts(prompt, findings = []) {
   });
 }
 
+// The impact checks as a scripted reviewer answers them: the `answer`
+// callback, or "cannot_determine" for every caller the job lists.
+function impactVerdicts(prompt, answer = () => null) {
+  const block = prompt.split('IMPACT CHECKS (required)')[1];
+  if (!block) return [];
+  return [...block.split('\n- "compatible"')[0].matchAll(/^- (C\d+) (.+?) at (\S+):(\d+) -> /gm)].map(([, caller, symbol, file, line]) =>
+    answer({ caller, symbol, file, line: Number(line) }) || { caller, verdict: 'cannot_determine', evidence: [], note: 'not checked by the scripted reviewer' });
+}
+
 // Evidence pointing at the first line of `file` at `rev` containing `quote`.
 function evidenceAt(dir, rev, file, quote, extra = {}) {
   const text = sh(dir, ['show', `${rev}:${file}`]);
@@ -166,4 +175,4 @@ function evidenceAt(dir, rev, file, quote, extra = {}) {
   return { kind: 'code', path: file, start_line: i + 1, end_line: i + 1, quote, ...extra };
 }
 
-module.exports = { tmpDir, sh, write, makeRepo, scriptedExecutor, evidenceAt, viewpointVerdicts, ORDER_HEAD, FEES_HEAD };
+module.exports = { tmpDir, sh, write, makeRepo, scriptedExecutor, evidenceAt, viewpointVerdicts, impactVerdicts, ORDER_HEAD, FEES_HEAD };
