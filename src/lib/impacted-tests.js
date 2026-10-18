@@ -156,7 +156,8 @@ function verdict(base, head) {
 }
 
 async function runImpactedTests({ runDir, checkout, base, head, impact, repoCfg, runner = null, log = () => {} }) {
-  runner = runner || defaultRunner(runDir);
+  // Impacted tests run online and unprepared: never moved to the host.
+  runner = runner || defaultRunner(runDir, () => {}, { fallback: false });
   if (!enabled(repoCfg)) return null;
   const tests = [...new Set([...impact.sources.flatMap((s) => s.tests.map((t) => t.path)), ...impact.tests_changed])].slice(0, envInt('ARW_IMPACTED_TESTS_MAX', 10));
   if (!tests.length) return { ran: [], results: [], note: 'no impacted tests found' };

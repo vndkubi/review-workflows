@@ -72,9 +72,11 @@ function gradleWrapper() {
 // The runner for PR code: with ARW_SANDBOX=bootstrap the review's prepared
 // environment (runDir/sandbox-env.json; blocked when there is none), with
 // ARW_SANDBOX=docker a container, else the host shell.
-function defaultRunner(runDir = null, log = () => {}) {
+// fallback: false keeps PR code off the host when the sandbox is down. Only
+// repro falls back: it prepares the host and runs the head offline.
+function defaultRunner(runDir = null, log = () => {}, { fallback = true } = {}) {
   const sandbox = require('./sandbox');
-  const choice = require('./host-env').runnerChoice({ mode: sandbox.mode(), daemonError: sandbox.mode() === 'host' ? null : sandbox.daemonError() });
+  const choice = fallback ? require('./host-env').runnerChoice({ mode: sandbox.mode(), daemonError: sandbox.mode() === 'host' ? null : sandbox.daemonError() }) : null;
   if (choice === 'host' && sandbox.mode() !== 'host') {
     log(`repro: the ${sandbox.mode()} sandbox is unavailable (${sandbox.daemonError()}); running on the host (ARW_SANDBOX_FALLBACK=off to refuse)`);
     return shellRunner;

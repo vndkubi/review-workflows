@@ -141,6 +141,22 @@ test('sandbox fallback: an unreachable docker daemon falls back to the host unle
   assert.equal(hostEnv.runnerChoice({ mode: 'host', daemonError: null, env: {} }), 'host');
 });
 
+// Incident (suite run with Docker Desktop stopped): impacted tests, which run
+// online and without host prep, fell back to the host although the sandbox
+// environment was recorded BLOCKED. Only repro may fall back.
+test('sandbox fallback: only repro moves to the host, impacted tests never do', () => {
+  const saved = { s: process.env.ARW_SANDBOX, d: process.env.ARW_DOCKER };
+  process.env.ARW_SANDBOX = 'docker';
+  process.env.ARW_DOCKER = path.join(tmpDir('arw-nodocker-'), 'no-such-docker');
+  try {
+    const { defaultRunner, shellRunner } = require('../src/lib/repro');
+    assert.equal(defaultRunner(null), shellRunner, 'repro falls back to the prepared host');
+    assert.notEqual(defaultRunner(null, () => {}, { fallback: false }), shellRunner, 'impacted tests stay in the sandbox (and are blocked)');
+  } finally {
+    for (const [k, v] of [['ARW_SANDBOX', saved.s], ['ARW_DOCKER', saved.d]]) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  }
+});
+
 // Incident (v3 runs on spring-boot, camel, quarkus): resolving a framework
 // repository whole at base took longer than the 45 min budget, so no finding
 // there was ever run. Only the test's module and what it depends on is
