@@ -223,6 +223,9 @@ both resolved), 23 s for the next review.
 
 ## Setup
 
+With a coding assistant: open it in a fresh clone and ask it to follow [AI-SETUP.md](AI-SETUP.md). It
+checks first, asks before every install, leaves sign-in to you and ends with a report of what it verified.
+
 One step on a new machine (asks before every install, safe to run again; `-CheckOnly` / `--check-only` only reports):
 
 ```powershell
