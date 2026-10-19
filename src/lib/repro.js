@@ -200,6 +200,35 @@ function classify(run) {
   return 'green';
 }
 
+// Compiler errors in the repro test file itself, from a build log: Maven
+// ("[ERROR] /abs/<path>:[line,col] msg", details on indented [ERROR] lines)
+// and Gradle/javac ("<abs path>:line: error: msg", then the source line, a
+// caret and details). Paths are shortened to the test's repository path;
+// repeats (Gradle prints them twice) are dropped.
+function compileErrors(log, testPath) {
+  const rel = String(testPath || '').replace(/\\/g, '/');
+  if (!rel) return [];
+  const pathRe = new RegExp(`^(?:\\[ERROR\\]\\s*)?\\s*\\S*?${rel.split('/').map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\\\/]')}(:\\[\\d+,\\d+\\]|:\\d+: error:)(.*)$`);
+  const lines = String(log).split(/\r?\n/);
+  const out = [];
+  const seen = new Set();
+  for (let i = 0; i < lines.length && out.length < 20; i += 1) {
+    const m = pathRe.exec(lines[i]);
+    if (!m) continue;
+    const head = `${rel}${m[1]}${m[2]}`.trimEnd();
+    if (seen.has(head)) continue;
+    seen.add(head);
+    const details = [];
+    for (let j = i + 1; j < lines.length && details.length < 4; j += 1) {
+      const d = lines[j].replace(/^\[ERROR\] ?/, '');
+      if (!/^\s+\S/.test(d) || pathRe.test(lines[j]) || /\.java:(\[\d|\d+: error:)/.test(d)) break;
+      details.push(d.trimEnd());
+    }
+    out.push([head, ...details].join('\n  '));
+  }
+  return out;
+}
+
 // ---------- running ----------
 const SECRET_ENV = /TOKEN|SECRET|PASSWORD|_PAT$|API_KEY|^GH_|^GITHUB_|^JIRA_|^CONFLUENCE_|^CODEX_|^OPENAI|^ANTHROPIC/i;
 
@@ -444,7 +473,8 @@ function loadReproRecords(runDir, context) {
       bad('bound to another context');
       continue;
     }
-    const artifacts = [rec.test && rec.test.artifact, ...(rec.runs || []).flatMap((r) => [r.log, r.junit_xml])].filter(Boolean);
+    const retry = rec.compile_retry || {};
+    const artifacts = [rec.test && rec.test.artifact, retry.test && retry.test.artifact, retry.run && retry.run.log, ...(rec.runs || []).flatMap((r) => [r.log, r.junit_xml])].filter(Boolean);
     const broken = artifacts.find((a) => {
       const f = path.join(revisionDir(runDir, context.context_id), a.path);
       return !fs.existsSync(f) || sha256(fs.readFileSync(f)) !== a.sha256;
@@ -559,7 +589,7 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
     const base = { schema_version: '1.0', context_digest: context.context_digest, finding_id: finding.id, cluster_id: cluster_id || null, at: nowIso() };
     const items = reviewItems.filter((i) => (finding.items || []).includes(i.id));
     log(`repro ${finding.id}: writing a test`);
-    const gen = await runModelJob(env, {
+    const writeTest = (extra = {}) => runModelJob(env, {
       label: `repro-${finding.id}`,
       outRel: `repro/${finding.id}.test.json`,
       model: models.repro || models.review,
@@ -567,14 +597,16 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
       outputSchema: outputSchema('repro', 'reproTest'),
       buildPrompt: (repair) => prompts.reproPrompt(runDir, context, { finding, items, repair }),
       validate: (c) => validateReproTest(c, { context, finding }),
+      ...extra,
     });
+    const gen = await writeTest();
     if (gen.status !== 'EXECUTED_PASS') {
       const rec = { ...base, status: gen.status === 'ENVIRONMENT_BLOCKED' ? 'ENVIRONMENT_BLOCKED' : 'INCONCLUSIVE', reason: `no valid test: ${(gen.errors || [])[0] || gen.status}`, runs: [] };
       writeJsonAtomic(recordFile, rec);
       results.push(rec);
       continue;
     }
-    const test = gen.value;
+    let test = gen.value;
     if (!wt) wt = ensureReproWorktree(runDir, context);
     const toolchain = detectToolchain(wt, test.language, test.path);
     if (!toolchain && !testCommand) {
@@ -585,12 +617,12 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
     }
     // Keep a hash-bound copy of the test the harness ran.
     ensureDir(path.join(outDir, finding.id));
-    const artifactRel = `repro/${finding.id}/${path.basename(test.path)}`;
+    let artifactRel = `repro/${finding.id}/${path.basename(test.path)}`;
     fs.writeFileSync(path.join(rdir, artifactRel), test.content);
-    const testInfo = { language: test.language, path: test.path, selector: test.selector, fails_because: test.fails_because, artifact: { path: artifactRel, sha256: sha256(test.content) } };
+    let testInfo = { language: test.language, path: test.path, selector: test.selector, fails_because: test.fails_because, artifact: { path: artifactRel, sha256: sha256(test.content) } };
     // Host-side file access in the worktree goes through confine: PR code
     // (a tracked symlink, or one a build made) can point a path out of it.
-    const target = path.join(wt, test.path);
+    let target = path.join(wt, test.path);
     let hostRun = null;
     if (onHost && !testCommand && (toolchain === 'maven' || toolchain === 'gradle')) {
       const module = moduleOf(toolchain, wt, test.path);
@@ -670,6 +702,7 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
       return run;
     };
     let fix = null;
+    let compileRetry = null;
     const notes = [];
     try {
       if (!trackedClean(context.source.checkout, wt)) throw new Error('repro worktree has modified tracked files');
@@ -682,7 +715,44 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
         results.push(rec);
         continue;
       }
-      const first = await runPhase('head-1');
+      let first = await runPhase('head-1');
+      // A test that does not compile goes back to its writer once, with the
+      // compiler errors in its own file; then head-1 runs again. Errors
+      // elsewhere (the PR code does not build) are not the test's to fix.
+      const compile = first.status === 'build_error' ? compileErrors(fs.readFileSync(path.join(rdir, first.log.path), 'utf8'), test.path) : [];
+      if (compile.length) {
+        log(`repro ${finding.id}: the test does not compile (${compile.length} error(s)); asking for a corrected test`);
+        const again = await writeTest({
+          label: `repro-${finding.id}-compile`,
+          outRel: `repro/${finding.id}.test-2.json`,
+          initialRepair: { errors: compile.map((e) => `the test does not compile on the reviewed head: ${e}`), previous: JSON.stringify(test, null, 1) },
+        });
+        if (again.status !== 'EXECUTED_PASS') {
+          notes.push(`compile retry: no valid corrected test (${(again.errors || [])[0] || again.status})`);
+        } else {
+          // The first attempt's test and log stay as hash-bound evidence.
+          const keptLog = `repro/${finding.id}/compile-1.log`;
+          fs.renameSync(path.join(rdir, first.log.path), path.join(rdir, keptLog));
+          const keptTest = `repro/${finding.id}/compile-1-${path.basename(test.path)}`;
+          fs.renameSync(path.join(rdir, artifactRel), path.join(rdir, keptTest));
+          compileRetry = { test: { ...testInfo, artifact: { ...testInfo.artifact, path: keptTest } }, run: { ...first, phase: 'compile-1', log: { ...first.log, path: keptLog } }, errors: compile };
+          runs.length = 0;
+          confine.removeConfined(wt, target);
+          test = again.value;
+          target = path.join(wt, test.path);
+          artifactRel = `repro/${finding.id}/${path.basename(test.path)}`;
+          fs.writeFileSync(path.join(rdir, artifactRel), test.content);
+          testInfo = { language: test.language, path: test.path, selector: test.selector, fails_because: test.fails_because, artifact: { path: artifactRel, sha256: sha256(test.content) } };
+          ({ command, argv, junit } = commandOf());
+          try {
+            confine.writeNewFile(wt, test.path, test.content);
+            first = await runPhase('head-1');
+          } catch (err) {
+            if (!(err instanceof confine.ConfinementError)) throw err;
+            notes.push(`compile retry: cannot place the corrected test: ${err.message}`);
+          }
+        }
+      }
       // An assertion failure must repeat before it counts; one run proves little.
       if (first.status === 'red') await runPhase('head-2');
       const status = statusFromRuns(runs);
@@ -717,11 +787,11 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
       git.worktreeGit(context.source.checkout, wt, ['checkout', '--', '.'], { allowFail: true });
       git.worktreeGit(context.source.checkout, wt, ['checkout', '--detach', '--force', context.source.head_sha], { allowFail: true });
     }
-    const rec = { ...base, test: testInfo, toolchain: toolchain || 'custom', runs, status: statusFromRuns(runs), fix, control: controlOf(runs, fix), ...(notes.length ? { notes } : {}) };
+    const rec = { ...base, test: testInfo, toolchain: toolchain || 'custom', runs, status: statusFromRuns(runs), fix, control: controlOf(runs, fix), ...(compileRetry ? { compile_retry: compileRetry } : {}), ...(notes.length ? { notes } : {}) };
     writeJsonAtomic(recordFile, rec);
     results.push(rec);
   }
   return results;
 }
 
-module.exports = { reproDone, runRepro, loadReproRecords, validateReproTest, reproTargetNames, applyFix, parseJunit, classify, statusFromRuns, controlOf, trailer, parseTrailer, detectToolchain, commandFor, moduleOf, shellRunner, scrubbedEnv, reproTargets, pythonCommand, sandboxPython, gradleWrapper, defaultRunner };
+module.exports = { reproDone, runRepro, compileErrors, loadReproRecords, validateReproTest, reproTargetNames, applyFix, parseJunit, classify, statusFromRuns, controlOf, trailer, parseTrailer, detectToolchain, commandFor, moduleOf, shellRunner, scrubbedEnv, reproTargets, pythonCommand, sandboxPython, gradleWrapper, defaultRunner };

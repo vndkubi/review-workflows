@@ -11,6 +11,7 @@ process.env.ARW_RUNS_DIR = tmpDir('arw-retry-runs-');
 
 const { reviewPr } = require('../src/lib/pr-review');
 const { loadContext, revisionDir } = require('../src/lib/freeze');
+const { loadReproRecords } = require('../src/lib/repro');
 
 const BASE = 'def late_fee(days):\n    if days <= 30:\n        return 0\n    return (days - 30) * 2\n';
 const HEAD = 'def late_fee(days):\n    if days < 30:\n        return 0\n    return (days - 30) * 2\n';
@@ -132,4 +133,51 @@ test('packets: a prose fix on every attempt is kept as not_code instead of losin
   assert.equal(packet.findings[0].fix.kind, 'not_code');
   assert.match(packet.findings[0].fix.reason, /Proposed change: Keep day 30 inside the grace period/);
   assert.deepEqual(rec.runs.map((r) => [r.phase, r.status]), [['head-1', 'red'], ['head-2', 'red'], ['base', 'green']]);
+});
+
+// Incident (v4: spring-boot #52281, camel #27910 x2): the repro test did
+// not compile (a wrong override, NullAway), head-1 was a build error and the
+// finding stayed unproven. (Shopizer #1123 failed at run time with a
+// NoClassDefFoundError: a classpath problem, not this one.) The compiler errors in the
+// test file go back to the test writer once, as a repair, and it runs again.
+test('repro: a test that does not compile goes back to its writer once with the compiler errors', async () => {
+  const { validation, reproPrompts, rec, runDir, context } = await review(2, [javaTest('BROKEN'), javaTest('fixed')], { inReactor: true });
+  assert.equal(reproPrompts.length, 2);
+  assert.match(reproPrompts[1], /REPAIR MODE/);
+  assert.match(reproPrompts[1], /core\/src\/test\/java\/a\/FeeReproTest\.java:\[5,40\] cannot find symbol/);
+  assert.match(reproPrompts[1], /symbol: {3}method late_fee\(int\)/);
+  assert.deepEqual(rec.runs.map((r) => [r.phase, r.status]), [['head-1', 'red'], ['head-2', 'red'], ['fix', 'green']]);
+  assert.equal(rec.compile_retry.run.status, 'build_error');
+  assert.match(fs.readFileSync(path.join(revisionDir(runDir, context.context_id), rec.compile_retry.test.artifact.path), 'utf8'), /BROKEN/);
+  assert.match(fs.readFileSync(path.join(revisionDir(runDir, context.context_id), rec.test.artifact.path), 'utf8'), /fixed/);
+  assert.deepEqual(loadReproRecords(runDir, context).errors, []);
+  assert.equal(validation.findings.find((x) => x.id === 'T1-technical-F1').label, 'CONFIRMED');
+});
+
+test('repro: the compile retry happens once, and never for errors outside the test file', async () => {
+  const twice = await review(3, [javaTest('BROKEN'), javaTest('BROKEN again')], { inReactor: true });
+  assert.equal(twice.reproPrompts.length, 2, 'one retry only');
+  assert.deepEqual(twice.rec.runs.map((r) => [r.phase, r.status]), [['head-1', 'build_error']]);
+  assert.equal(twice.rec.status, 'INCONCLUSIVE');
+  const other = await review(4, [javaTest('ok')], { inReactor: true, otherFileBroken: true });
+  assert.equal(other.reproPrompts.length, 1, 'the PR code does not compile: nothing for the test writer to fix');
+  assert.equal(other.rec.compile_retry, undefined);
+});
+
+test('compile errors: Maven and Gradle formats, only in the test file, without repeats', () => {
+  const { compileErrors } = require('../src/lib/repro');
+  const rel = 'module/jetty/src/test/java/a/BReproTest.java';
+  const gradle = [
+    '> Task :module:jetty:compileTestJava',
+    String.raw`D:\r\repro-wt\module\jetty\src\test\java\a\BReproTest.java:132: error: [NullAway] field not initialized`,
+    '\t\tprivate Thread first;',
+    '\t\t               ^',
+    String.raw`D:\r\repro-wt\module\jetty\src\main\java\a\B.java:5: error: cannot find symbol`,
+    '* What went wrong:',
+    String.raw`  D:\r\repro-wt\module\jetty\src\test\java\a\BReproTest.java:132: error: [NullAway] field not initialized`,
+  ].join('\n');
+  assert.deepEqual(compileErrors(gradle, rel), [`${rel}:132: error: [NullAway] field not initialized\n  \t\tprivate Thread first;\n  \t\t               ^`]);
+  const maven = `[ERROR] /D:/r/repro-wt/${rel}:[5,40] cannot find symbol\n[ERROR]   symbol:   method late_fee(int)\n[ERROR] /D:/r/repro-wt/module/jetty/src/main/java/a/B.java:[3,5] cannot find symbol\n`;
+  assert.deepEqual(compileErrors(maven, rel), [`${rel}:[5,40] cannot find symbol\n    symbol:   method late_fee(int)`]);
+  assert.deepEqual(compileErrors('[ERROR] /D:/r/module/jetty/src/main/java/a/B.java:[3,5] cannot find symbol\n', rel), []);
 });

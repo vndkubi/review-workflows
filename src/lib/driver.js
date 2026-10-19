@@ -198,8 +198,10 @@ async function runModelJob(env, spec) {
   const repairs = envInt('ARW_REPAIR_ATTEMPTS', 2);
   const max429 = envInt('ARW_MAX_429_RETRIES', 3);
   const backoffBase = envInt('ARW_429_BACKOFF_MS', 60000);
-  const modes = ['full', ...Array(repairs).fill('repair'), 'fresh'];
-  let repair = null;
+  // spec.initialRepair: the job starts as a repair of a previous output the
+  // runtime found wrong after the fact (a repro test that did not compile).
+  const modes = [spec.initialRepair ? 'repair' : 'full', ...Array(repairs).fill('repair'), 'fresh'];
+  let repair = spec.initialRepair || null;
   let useSchema = true; // switched off after a degenerate structured response
   let lastErrors = [];
   for (let attempt = 0; attempt < modes.length; attempt += 1) {
