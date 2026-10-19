@@ -40,7 +40,7 @@ function inputEv(prompt, id, needle) {
 }
 
 // reproTests: the test content returned by each successive repro call.
-function executor(reproTests, reproPrompts) {
+function executor(reproTests, reproPrompts, fixTobe = 'if days <= 30:') {
   return async (opts) => {
     fs.mkdirSync(opts.attemptDir, { recursive: true });
     const p = opts.prompt;
@@ -63,7 +63,7 @@ function executor(reproTests, reproPrompts) {
       id: 'T1-technical-F1', severity: 'P2', confidence: 'LIKELY', title: 'Day 30 is charged a late fee',
       asis: 'An invoice paid on day 30 pays 0 only because of the strict comparison change.', tobe: 'Day 30 is still within the grace period.',
       trigger: { given: 'an invoice 30 days late', when: 'late_fee(30)', then: 'it should be 0' }, impact: 'Customers are charged on the last free day.',
-      evidence: [code(BAD_LINE)], fix: { kind: 'code_change', asis: BAD_LINE.trim(), tobe: 'if days <= 30:', reason: 'keep day 30 free' },
+      evidence: [code(BAD_LINE)], fix: { kind: 'code_change', asis: BAD_LINE.trim(), tobe: fixTobe, reason: 'keep day 30 free' },
       verification: { method: 'inspected', detail: 'read late_fee', evidence: [] },
       authority: { kind: 'curated_viewpoint', id: 'CK-BZ-1', source: inputEv(p, 'policy-policies-checklist', 'CK-BZ-1: Boundary conditions match the requirement wording') }, items: [],
     }] : [];
@@ -95,12 +95,12 @@ function runner(calls, { inReactor = false, otherFileBroken = false } = {}) {
   };
 }
 
-async function review(pr, reproTests, runnerOpts) {
+async function review(pr, reproTests, runnerOpts, { fixTobe } = {}) {
   const r = repo();
   const calls = [];
   const reproPrompts = [];
   const prepared = { info: { title: 'grace period', body: '', headRefName: 'g', baseRefName: 'main', url: null }, checkout: r.dir, head: r.head, base: r.base };
-  const { validation, runDir } = await reviewPr({ repo: 'acme/fees', pr, executor: executor(reproTests, reproPrompts), prepared, workers: 1, skipSynthesis: true, reproRunner: runner(calls, runnerOpts), testCommand: null });
+  const { validation, runDir } = await reviewPr({ repo: 'acme/fees', pr, executor: executor(reproTests, reproPrompts, fixTobe), prepared, workers: 1, skipSynthesis: true, reproRunner: runner(calls, runnerOpts), testCommand: null });
   const context = loadContext(runDir);
   const rec = JSON.parse(fs.readFileSync(path.join(revisionDir(runDir, context.context_id), 'repro', 'T1-technical-F1.json'), 'utf8'));
   return { validation, calls, reproPrompts, rec, runDir, context };
@@ -118,4 +118,18 @@ test('maven: a module outside the reactor is run with -f <module>/pom.xml', asyn
   assert.ok(rec.notes.some((n) => /not in the reactor.*-f core\/pom\.xml/.test(n)), JSON.stringify(rec.notes));
   const f = validation.findings.find((x) => x.id === 'T1-technical-F1');
   assert.deepEqual([f.label, f.repro.status], ['CONFIRMED', 'RED_PROVEN']);
+});
+
+// Incident (v4: ruoyi-vue-pro #1286, P0): the fix stayed prose on every
+// attempt and the packet with its finding was lost. The last attempt keeps
+// the packet with the fix as not_code; the finding is still reproduced (by
+// the base control).
+test('packets: a prose fix on every attempt is kept as not_code instead of losing the packet', async () => {
+  const { validation, rec, runDir, context } = await review(5, [javaTest('ok')], { inReactor: true }, { fixTobe: 'Keep day 30 inside the grace period' });
+  const job = validation.jobs.find((j) => j.unit_id === 'T1' && j.role === 'technical');
+  assert.equal(job.status, 'EXECUTED_PASS');
+  const packet = JSON.parse(fs.readFileSync(path.join(revisionDir(runDir, context.context_id), 'packets', 'technical', 'T1.json'), 'utf8'));
+  assert.equal(packet.findings[0].fix.kind, 'not_code');
+  assert.match(packet.findings[0].fix.reason, /Proposed change: Keep day 30 inside the grace period/);
+  assert.deepEqual(rec.runs.map((r) => [r.phase, r.status]), [['head-1', 'red'], ['head-2', 'red'], ['base', 'green']]);
 });

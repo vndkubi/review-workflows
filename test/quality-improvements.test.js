@@ -18,7 +18,7 @@ const { parsePatch } = require('../src/lib/patch');
 const { analyzeImpact, renderImpact } = require('../src/lib/impact');
 const { assignImpacts } = require('../src/lib/impact-checks');
 const { selectChecks } = require('../src/lib/viewpoint-checks');
-const { validatePacket, canonicalizeCandidate, splitLines } = require('../src/lib/validate');
+const { validatePacket, canonicalizeCandidate, salvageCandidate, splitLines } = require('../src/lib/validate');
 const { computeOutcome } = require('../src/lib/outcome');
 const { buildUnits, smallPrUnits, isSmallPr } = require('../src/lib/plan');
 const { effortFor } = require('../src/lib/effort');
@@ -133,6 +133,48 @@ test('noise: test and process remarks become P4 suggestions, outside the verdict
   assert.deepEqual(check(p), []);
   const outcome = computeOutcome({ packets: [{ unit_id: 'T1', role: 'technical', packet: p }], jobs: [], clusters: [], rebuttals: new Map(), items: [], repro: new Map() });
   assert.deepEqual(outcome.findings.map((f) => [f.id, f.suggestion]), [['T1-technical-F1', false], ['T1-technical-F2', true], ['T1-technical-F3', true]]);
+});
+
+// Incident (v4: ruoyi-vue-pro #1264, V0): one verification.evidence quote
+// did not match its file after every repair, and the whole packet, with its
+// findings, was lost. Verification evidence only supports how the reviewer
+// checked; an unfound quote there is dropped and recorded. The finding's own
+// evidence and its authority stay strictly checked.
+test('packets: an unfound verification quote is dropped, a finding evidence quote still rejects', () => {
+  const bad = { kind: 'code', path: ORDER, start_line: 3, end_line: 3, quote: 'this line is not in the file' };
+  const p = packet([finding({ verification: { method: 'inspected', detail: 'read it', evidence: [codeEv, bad] } })]);
+  const changes = canonicalizeCandidate(p, sources);
+  assert.deepEqual(p.findings[0].verification.evidence, [codeEv]);
+  assert.ok(changes.some((c) => /findings\[0\]\.verification\.evidence\[1\]: dropped, quote not found/.test(c)), changes.join('\n'));
+  assert.deepEqual(check(p), []);
+  const q = packet([finding({ evidence: [codeEv, { ...bad }] })]);
+  canonicalizeCandidate(q, sources);
+  has(check(q), /findings\[0\]\.evidence\[1\]: quote not found/);
+  const a = packet([finding({ authority: { kind: 'inferred', id: 'engineering-judgement', source: { ...bad } } })]);
+  canonicalizeCandidate(a, sources);
+  has(check(a), /findings\[0\]\.authority\.source: quote not found/);
+});
+
+// Incident (v4: ruoyi-vue-pro #1286, P0): a code_change fix described the
+// change in prose in fix.tobe on every attempt, and the packet was lost.
+// The repair still asks for code first (the repro applies a code fix as its
+// control); when the last attempt is still rejected, the fix becomes
+// not_code with the text kept in fix.reason (see test/repro-retry.test.js).
+test('packets: a code_change whose tobe is prose is salvaged as not_code, the text kept in reason', () => {
+  const p = packet([finding({ fix: { kind: 'code_change', asis: IF_LINE, tobe: 'Use >= so the threshold itself gets the discount', reason: 'inclusive boundary' } })]);
+  canonicalizeCandidate(p, sources);
+  assert.equal(p.findings[0].fix.kind, 'code_change', 'not before the last attempt');
+  has(check(p), /fix\.tobe: must be replacement code, not prose/);
+  const changes = salvageCandidate(p);
+  assert.equal(p.findings[0].fix.kind, 'not_code');
+  assert.equal(p.findings[0].fix.tobe, '');
+  assert.match(p.findings[0].fix.reason, /inclusive boundary[\s\S]*Use >= so the threshold itself gets the discount/);
+  assert.ok(changes.some((c) => /findings\[0\]\.fix: code_change -> not_code \(tobe is prose/.test(c)), changes.join('\n'));
+  assert.deepEqual(check(p), []);
+  // Code stays a code change.
+  const c = packet([finding({ fix: { kind: 'code_change', asis: IF_LINE, tobe: 'if (member && total.compareTo(THRESHOLD) >= 0) {', reason: 'inclusive boundary' } })]);
+  assert.deepEqual(salvageCandidate(c), []);
+  assert.equal(c.findings[0].fix.kind, 'code_change');
 });
 
 // ---------- the free review replaces the whole-diff sweeps ----------

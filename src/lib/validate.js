@@ -291,7 +291,22 @@ function canonicalizeCandidate(candidate, sources) {
       f.severity = 'P4';
     }
     list(f.evidence, `$.findings[${i}].evidence`);
-    if (f.verification) list(f.verification.evidence, `$.findings[${i}].verification.evidence`);
+    if (f.verification) {
+      const at = `$.findings[${i}].verification.evidence`;
+      list(f.verification.evidence, at);
+      // Verification evidence only shows how the reviewer checked; a quote
+      // found nowhere in its file is dropped, not a reason to lose the
+      // packet. The finding's evidence and authority stay strictly checked.
+      if (Array.isArray(f.verification.evidence)) {
+        f.verification.evidence = f.verification.evidence.filter((ev, j) => {
+          if (!ev || typeof ev !== 'object' || ev.anchor !== undefined || (ev.kind !== 'code' && ev.kind !== 'input') || typeof ev.quote !== 'string') return true;
+          const lines = linesFor(ev, sources);
+          if (!lines || quoteMatchesAt(lines, ev.start_line, ev.end_line, ev.quote).ok) return true;
+          changes.push(`${at}[${j}]: dropped, quote not found in ${ev.kind} "${ev.path}"`);
+          return false;
+        });
+      }
+    }
     if (f.authority) {
       fixEvidence(f.authority.source, `$.findings[${i}].authority.source`);
       const m = typeof f.authority.id === 'string' && f.authority.kind === 'requirement' && f.authority.id.match(/\b(?:AC|I)[1-9][0-9]*\b/);
@@ -300,6 +315,22 @@ function canonicalizeCandidate(candidate, sources) {
         f.authority.id = m[0];
       }
     }
+  });
+  return changes;
+}
+
+// Applied only when the last attempt of a job is still rejected: changes that
+// lose something (a code fix the repro could apply) but keep the packet. A
+// code_change whose replacement is prose is a described change: kept as
+// not_code, the text in fix.reason. Returns the list of changes made.
+function salvageCandidate(candidate) {
+  const changes = [];
+  ((candidate && candidate.findings) || []).forEach((f, i) => {
+    if (!f || !f.fix || f.fix.kind !== 'code_change' || typeof f.fix.tobe !== 'string' || !f.fix.tobe.trim() || looksLikeCode(f.fix.tobe)) return;
+    changes.push(`$.findings[${i}].fix: code_change -> not_code (tobe is prose; kept in reason)`);
+    f.fix.reason = [String(f.fix.reason || '').trim(), `Proposed change: ${f.fix.tobe.trim()}`].filter(Boolean).join('\n');
+    f.fix.kind = 'not_code';
+    f.fix.tobe = '';
   });
   return changes;
 }
@@ -608,6 +639,7 @@ module.exports = {
   quoteMatchesAt,
   locateQuote,
   canonicalizeCandidate,
+  salvageCandidate,
   validateEvidence,
   validatePacket,
   validateRebuttal,

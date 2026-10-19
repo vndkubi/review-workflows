@@ -9,7 +9,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { sha256, sha256Value, writeJsonAtomic, readJson, readJsonIfExists, parseModelJson, envInt, nowIso, runPool, ensureDir } = require('./util');
 const { loadContext, verifyContext, revisionDir, reviewDir, readInput } = require('./freeze');
-const { makeSources, canonicalizeCandidate, validatePacket, validateRebuttal, validateSynthesis, validatePlain } = require('./validate');
+const { makeSources, canonicalizeCandidate, salvageCandidate, validatePacket, validateRebuttal, validateSynthesis, validatePlain } = require('./validate');
 const { findingClusters } = require('./cluster');
 const { computeOutcome, BLOCKING } = require('./outcome');
 const { effortFor } = require('./effort');
@@ -316,8 +316,17 @@ async function runModelJob(env, spec) {
     // Values the runtime already knows (refs, hashes) are filled, not copied:
     // models reliably garble 64-hex strings.
     const changes = [...(spec.fill ? spec.fill(candidate) : []), ...canonicalizeCandidate(candidate, env.sources)];
+    let errors = spec.validate(candidate);
+    // The last attempt still rejected: keep the packet with what is lost
+    // recorded, rather than lose it to one small error.
+    if (errors.length && attempt === modes.length - 1) {
+      const salvaged = salvageCandidate(candidate);
+      if (salvaged.length) {
+        changes.push(...salvaged);
+        errors = spec.validate(candidate);
+      }
+    }
     if (changes.length) fs.writeFileSync(path.join(attemptDir, 'canonicalized.txt'), `${changes.join('\n')}\n`);
-    const errors = spec.validate(candidate);
     receipt.validation_errors = errors.length;
     if (errors.length) receipt.errors = errors.slice(0, 5).map((e) => e.slice(0, 300));
     flushReceipts();
