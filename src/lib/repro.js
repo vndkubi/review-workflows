@@ -161,6 +161,38 @@ function commandFor(toolchain, test, wt, override, { offline: forceOffline = fal
 }
 
 // ---------- JUnit XML ----------
+// Gradle shortens a report name too long for the file system
+// (TEST-or-DQ7JRMO7GS1CO.fineract...ReproTest.xml), so besides TEST-<class>.xml
+// the reports of the same directory that end in the simple class name are
+// candidates; one is this test's when its <testsuite name> is the class.
+function junitCandidates(wt, junit, cls) {
+  const simple = cls ? cls.split('.').pop() : null;
+  let names = [];
+  try {
+    names = simple ? fs.readdirSync(path.dirname(junit)).filter((n) => n.startsWith('TEST-') && n.endsWith(`.${simple}.xml`) && n !== path.basename(junit)) : [];
+  } catch {
+    names = [];
+  }
+  return [junit, ...names.map((n) => path.join(path.dirname(junit), n))];
+}
+
+const suiteName = (xml) => (/<testsuite\b[^>]*\bname="([^"]*)"/.exec(String(xml)) || [])[1];
+
+function readJunitReport(wt, junit, cls) {
+  for (const f of junitCandidates(wt, junit, cls)) {
+    const xml = confine.readConfined(wt, f);
+    if (xml != null && (f === junit || suiteName(xml) === cls)) return xml;
+  }
+  return null;
+}
+
+// Before a run: no report of an earlier phase may be read as this one's.
+function removeJunitReports(wt, junit, cls) {
+  for (const f of junitCandidates(wt, junit, cls)) {
+    if (f === junit || suiteName(confine.readConfined(wt, f)) === cls) confine.removeConfined(wt, f);
+  }
+}
+
 function decodeXml(s) {
   // Numeric references too: pytest writes newlines in messages as &#10;.
   return String(s).replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
@@ -654,7 +686,7 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
     const runs = [];
     let runtimeFetched = false;
     const runPhase = async (phase) => {
-      confine.removeConfined(wt, junit);
+      removeJunitReports(wt, junit, test.language === 'java' ? javaClass(test.selector) : null);
       const logRel = `repro/${finding.id}/${phase}.log`;
       const logFile = path.join(rdir, logRel);
       let res = await execRun({ command, argv, cwd: wt, logFile, timeoutMs, test, phase, toolchain: toolchain || 'custom', ...(hostRun ? { env: hostRun.env } : {}) });
@@ -687,7 +719,7 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
       // the JUnit XML is kept as written. Validation re-derives the status
       // from these, never from the record's own fields.
       fs.appendFileSync(logFile, `\n${trailer(res)}\n`);
-      const xml = confine.readConfined(wt, junit);
+      const xml = readJunitReport(wt, junit, test.language === 'java' ? javaClass(test.selector) : null);
       const junitData = xml ? parseJunit(xml) : null;
       const run = { phase, command, exit_code: res.exit_code, elapsed_ms: res.elapsed_ms, timed_out: Boolean(res.timed_out), spawn_error: res.spawn_error || null, junit: junitData, environment: res.environment || null };
       run.status = classify(run);
@@ -794,4 +826,4 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
   return results;
 }
 
-module.exports = { reproDone, runRepro, compileErrors, loadReproRecords, validateReproTest, reproTargetNames, applyFix, parseJunit, classify, statusFromRuns, controlOf, trailer, parseTrailer, detectToolchain, commandFor, moduleOf, shellRunner, scrubbedEnv, reproTargets, pythonCommand, sandboxPython, gradleWrapper, defaultRunner };
+module.exports = { reproDone, runRepro, compileErrors, readJunitReport, removeJunitReports, loadReproRecords, validateReproTest, reproTargetNames, applyFix, parseJunit, classify, statusFromRuns, controlOf, trailer, parseTrailer, detectToolchain, commandFor, moduleOf, shellRunner, scrubbedEnv, reproTargets, pythonCommand, sandboxPython, gradleWrapper, defaultRunner };

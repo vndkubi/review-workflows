@@ -107,3 +107,31 @@ test('repro: the JUnit report of a multi-module build is read from the module of
   fs.writeFileSync(path.join(dir, 'module-a', 'build.gradle.kts'), '');
   assert.equal(commandFor('gradle', test, dir).junit, path.join(dir, 'module-a', 'build', 'test-results', 'test', 'TEST-com.acme.FooReproTest.xml'));
 });
+
+// Incident (refreshed v4, Fineract #6659): the repro test ran and failed on
+// its assertion, but Gradle shortened the long report name to
+// TEST-or-DQ7JRMO7GS1CO.fineract...ReproTest.xml, the runtime looked only
+// for TEST-<class>.xml and recorded build_error. The report is the one in
+// the report directory whose <testsuite name> is the class; a stale one of
+// an earlier phase is removed before each run.
+test('repro: a shortened JUnit report name is found by its testsuite name', () => {
+  const { readJunitReport, removeJunitReports } = require('../src/lib/repro');
+  const wt = tmpDir('arw-junit-');
+  const cls = 'org.apache.fineract.portfolio.loanaccount.payoffpreview.service.PayoffSchedulePreviewServiceImplReproTest';
+  const dir = path.join(wt, 'mod', 'build', 'test-results', 'test');
+  fs.mkdirSync(dir, { recursive: true });
+  const junit = path.join(dir, `TEST-${cls}.xml`);
+  const xml = `<testsuite name="${cls}" tests="1" failures="1" errors="0" skipped="0"><testcase name="t"><failure message="expected true"/></testcase></testsuite>`;
+  fs.writeFileSync(path.join(dir, 'TEST-or-DQ7JRMO7GS1CO.fineract.portfolio.loanaccount.payoffpreview.service.PayoffSchedulePreviewServiceImplReproTest.xml'), xml);
+  // Another class with the same simple name is not this test's report.
+  fs.writeFileSync(path.join(dir, 'TEST-or-ABC.other.PayoffSchedulePreviewServiceImplReproTest.xml'), '<testsuite name="org.other.PayoffSchedulePreviewServiceImplReproTest" tests="1" failures="0"/>');
+  assert.equal(readJunitReport(wt, junit, cls), xml);
+  assert.equal(parseJunit(readJunitReport(wt, junit, cls)).failures, 1);
+  removeJunitReports(wt, junit, cls);
+  assert.equal(readJunitReport(wt, junit, cls), null, 'removed before the next phase');
+  assert.deepEqual(fs.readdirSync(dir), ['TEST-or-ABC.other.PayoffSchedulePreviewServiceImplReproTest.xml']);
+  // The exact name still wins.
+  fs.writeFileSync(junit, xml);
+  assert.equal(readJunitReport(wt, junit, cls), xml);
+  assert.equal(readJunitReport(wt, path.join(wt, 'nowhere', 'TEST-x.xml'), 'x'), null);
+});
