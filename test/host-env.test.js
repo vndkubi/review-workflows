@@ -184,7 +184,7 @@ test('dependencies: scoped to the test module, with a configurable budget', asyn
   assert.doesNotMatch(calls[2].command, / -pl /);
   // Gradle runs the module's own test task (see the jacoco incident below).
   await hostEnv.prepareDependencies({ checkout: p.dir, base, toolchain: 'gradle', plan: { ...plan, tool: 'gradle' }, runner, cacheDir: tmpDir('arw-host-cache-'), logDir: cache, module: 'core', env: {} });
-  assert.match(calls[3].command, /^gradle :core:test --tests ArwNoSuchTest /);
+  assert.match(calls[3].command, /^gradle -p core test --tests ArwNoSuchTest /);
 });
 
 // Incident (v4: Fineract #6661, #6659, spring-security #19925): Gradle prep
@@ -217,10 +217,59 @@ test('head runs are scoped to the test module too', () => {
   assert.doesNotMatch(root.command, / -pl /);
   write(wt, 'build.gradle', '\n');
   write(wt, 'core/build.gradle', '\n');
-  assert.match(commandFor('gradle', t, wt, null, {}).command, / :core:test --tests a\.BTest$/);
+  assert.match(commandFor('gradle', t, wt, null, {}).command, / -p core test --tests a\.BTest$/);
   const { moduleOf } = require('../src/lib/repro');
   assert.equal(moduleOf('maven', wt, t.path), 'core');
   assert.equal(moduleOf('maven', wt, 'src/test/java/a/BTest.java'), null);
+});
+
+// Incident (v4: metasfresh #26561): the repository keeps its pom under
+// backend/, so detection at the root said "no java build tool detected" and
+// neither finding ran. The build file is found by walking up from the test;
+// Maven is pointed at the topmost pom on that path (the reactor) with -f.
+test('build files: found by walking up from the test, the reactor run with -f', async () => {
+  const { detectToolchain, moduleOf } = require('../src/lib/repro');
+  const wt = tmpDir('arw-host-wt-');
+  write(wt, 'README.md', 'x\n');
+  write(wt, 'backend/pom.xml', '<project/>\n');
+  write(wt, 'backend/de.metas.business/pom.xml', '<project/>\n');
+  const t = { language: 'java', path: 'backend/de.metas.business/src/test/java/a/BTest.java', selector: 'a.BTest' };
+  assert.equal(detectToolchain(wt, 'java'), null, 'nothing at the root');
+  assert.equal(detectToolchain(wt, 'java', t.path), 'maven');
+  assert.equal(moduleOf('maven', wt, t.path), 'backend/de.metas.business');
+  const mvn = commandFor('maven', t, wt, null, { offline: true });
+  assert.match(mvn.command, /^mvn -B -q -o -f backend\/pom\.xml -pl de\.metas\.business -am test -Dtest=a\.BTest /);
+  assert.equal(path.relative(wt, mvn.junit).replace(/\\/g, '/'), 'backend/de.metas.business/target/surefire-reports/TEST-a.BTest.xml');
+  // Base prep is scoped the same way.
+  const dir = tmpDir('arw-host-mvn-');
+  sh(dir, ['init', '-q', '-b', 'main']);
+  write(dir, 'backend/pom.xml', '<project/>\n');
+  write(dir, 'backend/core/pom.xml', '<project/>\n');
+  sh(dir, ['add', '-A']);
+  sh(dir, ['commit', '-q', '-m', 'base']);
+  const calls = [];
+  const runner = async (o) => { calls.push(o); return { exit_code: 0, elapsed_ms: 1 }; };
+  const cache = tmpDir('arw-host-cache-');
+  await hostEnv.prepareDependencies({ checkout: dir, base: sh(dir, ['rev-parse', 'HEAD']), toolchain: 'maven', plan: { ok: true, env: {}, java: 11 }, runner, cacheDir: cache, logDir: cache, module: 'backend/core', env: {} });
+  assert.match(calls[0].command, /^mvn -B -q -f backend\/pom\.xml -pl core -am test /);
+});
+
+// Incident (v4: spring-security #19925): modules are marked by files like
+// web/spring-security-web.gradle, not build.gradle, so the test's module was
+// not found and "test --tests" ran across the whole build. Any *.gradle(.kts)
+// but settings marks a module, and Gradle runs it with -p <moduleDir>.
+test('build files: a *.gradle file marks a Gradle module, run with -p', () => {
+  const { detectToolchain, moduleOf } = require('../src/lib/repro');
+  const wt = tmpDir('arw-host-wt-');
+  write(wt, 'settings.gradle', '\n');
+  write(wt, 'web/spring-security-web.gradle', '\n');
+  write(wt, 'web/src/test/java/a/settings.gradle', '\n');
+  const t = { language: 'java', path: 'web/src/test/java/a/BTest.java', selector: 'a.BTest' };
+  assert.equal(detectToolchain(wt, 'java', t.path), 'gradle');
+  assert.equal(moduleOf('gradle', wt, t.path), 'web', 'settings.gradle is not a module marker');
+  const g = commandFor('gradle', t, wt, null, { offline: true, tool: 'gradlew.bat' });
+  assert.equal(g.command, 'gradlew.bat -p web test --tests a.BTest --offline');
+  assert.equal(path.relative(wt, g.junit).replace(/\\/g, '/'), 'web/build/test-results/test/TEST-a.BTest.xml');
 });
 
 // P3 defects can be proven too when asked (ARW_REPRO_SEVERITY=P3);

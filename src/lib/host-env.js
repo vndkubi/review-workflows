@@ -104,6 +104,34 @@ function hostPlan({ wt, toolchain, jdks = findJdks(), which = whichOnPath }) {
   return { ok: true, java: jdk.version, env, tool };
 }
 
+// Whether dir holds a build file that marks a module. Gradle modules may name
+// theirs after the module (spring-security: web/spring-security-web.gradle);
+// a settings file marks a build, not a module.
+function hasBuildFile(toolchain, dir) {
+  if (toolchain === 'maven') return fs.existsSync(path.join(dir, 'pom.xml'));
+  if (toolchain !== 'gradle') return false;
+  try {
+    return fs.readdirSync(dir).some((f) => /\.gradle(\.kts)?$/.test(f) && !/^settings\.gradle(\.kts)?$/.test(f) && fs.statSync(path.join(dir, f)).isFile());
+  } catch {
+    return false;
+  }
+}
+
+// The arguments that scope a build, run from the worktree root, to a module
+// (relative "/"-separated, or null for the root). Gradle finds the settings
+// above -p itself. Maven runs the reactor, the topmost pom on the module's
+// path, with -f when that is not the root (metasfresh keeps it in backend/).
+function scopeArgs(toolchain, wt, module) {
+  if (toolchain === 'gradle') return module ? ['-p', module] : [];
+  if (toolchain !== 'maven' || !module) return [];
+  const parts = module.split('/');
+  let top = 0;
+  while (top <= parts.length && !fs.existsSync(path.join(wt, ...parts.slice(0, top), 'pom.xml'))) top += 1;
+  if (top === 0 || top > parts.length) return ['-pl', module, '-am'];
+  const rest = parts.slice(top).join('/');
+  return ['-f', `${parts.slice(0, top).join('/')}/pom.xml`, ...(rest ? ['-pl', rest, '-am'] : [])];
+}
+
 // Gradle fails a test task whose --tests filter matches nothing; prep runs
 // one on purpose, so that what only the test task resolves (the jacoco
 // agent, test runtimes) is cached before the offline head run.
@@ -130,13 +158,13 @@ async function prepareDependencies({ checkout, base, toolchain, plan, runner, ca
   const marker = path.join(cacheDir, `${key}.ok`);
   if (fs.existsSync(marker)) return { ok: true, prepared: false };
   const tool = plan.tool || (toolchain === 'maven' ? 'mvn' : 'gradle');
-  const scope = module ? (toolchain === 'maven' ? ` -pl ${module} -am` : `:${module.split('/').join(':')}:`) : '';
+  const scope = scopeArgs(toolchain, wt, module).map((a) => ` ${a}`).join('');
   let command;
   if (toolchain === 'maven') command = `${tool} -B -q${scope} test -Dtest=ArwNoSuchTest -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false`;
   else {
     const init = path.join(cacheDir, 'arw-no-test.init.gradle');
     fs.writeFileSync(init, NO_TEST_INIT);
-    command = `${tool} ${scope}test --tests ArwNoSuchTest --init-script "${init}"`;
+    command = `${tool}${scope} test --tests ArwNoSuchTest --init-script "${init}"`;
   }
   const logFile = path.join(ensureDir(logDir || cacheDir), `host-deps-${key}.log`);
   const res = await runner({ command, cwd: wt, logFile, timeoutMs, env: plan.env });
@@ -190,4 +218,4 @@ function runnerChoice({ mode, daemonError, env = process.env }) {
   return env.ARW_SANDBOX_FALLBACK === 'off' ? 'blocked' : 'host';
 }
 
-module.exports = { findJdks, pickJdk, hostPlan, prepareDependencies, runnerChoice, defaultRoots, jdkAt, missingArtifacts, testRuntimeArtifacts, fetchArtifacts };
+module.exports = { findJdks, pickJdk, hostPlan, prepareDependencies, hasBuildFile, scopeArgs, runnerChoice, defaultRoots, jdkAt, missingArtifacts, testRuntimeArtifacts, fetchArtifacts };

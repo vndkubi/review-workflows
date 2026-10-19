@@ -24,12 +24,19 @@ function reproDone(prior, { retry = false } = {}) {
 }
 
 // ---------- toolchains ----------
-function detectToolchain(dir, language) {
-  const has = (f) => fs.existsSync(path.join(dir, f));
+// Java: the nearest build file from the test's directory up to the worktree
+// root (metasfresh keeps its pom under backend/).
+function detectToolchain(dir, language, testPath = null) {
   if (language === 'java') {
-    if (has('pom.xml')) return 'maven';
-    if (has('build.gradle') || has('build.gradle.kts') || has('gradlew')) return 'gradle';
-    return null;
+    const hostEnv = require('./host-env');
+    const root = path.resolve(dir);
+    let d = testPath ? path.dirname(path.resolve(root, String(testPath))) : root;
+    if (d !== root && !d.startsWith(root + path.sep)) d = root;
+    for (;; d = path.dirname(d)) {
+      if (hostEnv.hasBuildFile('maven', d)) return 'maven';
+      if (hostEnv.hasBuildFile('gradle', d) || fs.existsSync(path.join(d, 'gradlew'))) return 'gradle';
+      if (d === root) return null;
+    }
   }
   if (language === 'python') return 'pytest';
   return null;
@@ -102,13 +109,12 @@ function assertShellSafe(values) {
 // The build module a test belongs to: the nearest directory above it, inside
 // the worktree, with a build file. Maven and Gradle write a module's reports
 // under that module, even when the build runs from the root.
-const BUILD_FILES = { maven: ['pom.xml'], gradle: ['build.gradle', 'build.gradle.kts'] };
 function moduleDir(toolchain, wt, testPath) {
   const root = path.resolve(wt);
   let dir = path.dirname(path.resolve(root, String(testPath || '')));
   if (dir !== root && !dir.startsWith(root + path.sep)) return root;
   for (; dir !== root && dir.startsWith(root + path.sep); dir = path.dirname(dir)) {
-    if ((BUILD_FILES[toolchain] || []).some((f) => fs.existsSync(path.join(dir, f)))) return dir;
+    if (require('./host-env').hasBuildFile(toolchain, dir)) return dir;
   }
   return root;
 }
@@ -144,11 +150,10 @@ function commandFor(toolchain, test, wt, override, { offline: forceOffline = fal
   const off = forceOffline || process.env.REPRO_MAVEN_OFFLINE === '1';
   const offline = off ? ['-o'] : [];
   const module = moduleOf(toolchain, wt, test.path);
-  const pl = module && toolchain === 'maven' ? ['-pl', module, '-am'] : [];
-  const task = module && toolchain === 'gradle' ? `:${module.split('/').join(':')}:test` : 'test';
+  const scope = require('./host-env').scopeArgs(toolchain, wt, module);
   const argvs = {
-    maven: [tool || 'mvn', '-B', '-q', ...offline, ...pl, 'test', `-Dtest=${test.selector}`, '-DfailIfNoTests=false', '-Dsurefire.failIfNoSpecifiedTests=false'],
-    gradle: [tool || gradleWrapper(), task, '--tests', cls, ...(forceOffline ? ['--offline'] : [])],
+    maven: [tool || 'mvn', '-B', '-q', ...offline, ...scope, 'test', `-Dtest=${test.selector}`, '-DfailIfNoTests=false', '-Dsurefire.failIfNoSpecifiedTests=false'],
+    gradle: [tool || gradleWrapper(), ...scope, 'test', '--tests', cls, ...(forceOffline ? ['--offline'] : [])],
     pytest: [sandboxPython(), '-m', 'pytest', '-q', '-p', 'no:cacheprovider', test.selector, `--junitxml=${junitPytest}`],
   };
   const argv = argvs[toolchain];
@@ -571,7 +576,7 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
     }
     const test = gen.value;
     if (!wt) wt = ensureReproWorktree(runDir, context);
-    const toolchain = detectToolchain(wt, test.language);
+    const toolchain = detectToolchain(wt, test.language, test.path);
     if (!toolchain && !testCommand) {
       const rec = { ...base, status: 'ENVIRONMENT_BLOCKED', reason: `no ${test.language} build tool detected (pom.xml, build.gradle) and no test_command configured`, runs: [] };
       writeJsonAtomic(recordFile, rec);
