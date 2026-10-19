@@ -127,7 +127,7 @@ function moduleOf(toolchain, wt, testPath) {
 
 // Returns { command, junit: absolute JUnit XML path }. A test in a module is
 // run in that module (and what it depends on), not the whole build.
-function commandFor(toolchain, test, wt, override, { offline: forceOffline = false, tool = null } = {}) {
+function commandFor(toolchain, test, wt, override, { offline: forceOffline = false, tool = null, standalone = false } = {}) {
   const cls = test.language === 'java' ? javaClass(test.selector) : null;
   const simple = cls ? cls.split('.').pop() : null;
   // Validation already allows only plain values; checked again here, where
@@ -150,7 +150,7 @@ function commandFor(toolchain, test, wt, override, { offline: forceOffline = fal
   const off = forceOffline || process.env.REPRO_MAVEN_OFFLINE === '1';
   const offline = off ? ['-o'] : [];
   const module = moduleOf(toolchain, wt, test.path);
-  const scope = require('./host-env').scopeArgs(toolchain, wt, module);
+  const scope = require('./host-env').scopeArgs(toolchain, wt, module, { standalone });
   const argvs = {
     maven: [tool || 'mvn', '-B', '-q', ...offline, ...scope, 'test', `-Dtest=${test.selector}`, '-DfailIfNoTests=false', '-Dsurefire.failIfNoSpecifiedTests=false'],
     gradle: [tool || gradleWrapper(), ...scope, 'test', '--tests', cls, ...(forceOffline ? ['--offline'] : [])],
@@ -598,12 +598,14 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
       if (!hostReady.has(readyKey)) {
         const plan = hostEnv.hostPlan({ wt, toolchain });
         let ready = plan.ok ? null : plan.reason;
+        let standalone = false;
         if (!ready) {
           log(`repro: preparing the host (Java ${plan.java}, dependencies at base${module ? ` for ${module}` : ''})`);
           const deps = await hostEnv.prepareDependencies({ checkout: context.source.checkout, base: context.source.base_sha, toolchain, plan, runner: shellRunner, logDir: outDir, module });
           if (!deps.ok) ready = deps.reason;
+          standalone = Boolean(deps.standalone);
         }
-        hostReady.set(readyKey, ready ? { ok: false, reason: ready } : { ok: true, plan });
+        hostReady.set(readyKey, ready ? { ok: false, reason: ready } : { ok: true, plan, standalone });
       }
       const state = hostReady.get(readyKey);
       if (!state.ok) {
@@ -612,9 +614,11 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
         results.push(rec);
         continue;
       }
-      hostRun = state.plan;
+      hostRun = { ...state.plan, standalone: state.standalone };
     }
-    const { command, argv, junit } = commandFor(toolchain, test, wt, testCommand, { offline: Boolean(hostRun), tool: hostRun ? hostRun.tool : null });
+    let standalone = Boolean(hostRun && hostRun.standalone);
+    const commandOf = () => commandFor(toolchain, test, wt, testCommand, { offline: Boolean(hostRun), tool: hostRun ? hostRun.tool : null, standalone });
+    let { command, argv, junit } = commandOf();
     const runs = [];
     let runtimeFetched = false;
     const runPhase = async (phase) => {
@@ -622,6 +626,16 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
       const logRel = `repro/${finding.id}/${phase}.log`;
       const logFile = path.join(rdir, logRel);
       let res = await execRun({ command, argv, cwd: wt, logFile, timeoutMs, test, phase, toolchain: toolchain || 'custom', ...(hostRun ? { env: hostRun.env } : {}) });
+      // A module the root reactor does not list (ruoyi-vue-pro): built from
+      // its own pom from here on.
+      const module = toolchain === 'maven' && !testCommand ? moduleOf(toolchain, wt, test.path) : null;
+      if (module && !standalone && res.exit_code !== 0 && fs.existsSync(logFile) && hostEnv.notInReactor(fs.readFileSync(logFile, 'utf8'))) {
+        standalone = true;
+        ({ command, argv, junit } = commandOf());
+        notes.push(`${module} is not in the reactor; ran with -f ${module}/pom.xml from ${phase} on`);
+        log(`repro ${finding.id}: ${module} is not in the reactor; running with -f ${module}/pom.xml`);
+        res = await execRun({ command, argv, cwd: wt, logFile, timeoutMs, test, phase, toolchain, ...(hostRun ? { env: hostRun.env } : {}) });
+      }
       // On a prepared host, a test runtime the base never needed (the PR
       // added JUnit 5 tests to a JUnit 4 module) is fetched outside the
       // project, then the phase runs once more.

@@ -254,6 +254,43 @@ test('build files: found by walking up from the test, the reactor run with -f', 
   assert.match(calls[0].command, /^mvn -B -q -f backend\/pom\.xml -pl core -am test /);
 });
 
+// Incident (v4: ruoyi-vue-pro #1286): yudao-module-mall is commented out of
+// the root <modules>, so base prep with "-pl <module> -am" failed with
+// "Could not find the selected project in the reactor". Prep falls back to
+// the module's own pom, and remembers it for the head runs.
+test('dependencies: a Maven module outside the reactor is prepared from its own pom', async () => {
+  const p = mavenProject(11);
+  write(p.dir, 'mall/trade/pom.xml', '<project/>\n');
+  sh(p.dir, ['add', '-A']);
+  sh(p.dir, ['commit', '-q', '-m', 'module']);
+  const base = sh(p.dir, ['rev-parse', 'HEAD']);
+  const calls = [];
+  const runner = async (o) => {
+    calls.push(o);
+    if (/ -pl /.test(o.command)) {
+      fs.writeFileSync(o.logFile, '[ERROR] Could not find the selected project in the reactor: mall/trade @ \n');
+      return { exit_code: 1, elapsed_ms: 1 };
+    }
+    return { exit_code: 0, elapsed_ms: 1 };
+  };
+  const cache = tmpDir('arw-host-cache-');
+  const args = { checkout: p.dir, base, toolchain: 'maven', plan: { ok: true, env: {}, java: 11 }, runner, cacheDir: cache, logDir: cache, module: 'mall/trade', env: {} };
+  const res = await hostEnv.prepareDependencies(args);
+  assert.deepEqual([res.ok, res.standalone], [true, true]);
+  assert.match(calls[0].command, / -pl mall\/trade -am /);
+  assert.match(calls[1].command, /^mvn -B -q -f mall\/trade\/pom\.xml test /);
+  const again = await hostEnv.prepareDependencies(args);
+  assert.deepEqual([again.ok, again.prepared, again.standalone, calls.length], [true, false, true, 2], 'the cached prep remembers it');
+  const t = { language: 'java', path: 'mall/trade/src/test/java/a/BTest.java', selector: 'a.BTest' };
+  assert.match(commandFor('maven', t, p.dir, null, { offline: true, standalone: true }).command, /^mvn -B -q -o -f mall\/trade\/pom\.xml test -Dtest=a\.BTest /);
+  // Any other failure is not retried.
+  const failing = async (o) => { calls.push(o); return { exit_code: 1, elapsed_ms: 1 }; };
+  const fresh = tmpDir('arw-host-cache-');
+  const bad = await hostEnv.prepareDependencies({ ...args, runner: failing, cacheDir: fresh, logDir: fresh });
+  assert.equal(bad.ok, false);
+  assert.equal(calls.length, 3);
+});
+
 // Incident (v4: spring-security #19925): modules are marked by files like
 // web/spring-security-web.gradle, not build.gradle, so the test's module was
 // not found and "test --tests" ran across the whole build. Any *.gradle(.kts)

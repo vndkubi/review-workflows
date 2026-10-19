@@ -121,15 +121,30 @@ function hasBuildFile(toolchain, dir) {
 // (relative "/"-separated, or null for the root). Gradle finds the settings
 // above -p itself. Maven runs the reactor, the topmost pom on the module's
 // path, with -f when that is not the root (metasfresh keeps it in backend/).
-function scopeArgs(toolchain, wt, module) {
+// standalone: the module is outside the reactor, so its own pom is the build.
+function scopeArgs(toolchain, wt, module, { standalone = false } = {}) {
   if (toolchain === 'gradle') return module ? ['-p', module] : [];
   if (toolchain !== 'maven' || !module) return [];
+  if (standalone) return ['-f', `${module}/pom.xml`];
   const parts = module.split('/');
   let top = 0;
   while (top <= parts.length && !fs.existsSync(path.join(wt, ...parts.slice(0, top), 'pom.xml'))) top += 1;
   if (top === 0 || top > parts.length) return ['-pl', module, '-am'];
   const rest = parts.slice(top).join('/');
   return ['-f', `${parts.slice(0, top).join('/')}/pom.xml`, ...(rest ? ['-pl', rest, '-am'] : [])];
+}
+
+// Maven's answer to "-pl <module>" for a module the reactor does not list.
+function notInReactor(log) {
+  return /Could not find the selected project in the reactor/.test(String(log));
+}
+
+function readLog(file) {
+  try {
+    return fs.readFileSync(file, 'utf8');
+  } catch {
+    return '';
+  }
 }
 
 // Gradle fails a test task whose --tests filter matches nothing; prep runs
@@ -156,21 +171,29 @@ async function prepareDependencies({ checkout, base, toolchain, plan, runner, ca
   // Gradle markers from the testClasses-only prep (-t) do not count.
   const key = `${module ? `${repoKey}-${sha256(module).slice(0, 8)}` : repoKey}${toolchain === 'gradle' ? '-t' : ''}`;
   const marker = path.join(cacheDir, `${key}.ok`);
-  if (fs.existsSync(marker)) return { ok: true, prepared: false };
+  if (fs.existsSync(marker)) return { ok: true, prepared: false, standalone: /^standalone$/m.test(fs.readFileSync(marker, 'utf8')) };
   const tool = plan.tool || (toolchain === 'maven' ? 'mvn' : 'gradle');
-  const scope = scopeArgs(toolchain, wt, module).map((a) => ` ${a}`).join('');
-  let command;
-  if (toolchain === 'maven') command = `${tool} -B -q${scope} test -Dtest=ArwNoSuchTest -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false`;
-  else {
+  const commandOf = (standalone) => {
+    const scope = scopeArgs(toolchain, wt, module, { standalone }).map((a) => ` ${a}`).join('');
+    if (toolchain === 'maven') return `${tool} -B -q${scope} test -Dtest=ArwNoSuchTest -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false`;
     const init = path.join(cacheDir, 'arw-no-test.init.gradle');
     fs.writeFileSync(init, NO_TEST_INIT);
-    command = `${tool}${scope} test --tests ArwNoSuchTest --init-script "${init}"`;
-  }
+    return `${tool}${scope} test --tests ArwNoSuchTest --init-script "${init}"`;
+  };
   const logFile = path.join(ensureDir(logDir || cacheDir), `host-deps-${key}.log`);
-  const res = await runner({ command, cwd: wt, logFile, timeoutMs, env: plan.env });
+  let command = commandOf(false);
+  let res = await runner({ command, cwd: wt, logFile, timeoutMs, env: plan.env });
+  // A module the root reactor does not list (ruoyi-vue-pro comments most
+  // out) is built from its own pom.
+  let standalone = false;
+  if (res.exit_code !== 0 && toolchain === 'maven' && module && notInReactor(readLog(logFile))) {
+    standalone = true;
+    command = commandOf(true);
+    res = await runner({ command, cwd: wt, logFile, timeoutMs, env: plan.env });
+  }
   if (res.exit_code === 0) {
-    fs.writeFileSync(marker, `${new Date().toISOString()} ${command}\n`);
-    return { ok: true, prepared: true, logFile };
+    fs.writeFileSync(marker, `${new Date().toISOString()} ${command}\n${standalone ? 'standalone\n' : ''}`);
+    return { ok: true, prepared: true, logFile, standalone };
   }
   return { ok: false, reason: `dependencies could not be resolved at base ${String(base).slice(0, 12)} with "${command}" (exit ${res.exit_code}${res.timed_out ? ', timed out' : ''}; log ${logFile})`, logFile };
 }
@@ -218,4 +241,4 @@ function runnerChoice({ mode, daemonError, env = process.env }) {
   return env.ARW_SANDBOX_FALLBACK === 'off' ? 'blocked' : 'host';
 }
 
-module.exports = { findJdks, pickJdk, hostPlan, prepareDependencies, hasBuildFile, scopeArgs, runnerChoice, defaultRoots, jdkAt, missingArtifacts, testRuntimeArtifacts, fetchArtifacts };
+module.exports = { findJdks, pickJdk, hostPlan, prepareDependencies, hasBuildFile, scopeArgs, notInReactor, runnerChoice, defaultRoots, jdkAt, missingArtifacts, testRuntimeArtifacts, fetchArtifacts };
