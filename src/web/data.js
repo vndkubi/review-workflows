@@ -116,12 +116,15 @@ function safeGate(dir, gate) {
   }
 }
 
-// The intent a ticketless PR review derived from the PR (pr-intent.js):
-// which ticket, where it stands, its gate and spec numbers, or why it failed.
+// The spec a PR review is graded by: its ticket's, or the intent derived from
+// the PR when it has no ticket (pr-intent.js). Which ticket, where it stands,
+// its gate and spec numbers, or why deriving it failed.
 function prIntent(identity) {
-  const key = identity.ticket_source === 'pr' ? identity.ticket : identity.intent_ticket;
+  const named = identity.ticket && identity.ticket_source !== 'pr' && fs.existsSync(path.join(ticketDir(identity.ticket), 'run.json')) ? identity.ticket : null;
+  const key = identity.ticket_source === 'pr' ? identity.ticket : named || identity.intent_ticket || identity.ticket;
   if (!key && !identity.intent_error) return null;
-  const out = { key: key || null, state: null, gate: null, stats: null, questions: 0, error: identity.intent_error || null };
+  const source = identity.ticket_source === 'pr' || (!named && key && key === identity.intent_ticket) ? 'pr' : 'ticket';
+  const out = { key: key || null, source, state: null, gate: null, stats: null, questions: 0, error: identity.intent_error || null };
   const dir = key ? ticketDir(key) : null;
   const run = dir ? readJsonIfExists(path.join(dir, 'run.json')) : null;
   if (!run) return out;
@@ -236,6 +239,32 @@ function impactView(impact, cells, packets) {
   return { ...base, checked: Array.isArray(cells), tally, declarations: declarations.map((d) => ({ ...d, test: TEST.test(d.path), callers: d.callers.map((e) => ({ ...e, asked: isAsked(e) })) })), deeper: edges.filter((e) => e.level > 1) };
 }
 
+// While a review runs: the findings of packets already accepted for the
+// current context. Each passed the packet validator; none is clustered,
+// red-teamed or reproduced yet, so they are shown apart from the verdict.
+const SEV_RANK = { P1: 1, P2: 2, P3: 3, P4: 4 };
+function preliminaryFindings(dir) {
+  const pointer = readJsonIfExists(path.join(dir, 'review', 'context.json'));
+  if (!pointer) return null;
+  const root = path.join(revisionDir(dir, pointer.context_id), 'packets');
+  if (!fs.existsSync(root)) return null;
+  const findings = [];
+  let packets = 0;
+  for (const role of fs.readdirSync(root)) {
+    const rdir = path.join(root, role);
+    if (!fs.statSync(rdir).isDirectory()) continue;
+    for (const file of fs.readdirSync(rdir).filter((f) => f.endsWith('.json'))) {
+      const packet = readJsonIfExists(path.join(rdir, file));
+      if (!packet || !Array.isArray(packet.findings)) continue;
+      packets += 1;
+      const unit = file.replace(/\.json$/, '');
+      for (const f of packet.findings) findings.push({ id: f.id, severity: f.severity, title: f.title, unit_id: unit, role, state: 'preliminary', votes: 1, label: 'CANDIDATE', evidence_level: '', canonical: true, detail: f });
+    }
+  }
+  findings.sort((a, b) => (SEV_RANK[a.severity] || 9) - (SEV_RANK[b.severity] || 9) || a.id.localeCompare(b.id));
+  return { packets, findings };
+}
+
 function prDetail(id) {
   const { dir } = prDirFromId(id);
   const run = readJsonIfExists(path.join(dir, 'run.json'));
@@ -257,7 +286,11 @@ function prDetail(id) {
   };
   // The impact index exists from planning on; caller verdicts join it once validated.
   out.impact = impactView(out.static && out.static.impact, null, []);
-  if (!validation) return out;
+  out.preliminary = null;
+  if (!validation) {
+    out.preliminary = preliminaryFindings(dir);
+    return out;
+  }
   const rdir = revisionDir(dir, validation.context_id);
   const full = new Map();
   const packets = [];

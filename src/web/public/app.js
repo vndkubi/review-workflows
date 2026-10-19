@@ -281,10 +281,11 @@ async function renderPr(id) {
   const v = d.validation;
   const idn = d.identity;
   const job = activeJobFor('pr', id);
-  // No ticket: the intent derived from the PR, shown and confirmed here.
+  // The spec the review is graded by: its ticket's, or the intent derived
+  // from the PR. The Spec tab is always there, and says when there is none.
   const intent = d.intent && d.intent.key ? d.intent : null;
   const awaiting = d.phases.ticket && d.phases.ticket.status === 'AWAITING_INTENT';
-  const tabs = [...(intent ? ['Spec'] : []), 'Findings', 'Items', 'Viewpoints', 'Impact', 'Progress', 'Calls', 'Timeline', 'Overview', 'Plan', 'Cost', 'Logs'];
+  const tabs = ['Spec', 'Findings', 'Items', 'Viewpoints', 'Impact', 'Progress', 'Calls', 'Timeline', 'Overview', 'Plan', 'Cost', 'Logs'];
   // A tab picked on this run wins; a run waiting for its intent opens on Spec.
   const picked = sessionStorage.getItem(`pr-tab:${id}`);
   const saved = sessionStorage.getItem('pr-tab');
@@ -305,7 +306,9 @@ async function renderPr(id) {
       ? h('div', { class: 'notice' }, 'This PR has no ticket. Its intent (business or technical) was derived from what the author wrote, and the review waits until you confirm it: read the Spec tab below, answer its open questions by approving or rejecting with a note, then review the PR with the confirmed spec.')
       : null,
     !job && !awaiting && d.phases.ticket && d.phases.ticket.intent === 'unconfirmed'
-      ? h('div', { class: 'notice' }, 'This PR has no ticket. It was reviewed against the intent derived from what its author wrote, which nobody has confirmed yet: check the Spec tab, approve it (or reject it with a note), then re-run to grade against the confirmed intent.')
+      ? h('div', { class: 'notice' }, intent && intent.source === 'ticket'
+        ? `This PR was reviewed against the spec of ${intent.key}, which nobody has approved yet: check the Spec tab, approve it (or reject it with a note), then re-run to grade against the approved spec.`
+        : 'This PR has no ticket. It was reviewed against the intent derived from what its author wrote, which nobody has confirmed yet: check the Spec tab, approve it (or reject it with a note), then re-run to grade against the confirmed intent.')
       : null,
     d.intent && d.intent.error ? h('div', { class: 'notice' }, `No intent: ${d.intent.error}. The review graded the code without requirement items.`) : null,
     v && awaiting ? h('div', { class: 'notice' }, 'The results below are from an earlier review that did not use a confirmed intent. They are replaced when you review again after confirming it.') : null,
@@ -314,7 +317,7 @@ async function renderPr(id) {
     tabBar,
     body,
   );
-  if (current === 'Spec') return add(body, await prSpecView(intent));
+  if (current === 'Spec') return add(body, await prSpecView(intent, d));
   if (current === 'Logs') return add(body, await prLogsView(id));
   // Progress, calls and timeline are useful while a run is still going.
   if (current === 'Progress') return add(body, await prProgressView(id));
@@ -323,6 +326,8 @@ async function renderPr(id) {
   if (current === 'Plan') return add(body, h('pre', { class: 'code' }, d.plan || 'No plan yet.'));
   // The impact index exists from planning on, before any verdict.
   if (current === 'Impact') return add(body, impactView(d));
+  // Findings of accepted packets show while the run goes on.
+  if (!v && current === 'Findings') return add(body, preliminaryView(d, id, Boolean(job)));
   if (!v) return add(body, h('p', { class: 'muted' }, 'Results appear here once the run is validated.'));
   if (current === 'Findings') add(body, findingsView(d));
   else if (current === 'Overview') add(body, overviewView(d));
@@ -331,17 +336,24 @@ async function renderPr(id) {
   else add(body, costView(d), unitsView(d));
 }
 
-// The spec derived from a ticketless PR, with its gate: the same tables and
-// decision as the ticket page, so the intent is confirmed where it is reviewed.
-async function prSpecView(intent) {
+// The spec the review is graded by, with its gate: the same tables and
+// decision as the ticket page, so the spec is confirmed where it is reviewed.
+async function prSpecView(intent, d) {
+  if (!intent) {
+    const why = d.intent && d.intent.error ? ` Deriving it from the PR failed: ${d.intent.error}.` : '';
+    return h('div', { class: 'notice' }, `No spec: this review has no ticket and no intent derived from the PR.${why} Name a ticket (arw review --ticket KEY, or its key in the PR title) and review again: a ticket whose spec is not built yet gets it built during the review.`);
+  }
+  const whose = intent.source === 'ticket' ? `Spec of ticket ${intent.key}` : `Intent derived from the PR (${intent.key})`;
+  const notBuilt = (state) => h('p', { class: 'muted' }, `${whose}: not built yet${state ? ` (${state})` : ''}. Review the PR again: the review builds it (requirements, spec tables) and stops at the SPEC gate.`);
   let t;
   try {
     t = await api('GET', `/api/tickets/${encodeURIComponent(intent.key)}`);
   } catch {
-    return h('p', { class: 'muted' }, 'The spec is not built yet.');
+    return notBuilt(null);
   }
-  if (!t.spec) return h('p', { class: 'muted' }, `The spec is not built yet (${t.state}).`);
+  if (!t.spec) return notBuilt(t.state);
   return h('div', {},
+    h('h3', {}, whose),
     h('div', { class: 'row my10' }, statusBadge(t.state), h('span', { class: `badge ${t.spec.clean ? 'ok' : 'warn'}` }, t.spec.clean ? 'spec clean' : 'spec needs a decision'),
       h('a', { class: 'small', href: `#/ticket/${intent.key}` }, `${intent.key}: evidence, requirement items, model calls`)),
     specGate(intent.key, t),
@@ -455,6 +467,40 @@ function prActions(d) {
   );
 }
 
+// While the run goes on: the findings of packets already accepted. Checked
+// as packets only; not de-duplicated, red-teamed or reproduced yet.
+function preliminaryView(d, id, live) {
+  const box = h('div', {});
+  const draw = (pre) => {
+    if (!pre || !pre.findings.length) {
+      const accepted = pre ? ` (${pre.packets} packet(s) accepted)` : '';
+      return put(box, h('p', { class: 'muted' }, live ? `No findings yet${accepted}. They appear here as each reviewer's packet is accepted.` : 'Results appear here once the run is validated.'));
+    }
+    return put(box,
+      h('div', { class: 'notice' }, `Preliminary: ${pre.findings.length} finding(s) from ${pre.packets} accepted packet(s). Each passed the packet validator; none is de-duplicated, red-teamed or reproduced yet, so severities may change and some may be withdrawn.`),
+      pre.findings.map((x) => findingCard(d, x, [])));
+  };
+  draw(d.preliminary);
+  if (live) {
+    let seen = d.preliminary ? d.preliminary.findings.length : 0;
+    state.timers.push(setInterval(async () => {
+      try {
+        const next = await api('GET', `/api/prs/${encodeURIComponent(id)}`);
+        if (next.validation) return render();
+        const n = next.preliminary ? next.preliminary.findings.length : 0;
+        if (n !== seen) {
+          seen = n;
+          draw(next.preliminary);
+        }
+      } catch {
+        /* the run is between phases */
+      }
+      return null;
+    }, 5000));
+  }
+  return box;
+}
+
 function findingsView(d) {
   const f = state.filters;
   const filterBar = h('div', { class: 'filters' },
@@ -471,7 +517,7 @@ function findingsView(d) {
   return [filterBar, list.length ? list.map((x) => findingCard(d, x, dupesOf(x.id))) : h('p', { class: 'muted' }, 'No findings match the filters.')];
 }
 
-const STATE_TEXT = { stands: 'defense failed — stands', withdrawn: 'withdrawn by red-team', unresolved: 'red-team undecided', unverified: 'no valid rebuttal', not_challenged: 'not challenged (P3/P4)' };
+const STATE_TEXT = { preliminary: 'preliminary — not validated yet', stands: 'defense failed — stands', withdrawn: 'withdrawn by red-team', unresolved: 'red-team undecided', unverified: 'no valid rebuttal', not_challenged: 'not challenged (P3/P4)' };
 
 function findingCard(d, meta, dupes) {
   const f = meta.detail;
@@ -505,7 +551,7 @@ function findingCard(d, meta, dupes) {
     h('div', { class: 'label' }, 'Evidence'),
     h('ul', {}, f.evidence.map((ev) => evidenceItem(d, ev))),
     dupes.length ? h('p', { class: 'small muted' }, `Same defect also reported by: ${dupes.map((x) => x.id).join(', ')}`) : null,
-    rejectPanel(d, meta),
+    meta.state === 'preliminary' ? null : rejectPanel(d, meta),
   );
   add(card, body);
   return card;
