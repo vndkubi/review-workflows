@@ -301,12 +301,45 @@ function quoteFound(quote, blocks) {
   return q.length > 0 && blocks.some((b) => collapse(b.text).includes(q));
 }
 
+// Rule ids are unique across features, but models often number each feature
+// from R1. Nothing in the model refers to a rule id, so a rule whose id an
+// earlier feature already used gets the next free one. A repeat inside one
+// feature is left for the validator. Returns the list of changes made.
+function renumberRules(model) {
+  const changes = [];
+  if (!model || !Array.isArray(model.features)) return changes;
+  const all = new Set(model.features.flatMap((f) => (Array.isArray(f && f.rules) ? f.rules.map((r) => r && r.id) : [])));
+  let next = 1;
+  const free = () => {
+    while (all.has(`R${next}`)) next += 1;
+    all.add(`R${next}`);
+    return `R${next}`;
+  };
+  const earlier = new Set();
+  for (const f of model.features) {
+    if (!f || !Array.isArray(f.rules)) continue;
+    const own = new Set();
+    for (const r of f.rules) {
+      if (!r || typeof r.id !== 'string') continue;
+      if (earlier.has(r.id) && !own.has(r.id)) {
+        const id = free();
+        changes.push(`${f.id} rule ${r.id} renumbered to ${id} (rule ids are unique across features)`);
+        r.id = id;
+      }
+      own.add(r.id);
+    }
+    for (const id of own) earlier.add(id);
+  }
+  return changes;
+}
+
 // Returns { errors } (model must repair) or { spec } (derived tables).
 function buildSpec({ model, requirements, ticket, blocks }) {
+  const renumbered = renumberRules(model);
   const errors = checkModel(model, requirements, ticket);
   if (errors.length) return { errors };
   const m = JSON.parse(JSON.stringify(model));
-  const warnings = [];
+  const warnings = [...renumbered];
   let downgraded = 0;
   for (const f of m.features) {
     for (const r of f.rules) {

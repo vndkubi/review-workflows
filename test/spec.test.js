@@ -103,6 +103,28 @@ test('spec: modelling mistakes go back to the model as precise errors', () => {
   assert.ok(e4.some((e) => /AC1 is not modelled/.test(e)));
 });
 
+// Incident (v4 ticket specs): models numbered rules per feature (R1, R2 in
+// F1 and again R1 in F2), the validator said "duplicate rule id R1" and a
+// repair call was spent on renumbering. The runtime renumbers repeats to the
+// next free id itself and records it; nothing refers to rule ids inside the
+// model, so no meaning changes.
+test('spec: rule ids repeated across features are renumbered by the runtime, recorded', () => {
+  const m = discountModel();
+  const f2 = JSON.parse(JSON.stringify(m.features[0]));
+  f2.id = 'F2';
+  f2.name = 'Member discount again';
+  m.features.push(f2);
+  const out = buildSpec({ model: m, requirements, ticket: 'ACME-7', blocks });
+  assert.equal(out.errors, undefined, (out.errors || []).join('\n'));
+  assert.deepEqual(out.spec.model.features.map((f) => f.rules.map((r) => r.id)), [['R1', 'R2', 'R3'], ['R4', 'R5', 'R6']]);
+  assert.ok(out.spec.warnings.includes('F2 rule R1 renumbered to R4 (rule ids are unique across features)'), out.spec.warnings.join('\n'));
+  assert.ok(out.spec.review_items.some((i) => i.rule === 'R4'));
+  // Within one feature a repeat is still the model's mistake to fix.
+  const same = discountModel();
+  same.features[0].rules[1].id = 'R1';
+  assert.ok(buildSpec({ model: same, requirements, ticket: 'ACME-7', blocks }).errors.some((e) => /duplicate rule id R1/.test(e)));
+});
+
 // Incident: Date.parse rolls 2026-02-30 over to 2026-03-02, so an impossible
 // day silently moved a class boundary instead of going back to the model.
 test('spec: impossible calendar dates are unparsable, not rolled over', () => {
