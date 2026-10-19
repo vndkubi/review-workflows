@@ -182,9 +182,27 @@ test('dependencies: scoped to the test module, with a configurable budget', asyn
   // A module the base does not have yet (the PR adds it): the whole build.
   await hostEnv.prepareDependencies({ checkout: p.dir, base, toolchain: 'maven', plan, runner, cacheDir: tmpDir('arw-host-cache-'), logDir: cache, module: 'brand-new', env: {} });
   assert.doesNotMatch(calls[2].command, / -pl /);
-  // Gradle runs the module's own task.
+  // Gradle runs the module's own test task (see the jacoco incident below).
   await hostEnv.prepareDependencies({ checkout: p.dir, base, toolchain: 'gradle', plan: { ...plan, tool: 'gradle' }, runner, cacheDir: tmpDir('arw-host-cache-'), logDir: cache, module: 'core', env: {} });
-  assert.equal(calls[3].command, 'gradle :core:testClasses');
+  assert.match(calls[3].command, /^gradle :core:test --tests ArwNoSuchTest /);
+});
+
+// Incident (v4: Fineract #6661, #6659, spring-security #19925): Gradle prep
+// ran only testClasses, so org.jacoco.agent, which only the test task
+// resolves (configuration jacocoAgent), was never cached and every offline
+// head run failed. Prep runs the module's test task with a filter that
+// matches no test, and an init script that lets "no test matched" pass.
+test('dependencies: Gradle prep runs the test task, so test-only artifacts are cached', async () => {
+  const p = mavenProject(11);
+  const calls = [];
+  const runner = async (o) => { calls.push(o); return { exit_code: 0, elapsed_ms: 1 }; };
+  const cache = tmpDir('arw-host-cache-');
+  const res = await hostEnv.prepareDependencies({ checkout: p.dir, base: p.base, toolchain: 'gradle', plan: { ok: true, env: {}, java: 11, tool: 'gradle' }, runner, cacheDir: cache, logDir: cache, env: {} });
+  assert.equal(res.ok, true);
+  const m = /^gradle test --tests ArwNoSuchTest --init-script "([^"]+)"$/.exec(calls[0].command);
+  assert.ok(m, calls[0].command);
+  assert.doesNotMatch(calls[0].command, /testClasses|--offline/);
+  assert.match(fs.readFileSync(m[1], 'utf8'), /failOnNoMatchingTests\s*=\s*false/);
 });
 
 test('head runs are scoped to the test module too', () => {

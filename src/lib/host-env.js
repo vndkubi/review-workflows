@@ -104,6 +104,11 @@ function hostPlan({ wt, toolchain, jdks = findJdks(), which = whichOnPath }) {
   return { ok: true, java: jdk.version, env, tool };
 }
 
+// Gradle fails a test task whose --tests filter matches nothing; prep runs
+// one on purpose, so that what only the test task resolves (the jacoco
+// agent, test runtimes) is cached before the offline head run.
+const NO_TEST_INIT = 'gradle.allprojects { p -> p.tasks.withType(Test).configureEach { t -> t.filter.failOnNoMatchingTests = false } }\n';
+
 // Resolves the project's dependencies once per repository and base, online,
 // by building the trusted base (no tests run) in its own worktree.
 // module: the test's module directory (relative, "/"-separated) or null for
@@ -120,12 +125,19 @@ async function prepareDependencies({ checkout, base, toolchain, plan, runner, ca
     execFileSync('git', ['-C', checkout, 'worktree', 'add', '--detach', '--force', wt, base], { stdio: 'ignore' });
   }
   if (module && (!/^[\w.-]+(?:\/[\w.-]+)*$/.test(module) || !fs.existsSync(path.join(wt, module)))) module = null;
-  const key = module ? `${repoKey}-${sha256(module).slice(0, 8)}` : repoKey;
+  // Gradle markers from the testClasses-only prep (-t) do not count.
+  const key = `${module ? `${repoKey}-${sha256(module).slice(0, 8)}` : repoKey}${toolchain === 'gradle' ? '-t' : ''}`;
   const marker = path.join(cacheDir, `${key}.ok`);
   if (fs.existsSync(marker)) return { ok: true, prepared: false };
   const tool = plan.tool || (toolchain === 'maven' ? 'mvn' : 'gradle');
   const scope = module ? (toolchain === 'maven' ? ` -pl ${module} -am` : `:${module.split('/').join(':')}:`) : '';
-  const command = toolchain === 'maven' ? `${tool} -B -q${scope} test -Dtest=ArwNoSuchTest -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false` : `${tool} ${scope}testClasses`;
+  let command;
+  if (toolchain === 'maven') command = `${tool} -B -q${scope} test -Dtest=ArwNoSuchTest -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false`;
+  else {
+    const init = path.join(cacheDir, 'arw-no-test.init.gradle');
+    fs.writeFileSync(init, NO_TEST_INIT);
+    command = `${tool} ${scope}test --tests ArwNoSuchTest --init-script "${init}"`;
+  }
   const logFile = path.join(ensureDir(logDir || cacheDir), `host-deps-${key}.log`);
   const res = await runner({ command, cwd: wt, logFile, timeoutMs, env: plan.env });
   if (res.exit_code === 0) {
