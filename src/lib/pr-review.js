@@ -28,7 +28,7 @@ const { makeSources } = require('./validate');
 const { writeReport } = require('./report');
 const { extractTicketKey } = require('./jira');
 const { approvedTicketInputs, advanceTicket } = require('./ticket-pipeline');
-const { prDir, worktreeDir } = require('./runs');
+const { prDir, worktreeDir, ticketDir } = require('./runs');
 const github = require('./github');
 const prompts = require('./prompts');
 
@@ -93,6 +93,30 @@ function ticketInputs(run, { ticket, info, repo = null, pr = null }) {
   }
   if (!key) return { key: null };
   return { key, note: `no ticket run for ${key}; run "arw ticket ${key}" first for requirement-grounded review` };
+}
+
+// A ticket whose spec is not built yet (the user added it but never took it
+// through requirements and spec): build it now, stopping at the SPEC gate,
+// so the review grades against its tables, labelled unconfirmed. Intake
+// comes from the ticket's run when it has one, else from Jira or MCP; when
+// that fails the review goes on as before.
+async function ensureTicketSpec({ run, tickets, named = false, checkout, executor, models = {}, log = () => {} }) {
+  if (!tickets.key || tickets.source === 'pr' || tickets.approved || !executor) return tickets;
+  // A key only guessed from the title is fetched only when the user added it.
+  if (!named && !fs.existsSync(path.join(ticketDir(tickets.key), 'run.json'))) return tickets;
+  if (fs.existsSync(path.join(ticketDir(tickets.key), 'spec.json'))) return tickets;
+  log(`the spec of ${tickets.key} is not built yet: building it now (requirements, spec tables; stops at the SPEC gate)`);
+  let res;
+  try {
+    res = await advanceTicket({ key: tickets.key, repoDir: checkout, executor, models, log, stopAtSpec: true });
+  } catch (err) {
+    res = { state: 'FAILED', message: err.message };
+  }
+  if (res.state === 'FAILED') {
+    log(`could not build the spec of ${tickets.key}: ${res.message}`);
+    return tickets;
+  }
+  return ticketInputs(run, { ticket: tickets.key, info: { title: '', headRefName: '', body: '' } });
 }
 
 // No ticket run for this PR: derive the intent from what its author wrote and
@@ -297,6 +321,10 @@ async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight
   const { runDir, run, info } = prepare({ repo, pr, prepared });
   log(`run dir ${runDir}; head ${run.identity.head_sha.slice(0, 12)} base ${run.identity.base_sha.slice(0, 12)}`);
   let tickets = ticketInputs(run, { ticket, info, repo: run.identity.local ? null : repo, pr: run.identity.local ? null : pr });
+  if (tickets.key && tickets.source !== 'pr' && !tickets.approved && executor) {
+    phase(run, runDir, 'ticket', 'RUNNING', { step: `building the spec of ${tickets.key}` });
+    tickets = await ensureTicketSpec({ run, tickets, named: Boolean(ticket), checkout: run.identity.checkout, executor, models, log });
+  }
   if (prIntent && !ticket && !run.identity.local) {
     phase(run, runDir, 'ticket', 'RUNNING', { step: 'deriving the intent from the PR' });
     tickets = await ensurePrIntent({ run, tickets, repo, pr, info, checkout: run.identity.checkout, base: run.identity.base_sha, head: run.identity.head_sha, executor, models, log });
@@ -310,9 +338,11 @@ async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight
   if (tickets.note && !tickets.items) log(tickets.note);
   const fromPr = tickets.source === 'pr';
   if (fromPr && !tickets.approved) log(`reviewing against the intent derived from the PR (${tickets.key}), NOT confirmed yet: check its spec, approve it, then re-run to grade against the confirmed intent`);
+  else if (tickets.items && !tickets.approved && tickets.specMarkdown) log(`reviewing against the spec of ${tickets.key}, NOT approved yet: check it at its SPEC gate, approve it, then re-run to grade against the approved spec`);
   else if (tickets.items && !tickets.approved) log(`the spec for ${tickets.key} is NOT approved; review items come from raw requirement items and are labelled unapproved`);
-  run.identity.intent = fromPr ? (tickets.approved ? 'confirmed' : 'unconfirmed') : null;
-  phase(run, runDir, 'ticket', tickets.key ? 'EXECUTED_PASS' : 'SKIPPED', { ticket: tickets.key, spec_approved: Boolean(tickets.approved), items: tickets.items ? tickets.items.length : 0, ...(fromPr ? { intent: run.identity.intent } : {}), ...(run.identity.intent_error ? { intent_error: run.identity.intent_error } : {}) });
+  // Graded by spec tables: confirmed once a person approved them.
+  run.identity.intent = fromPr || tickets.specMarkdown ? (tickets.approved ? 'confirmed' : 'unconfirmed') : null;
+  phase(run, runDir, 'ticket', tickets.key ? 'EXECUTED_PASS' : 'SKIPPED', { ticket: tickets.key, spec_approved: Boolean(tickets.approved), items: tickets.items ? tickets.items.length : 0, ...(run.identity.intent ? { intent: run.identity.intent } : {}), ...(run.identity.intent_error ? { intent_error: run.identity.intent_error } : {}) });
 
   // Reuse the frozen context when it still holds.
   let context = null;

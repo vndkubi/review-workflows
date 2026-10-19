@@ -353,3 +353,46 @@ test('the PR page data carries the derived intent: its state, gate and spec; a f
   assert.match(d.intent.error, /could not derive the intent|no requirement items/);
   assert.equal(d.phases.ticket.intent_error, d.intent.error);
 });
+
+// Incident (user report): a review run for a PR whose ticket was added but
+// never taken through requirements and spec reviewed without the spec, and
+// the PR page had no Spec tab for a ticket. The review now builds the spec
+// (stopping at the SPEC gate), grades against it unconfirmed, and the PR
+// page carries the ticket's spec like a derived one.
+test('a ticket whose spec is not built yet is built by the review, graded unconfirmed, and shown on the PR page', async () => {
+  const { makeRepo } = require('./helpers');
+  const { reviewPr } = require('../src/lib/pr-review');
+  const { prDir } = require('../src/lib/runs');
+  const data = require('../src/web/data');
+  const repo = makeRepo();
+  const file = path.join(tmpDir(), 'REF-9.md');
+  fs.writeFileSync(file, `# REF-9 Refund approvals\n\n${BODY}\n`);
+  // The user added the ticket, but its pipeline stopped before the spec.
+  const stop = scriptedExecutor(() => ({ error_class: 'auth', error_message: 'stopped' }));
+  await advanceTicket({ key: 'REF-9', fromFile: file, executor: stop }).catch(() => null);
+  assert.ok(fs.existsSync(path.join(ticketDir('REF-9'), 'run.json')));
+  assert.ok(!fs.existsSync(path.join(ticketDir('REF-9'), 'spec.json')));
+
+  const prompts = [];
+  const exec = scriptedExecutor((prompt) => {
+    prompts.push(prompt);
+    if (prompt.startsWith('You audit')) return '{"missing":[],"invalid":[]}';
+    if (prompt.startsWith('You model the')) return JSON.stringify(cleanModel('REF-9'));
+    return { error_class: 'auth', error_message: 'the review itself is not part of this test' };
+  });
+  const prepared = { info: { title: 'REF-9 refund approvals', body: '', headRefName: 'ref-9', baseRefName: 'main', url: null }, checkout: repo.dir, head: repo.head, base: repo.base };
+  await assert.rejects(reviewPr({ repo: 'acme/shop', pr: 31, ticket: 'REF-9', prepared, executor: exec, noRepro: true }), /planning failed/);
+
+  const specFile = path.join(ticketDir('REF-9'), 'spec.json');
+  assert.ok(fs.existsSync(specFile), 'the review built the spec');
+  const spec = JSON.parse(fs.readFileSync(specFile, 'utf8'));
+  const planner = prompts.find((p) => p.startsWith('You are a read-only planner'));
+  const boundary = spec.review_items.find((i) => i.kind === 'boundary');
+  assert.ok(planner && boundary && planner.includes(boundary.id), 'graded by the spec items, boundaries included');
+  const run = JSON.parse(fs.readFileSync(path.join(prDir('acme/shop', 31), 'run.json'), 'utf8'));
+  assert.deepEqual([run.phases.ticket.ticket, run.phases.ticket.spec_approved, run.phases.ticket.intent], ['REF-9', false, 'unconfirmed']);
+
+  const d = data.prDetail('acme__shop__31');
+  assert.deepEqual([d.intent.key, d.intent.source, d.intent.state], ['REF-9', 'ticket', 'AWAIT_GATE_SPEC']);
+  assert.equal(d.intent.stats.rules, 3);
+});
