@@ -6,7 +6,10 @@ const { execFileSync } = require('node:child_process');
 const { ROOT, loadEnv, parseArgs, log, envInt, readJsonIfExists } = require('../lib/util');
 
 loadEnv();
-const { runCodex, preflight, executorConfig, resolveCodex } = require('../lib/codex');
+const { resolveCodex } = require('../lib/codex');
+// ARW_EXECUTOR=copilot: GitHub Copilot CLI runs the jobs instead of codex.
+const backend = require('../lib/executor').backend();
+const { preflight, executorConfig } = backend;
 const { advanceTicket } = require('../lib/ticket-pipeline');
 const { reviewPr, revalidate } = require('../lib/pr-review');
 const { recordGate, gateState, ticketDir, prDir, RUNS, GATES } = require('../lib/runs');
@@ -93,7 +96,7 @@ function models() {
 // ARW_EXECUTOR_MODULE swaps codex for a module exporting the same executor
 // function (evals of the harness itself, tests). Preflight is skipped then.
 const customExecutor = process.env.ARW_EXECUTOR_MODULE ? require(path.resolve(process.env.ARW_EXECUTOR_MODULE)) : null;
-const executor = customExecutor || ((opts) => runCodex({ ...opts, effort: opts.effort || executorConfig().effort }));
+const executor = customExecutor || ((opts) => backend.run({ ...opts, effort: opts.effort || executorConfig().effort }));
 
 function runDirFrom(args) {
   if (args.ticket) return ticketDir(args.ticket);
@@ -525,10 +528,18 @@ async function cmdDoctor(argv) {
   });
   tryRun('git', () => execFileSync('git', ['--version'], { encoding: 'utf8' }).trim());
   tryRun('gh auth', () => `logged in as ${github.currentLogin()}`);
-  tryRun('codex', () => {
-    const { cmd, pre } = resolveCodex();
-    return execFileSync(cmd, [...pre, '--version'], { encoding: 'utf8' }).trim();
-  });
+  if (backend.name === 'copilot') {
+    tryRun('copilot', () => {
+      const v = require('../lib/copilot').copilotVersion();
+      if (v === 'unknown') throw new Error('copilot not found or not runnable (COPILOT_BIN)');
+      return `${v} (${process.env.COPILOT_SANDBOX === '1' ? 'OS sandbox' : 'read-command allowlist + checkout integrity check'})`;
+    });
+  } else {
+    tryRun('codex', () => {
+      const { cmd, pre } = resolveCodex();
+      return execFileSync(cmd, [...pre, '--version'], { encoding: 'utf8' }).trim();
+    });
+  }
   const repos = github.reposConfig().repos;
   // The JDK behind Java impact analysis: present, 11+, a real JDK, and at
   // least as new as the Java the configured repositories build with.
@@ -553,7 +564,7 @@ async function cmdDoctor(argv) {
     checks.push(['Jira (REST)', process.env.JIRA_URL ? 'ok' : 'WARN', process.env.JIRA_URL ? process.env.JIRA_URL : 'not configured; set up config/mcp.json or use arw ticket --from-file']);
   }
   const pf = await preflight({ cwd: ROOT, attemptDir: path.join(RUNS, '.preflight'), model: executorConfig().model });
-  checks.push([`codex preflight (model ${executorConfig().model || 'default'})`, pf.ok ? 'ok' : 'FAIL', pf.ok ? `${pf.elapsed_ms} ms, ${pf.usage.input_tokens} input tokens` : `${pf.error_class}: ${pf.error_message}`]);
+  checks.push([`${backend.name} preflight (model ${executorConfig().model || 'default'})`, pf.ok ? 'ok' : 'FAIL', pf.ok ? `${pf.elapsed_ms} ms, ${pf.usage.input_tokens} input tokens` : `${pf.error_class}: ${pf.error_message}`]);
   // --provider: what each configured model's provider supports (a few tiny
   // calls per model), for self-hosted models behind codex.
   let recommend = {};
@@ -561,7 +572,7 @@ async function cmdDoctor(argv) {
     const { probeProvider } = require('../lib/provider');
     const m = models();
     const all = [m.review, m.judge, m.hunt, ...String(process.env.ARW_HUNT_MODELS || '').split(',').map((s) => s.trim())];
-    const probe = await probeProvider({ run: (o) => runCodex(o), models: all, dir: path.join(RUNS, '.preflight', 'provider'), effort: process.env.CODEX_EFFORT || null });
+    const probe = await probeProvider({ run: (o) => backend.run(o), models: all, dir: path.join(RUNS, '.preflight', 'provider'), effort: process.env.CODEX_EFFORT || null });
     checks.push(...probe.checks);
     recommend = probe.recommend;
   }

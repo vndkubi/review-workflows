@@ -28,6 +28,8 @@ const HINTS = [
     linux: 'optional: install Docker Engine (https://docs.docker.com/engine/install/) and start it (PR code then runs in containers)',
   }],
   [/^config\/repos\.json$/, { local: true, all: 'add a repository: node src/cli/arw.js sandbox setup <folder> --register (or edit config/repos.json)' }],
+  [/^copilot$/, { local: true, all: 'npm i -g @github/copilot (or set COPILOT_BIN); or set ARW_EXECUTOR=codex' }],
+  [/^copilot preflight\b/, { local: true, all: "model names are the provider's own (CODEX_MODEL or COPILOT_MODEL); with GitHub sign-in set COPILOT_GITHUB_TOKEN, since workers use their own COPILOT_HOME; a sandbox error: unset COPILOT_SANDBOX" }],
   [/^codex preflight\b/, { local: true, all: 'codex login; if the model is not offered to your login, set CODEX_MODEL in .env to one that is' }],
   [/^Jira\b/, { local: true, all: 'optional: set JIRA_URL and a token in .env, configure config/mcp.json, or use arw ticket KEY --from-file' }],
 ];

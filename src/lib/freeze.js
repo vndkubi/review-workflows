@@ -57,9 +57,11 @@ function toolDigest() {
 // results from before and after would not be comparable, so it counts as
 // drift.
 function executionManifest() {
-  const { executorConfig } = require('./codex');
-  const cfg = executorConfig();
   const mod = process.env.ARW_EXECUTOR_MODULE;
+  // A module stands in for codex; ARW_EXECUTOR=copilot swaps the CLI itself.
+  const backend = mod ? null : require('./executor').backend();
+  const copilot = backend && backend.name === 'copilot';
+  const cfg = (backend || { executorConfig: require('./codex').executorConfig }).executorConfig();
   let modHash = 'unreadable';
   if (mod) {
     try {
@@ -70,12 +72,13 @@ function executionManifest() {
   }
   return {
     node: process.versions.node.split('.')[0],
-    executor: mod ? `module:${path.basename(mod)}@${modHash}` : 'codex',
+    executor: mod ? `module:${path.basename(mod)}@${modHash}` : backend.manifest().executor,
+    ...(copilot ? { executor_sandbox: backend.manifest().executor_sandbox } : {}),
     sandbox: require('./sandbox').manifest(),
     model: cfg.model,
     judge_model: cfg.judgeModel,
     effort: cfg.effort,
-    output_schema: process.env.CODEX_OUTPUT_SCHEMA !== '0',
+    output_schema: !copilot && process.env.CODEX_OUTPUT_SCHEMA !== '0',
     user_config: process.env.CODEX_USE_USER_CONFIG === '1' ? process.env.CODEX_PROFILE || 'default' : null,
   };
 }

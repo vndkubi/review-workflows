@@ -223,4 +223,4 @@ function executorConfig() {
   };
 }
 
-module.exports = { runCodex, preflight, summarizeEvents, classifyError, executorConfig, resolveCodex, codexArgs, DEFAULT_MODEL };
+module.exports = { runCodex, preflight, summarizeEvents, classifyError, executorConfig, resolveCodex, codexArgs, killTree, DEFAULT_MODEL };

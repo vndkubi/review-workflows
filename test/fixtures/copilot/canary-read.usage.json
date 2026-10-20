@@ -1,0 +1,54 @@
+{
+  "totalPremiumRequestCost": 0,
+  "totalUserRequests": 1,
+  "totalNanoAiu": 0,
+  "totalApiDurationMs": 2586,
+  "sessionStartTime": "2026-10-19T15:44:09.302Z",
+  "codeChanges": {
+    "linesAdded": 0,
+    "linesRemoved": 0,
+    "filesModifiedCount": 0,
+    "filesModified": []
+  },
+  "modelMetrics": {
+    "deepseek-flash": {
+      "requests": {
+        "count": 2,
+        "cost": 0
+      },
+      "usage": {
+        "inputTokens": 23171,
+        "outputTokens": 105,
+        "cacheReadTokens": 11392,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 21
+      },
+      "totalNanoAiu": 0
+    }
+  },
+  "agentMetrics": {
+    "main": {
+      "totalApiDurationMs": 2586,
+      "totalNanoAiu": 0,
+      "modelMetrics": {
+        "deepseek-flash": {
+          "requests": {
+            "count": 2,
+            "cost": 0
+          },
+          "usage": {
+            "inputTokens": 23171,
+            "outputTokens": 105,
+            "cacheReadTokens": 11392,
+            "cacheWriteTokens": 0,
+            "reasoningTokens": 21
+          },
+          "totalNanoAiu": 0
+        }
+      }
+    }
+  },
+  "currentModel": "deepseek-flash",
+  "lastCallInputTokens": 11650,
+  "lastCallOutputTokens": 10
+}

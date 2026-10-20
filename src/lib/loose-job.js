@@ -47,7 +47,9 @@ async function runLooseJob({ executor, label, workDir, cwd, model, effort, build
       receipt.errors = errs.slice(0, 5).map((e) => String(e).slice(0, 300));
       writeJsonAtomic(receiptsFile, receipts);
     };
-    if (['auth', 'billing', 'rate_limit', 'config'].includes(res.error_class)) {
+    // integrity: a worker wrote to the checkout or ran a write/exec flag; a
+    // retry would read what it left behind.
+    if (['auth', 'billing', 'rate_limit', 'config', 'integrity'].includes(res.error_class)) {
       return { ok: false, blocked: true, errors: [`${res.error_class}: ${res.error_message}`] };
     }
     if (!res.ok || res.output == null) {
