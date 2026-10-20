@@ -382,7 +382,10 @@ async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight
   }
 
   phase(run, runDir, 'batch', 'RUNNING');
-  let validation = await runBatch({ runDir, executor, workers, skipSeams, skipRebuttals, skipSynthesis, models });
+  // With a reproduction to come, the synthesis waits for it: a reproduction
+  // can overrule a withdrawal and so change the recommendation the synthesis
+  // copies (vnstock#1: it was written, invalidated and written again).
+  let validation = await runBatch({ runDir, executor, workers, skipSeams, skipRebuttals, skipSynthesis: skipSynthesis || !noRepro, models });
   const fresh = readJson(path.join(runDir, 'run.json'));
   fresh.phases.batch = { status: validation.status, at: nowIso() };
   writeJsonAtomic(path.join(runDir, 'run.json'), fresh);
@@ -405,13 +408,10 @@ async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight
       runModelJob,
       makeSources,
     });
-    validation = finish(runDir, { skipSeams, skipRebuttals, skipSynthesis });
-    // A reproduction that overruled a withdrawal changes the recommendation;
-    // the synthesis written before it is redone (everything else is reused).
-    if (!skipSynthesis && validation.synthesis && validation.synthesis.present && !validation.synthesis.valid && validation.findings.some((f) => f.withdrawal_overruled)) {
-      log('repro overruled a withdrawal: redoing the synthesis');
-      validation = await runBatch({ runDir, executor, workers, skipSeams, skipRebuttals, skipSynthesis, models });
-    }
+    // The synthesis, once, over the packets and the reproduction records
+    // (every other job is reused).
+    validation = skipSynthesis ? finish(runDir, { skipSeams, skipRebuttals, skipSynthesis }) : await runBatch({ runDir, executor, workers, skipSeams, skipRebuttals, skipSynthesis, models });
+    fresh.phases.batch = { status: validation.status, at: nowIso() };
     fresh.phases.repro = { status: 'EXECUTED_PASS', at: nowIso(), results: results.map((r) => ({ finding: r.finding_id, status: r.status, fix_verified: r.fix ? r.fix.verified : null })) };
   } else {
     fresh.phases.repro = { status: 'SKIPPED', at: nowIso(), reason: noRepro ? 'disabled (--no-repro)' : 'context invalidated' };

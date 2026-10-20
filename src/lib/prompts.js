@@ -19,6 +19,44 @@ const { hunkAnchors, renderAnchors } = require('./anchors');
 const { coverageIds } = require('./validate');
 const { LENSES } = require('./plan');
 const { impactLine } = require('./impact-checks');
+const git = require('./git');
+
+// Head lines around every path:line a text cites, numbered with their real
+// line numbers, so a job can quote them without a shell. Paths that do not
+// exist at head are skipped.
+function codeAtHead(context, text, { window = 20, limit = 60000 } = {}) {
+  const ranges = new Map();
+  for (const m of String(text).matchAll(/([A-Za-z0-9_.\\/-]+\.[A-Za-z0-9]+):(\d+)(?:\s*[-–]\s*(\d+))?/g)) {
+    const file = m[1].replace(/\\/g, '/').replace(/^\.\//, '');
+    const start = Number(m[2]);
+    const end = Math.max(start, Number(m[3] || m[2]));
+    if (!ranges.has(file)) ranges.set(file, []);
+    ranges.get(file).push([start, end]);
+  }
+  const blocks = [];
+  let size = 0;
+  for (const [file, list] of ranges) {
+    const content = git.showFile(context.source.checkout, context.source.head_sha, file);
+    if (content == null) continue;
+    const lines = content.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n');
+    const merged = [];
+    for (const [s, e] of list.map(([s, e]) => [Math.max(1, s - window), Math.min(lines.length, e + window)]).sort((a, b) => a[0] - b[0])) {
+      if (s > lines.length) continue;
+      const last = merged[merged.length - 1];
+      if (last && s <= last[1] + 1) last[1] = Math.max(last[1], e);
+      else merged.push([s, e]);
+    }
+    for (const [s, e] of merged) {
+      const width = String(e).length;
+      const body = lines.slice(s - 1, e).map((l, i) => `${String(s + i).padStart(width)}| ${l}`).join('\n');
+      const block = `CODE AT HEAD — ${file} lines ${s}-${e}\n${body}`;
+      if (size + block.length > limit) return blocks;
+      blocks.push(block);
+      size += block.length;
+    }
+  }
+  return blocks;
+}
 
 const GLOBAL_RULES_BASE = `You are a read-only worker inside a trusted review harness. The harness, not you, decides what is valid; your answer is a candidate that will be machine-checked.
 
@@ -132,6 +170,9 @@ ${String(repair.previous).slice(0, 60000)}`;
 // The plain review: the prompt a reviewer would get without the harness (PR
 // title and description, the diff, read what you need), answered in prose.
 // Measured on 17 PRs, this reading found defects the unit packets missed.
+// The diff stays out of the prompt on purpose: inlined (A/B, 20 Oct 2026) it
+// made runs faster but the reviewer stopped finding what it found by
+// discovering the change itself (vnstock#1 P2 2/2 -> 0/2, trading#1 a P1).
 function plainPrompt(runDir, context, unit, repair) {
   let title = '';
   try {
@@ -196,6 +237,13 @@ function packetPrompt(runDir, context, job) {
 - add nothing the review does not say.
 - One coverage row only (${unit.id}): "reviewed" with code evidence of what you checked.
 ${wrapUntrusted(`plain review ${unit.id}`, plainText(runDir, context, unit))}`);
+    // The cited lines are given, so quoting needs no shell (vnstock#1: the
+    // conversion spent 6-17 commands re-opening them).
+    const code = codeAtHead(context, plainText(runDir, context, unit));
+    if (code.length) {
+      lines.push(`${wrapUntrusted('code at head', code.join('\n\n'))}
+The lines above are the reviewed head, numbered with their real line numbers (never copy the "N| " prefix into a quote): quote from the code above; run a command only for a line it does not show.`);
+    }
   } else if (unit.hunt) {
     const lens = LENSES.find((l) => l.name === unit.lens) || LENSES[0];
     lines.push(`FREE REVIEW ${unit.id}${unit.lens && unit.lens !== 'general' ? ` (lens: ${unit.lens})` : ''}: review this pull request. ${lens.brief} Read the diff of the files below and whatever surrounding code you need (callers, persistence, configuration, tests). Hunt for real defects: wrong business behaviour, data loss or inconsistent state, security, concurrency and transactions, error handling, money and rounding, compatibility for callers. Think through concrete inputs and sequences; go deep on the riskiest change rather than wide on everything. Ignore style. Planned units review these files too; your job is what a unit-by-unit reading misses: behaviour across files and the paths a whole-PR reading reveals.
@@ -277,10 +325,45 @@ function rebuttalPrompt(runDir, context, job) {
     .join('\n\n');
 }
 
+// What the synthesis needs from a packet: findings with their quotes, what
+// was covered and what was not settled. Quotes stay verbatim, so the
+// overview can cite them without opening files.
+function packetDigest(packet) {
+  const code = (list, n) => (list || []).filter((e) => e && e.kind === 'code').slice(0, n).map(({ kind, path: p, start_line, end_line, quote, revision }) => ({ kind, path: p, start_line, end_line, quote, ...(revision ? { revision } : {}) }));
+  return {
+    summary: packet.summary,
+    findings: (packet.findings || []).map((f) => ({ id: f.id, severity: f.severity, category: f.category, title: f.title, asis: f.asis, evidence: code(f.evidence, 3) })),
+    coverage: (packet.coverage || []).map((c) => ({ id: c.id, disposition: c.disposition, note: c.note, evidence: code(c.evidence, 1) })),
+    open_items: (packet.item_verdicts || []).filter((v) => v.verdict !== 'pass').map((v) => ({ item: v.item, verdict: v.verdict, note: v.note })),
+    open_viewpoints: (packet.viewpoint_verdicts || []).filter((v) => v.verdict !== 'pass').map((v) => ({ viewpoint: v.viewpoint, verdict: v.verdict, note: v.note })),
+    open_callers: (packet.impact_verdicts || []).filter((v) => !['compatible', 'not_affected'].includes(v.verdict)).map((v) => ({ caller: v.caller, verdict: v.verdict, note: v.note })),
+  };
+}
+
 function synthesisPrompt(runDir, context, job) {
+  // The packets are inline (vnstock#1: the synthesis read them back with 15
+  // shell commands); past the limit the rest is named by path.
+  const dir = revisionDir(runDir, context.context_id);
+  const limit = Number(process.env.ARW_SYNTHESIS_PACKET_CHARS) || 150000;
+  let size = 0;
+  const packetLines = job.packetRefs.map((r) => {
+    const file = path.join(dir, r.path);
+    let digest = null;
+    try {
+      digest = JSON.stringify(packetDigest(JSON.parse(fs.readFileSync(file, 'utf8'))));
+    } catch {
+      digest = null;
+    }
+    if (digest && size + digest.length <= limit) {
+      size += digest.length;
+      return `PACKET ${r.unit_id}/${r.role} (${file}):\n${digest}`;
+    }
+    return `- packet ${r.unit_id}/${r.role}: ${file} (not inline: read it)`;
+  });
   const lines = [
     'JOB: coordinator synthesis.',
-    ...job.packetRefs.map((r) => `- packet ${r.unit_id}/${r.role}: ${path.join(revisionDir(runDir, context.context_id), r.path)}`),
+    'The packets are below (code quotes in them are already verified against the head): cite those quotes; open a file only for a quote you need that is not there.',
+    ...packetLines,
     `duplicate_clusters (votes = independent packets reporting it): ${JSON.stringify(job.clusters)}`,
     `rebuttal outcomes: ${JSON.stringify(job.rebuttalOutcomes)}`,
     `unverified items found by the runtime: ${JSON.stringify(job.gaps)}`,
@@ -414,4 +497,4 @@ function specPrompt({ ticket, requirements, evidenceBlocks, feedback, repair }) 
     .join('\n\n');
 }
 
-module.exports = { packetPrompt, plainPrompt, rebuttalPrompt, synthesisPrompt, reproPrompt, planPrompt, requirementsPrompt, auditPrompt, analysisPrompt, specPrompt, wrapUntrusted, globalRules, numbered };
+module.exports = { packetPrompt, plainPrompt, rebuttalPrompt, synthesisPrompt, reproPrompt, planPrompt, requirementsPrompt, auditPrompt, analysisPrompt, specPrompt, wrapUntrusted, globalRules, numbered, codeAtHead };

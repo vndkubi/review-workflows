@@ -87,11 +87,16 @@ function runner(calls, { baseFails = false, linkTo = null, plantGit = null } = {
   };
 }
 
-async function review(fixTobe, pr, runnerOpts, { verdict, synthesis = false } = {}) {
+async function review(fixTobe, pr, runnerOpts, { verdict, synthesis = false, prompts = [] } = {}) {
   const r = repo();
   const calls = [];
   const prepared = { info: { title: 'grace period', body: '', headRefName: 'g', baseRefName: 'main', url: null }, checkout: r.dir, head: r.head, base: r.base };
-  const { validation, runDir } = await reviewPr({ repo: 'acme/fees', pr, executor: executor(fixTobe, { verdict }), prepared, workers: 1, skipSynthesis: !synthesis, reproRunner: runner(calls, runnerOpts), testCommand: null });
+  const inner = executor(fixTobe, { verdict });
+  const seen = (opts) => {
+    prompts.push(opts.prompt);
+    return inner(opts);
+  };
+  const { validation, runDir } = await reviewPr({ repo: 'acme/fees', pr, executor: seen, prepared, workers: 1, skipSynthesis: !synthesis, reproRunner: runner(calls, runnerOpts), testCommand: null });
   return { validation, calls, runDir };
 }
 
@@ -118,6 +123,23 @@ test('a withdrawal does not stop reproduction; a confirmed failure overrules it 
   assert.deepEqual([f.state, f.withdrawal_overruled, f.label], ['stands', true, 'CONFIRMED']);
   assert.equal(validation.recommendation, 'changes_requested');
   assert.deepEqual([validation.synthesis.valid, validation.status], [true, 'EXECUTED_PASS'], 'the synthesis is redone with the new recommendation');
+});
+
+// Speed (vnstock#1): the synthesis ran before the reproduction and again
+// after it overruled a withdrawal (41 s), and read the packets with 15 shell
+// commands. Reproduce first, synthesize once, with the packets in the prompt.
+test('the synthesis runs once, after the reproduction, with the packets inline', async () => {
+  const prompts = [];
+  const { validation } = await review('if days < 31:', 7, {}, { verdict: 'FINDING_WITHDRAWN', synthesis: true, prompts });
+  const kind = (p) => (p.includes('JOB: coordinator synthesis') ? 'synthesis' : p.includes('JOB: write ONE reproduction test') ? 'repro' : 'other');
+  const order = prompts.map(kind).filter((k) => k !== 'other');
+  assert.deepEqual(order, ['repro', 'synthesis'], 'one synthesis, after the reproduction');
+  const synth = prompts.find((p) => kind(p) === 'synthesis');
+  assert.match(synth, /recommendation computed by the runtime \(copy it\): "changes_requested"/, 'it already sees the overruled withdrawal');
+  assert.match(synth, /^PACKET T1\/technical \(/m);
+  assert.ok(synth.includes('"id":"T1-technical-F1"') && synth.includes('Day 30 is charged a late fee'), 'the findings are inline');
+  assert.ok(synth.includes('"quote":"if days < 30:"'), 'with their code quotes, so the overview needs no shell');
+  assert.deepEqual([validation.synthesis.valid, validation.recommendation], [true, 'changes_requested']);
 });
 
 test('no control: the fix does not help and the base fails too, so the failure is only REPRODUCED', async () => {

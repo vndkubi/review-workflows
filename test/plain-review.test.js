@@ -90,6 +90,11 @@ test('a review runs the plain review first, keeps its prose and turns it into ch
   assert.match(first, new RegExp(`git diff ${repo.base} ${repo.head}`));
   assert.match(first, /Do not modify any file\./);
   assert.doesNotMatch(first, /JSON SCHEMA|VIEWPOINT CHECKS|COVERAGE IDS/);
+  // Incident (A/B, 20 Oct 2026): with the diff inlined the plain review ran
+  // faster but stopped finding what it found by reading the change itself
+  // (vnstock#1 P2 2/2 -> 0/2). It discovers the change; the diff stays out.
+  assert.ok(!first.includes(`diff --git a/${ORDER}`), 'no inline diff');
+  assert.ok(!first.includes(IF_LINE), 'no changed code in the plain prompt');
   assert.equal(plainCalls[0].effort, 'max');
   assert.equal(plainCalls[0].sandbox, 'read-only');
   assert.match(plainCalls[1].prompt, /REJECTED[\s\S]*end with a one-line verdict/);
@@ -102,6 +107,12 @@ test('a review runs the plain review first, keeps its prose and turns it into ch
   assert.match(convertCalls[0].prompt, /^PLAIN REVIEW P0:/m);
   assert.ok(convertCalls[0].prompt.includes(PLAIN), 'the prose is given to the conversion');
   assert.match(convertCalls[0].prompt, /^COVERAGE IDS: \["viewpoint:P0"\]$/m);
+  // The conversion gets the head lines around every file:line the review
+  // cites, numbered, so it can quote without a shell (vnstock#1: 6-17 commands).
+  const conv = convertCalls[0].prompt;
+  assert.match(conv, new RegExp(`CODE AT HEAD — ${ORDER.replace(/[.]/g, '\\.')} lines 1-`));
+  assert.ok(conv.includes(` 9| ${'        '}${IF_LINE}`), 'line 9 numbered with its real number');
+  assert.match(conv, /quote from the code above; run a command only for a line it does not show/);
 
   const f = validation.findings.find((x) => x.id === 'P0-technical-F1');
   assert.ok(f, validation.findings.map((x) => x.id).join(','));
