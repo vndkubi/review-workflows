@@ -167,6 +167,11 @@ Previous candidate (raw, possibly malformed):
 ${String(repair.previous).slice(0, 60000)}`;
 }
 
+// A change that depends on what a library does is only as right as that
+// assumption: vnstock#1 stubbed a module to dodge an import failure the
+// installed version no longer had (found by reading the library, 21 Oct 2026).
+const DEPENDENCY_CHECK = `When the change works around, wraps or relies on specific behaviour of a third-party library (a stub, a fallback, a version check, catching its errors, a result it assumes), read the installed source of that library's module the change depends on and check that the installed version behaves as the change assumes. Find the file with one command (for example python -c "import pkg.mod; print(pkg.mod.__file__)", or the dependency's sources jar) and read only that module, not a scan of the dependency folder.`;
+
 // The plain review: the prompt a reviewer would get without the harness (PR
 // title and description, the diff, read what you need), answered in prose.
 // Measured on 17 PRs, this reading found defects the unit packets missed.
@@ -188,7 +193,7 @@ PR title: ${title || '(none)'}
 PR description:
 ${wrapUntrusted('PR description', body.slice(0, 6000) || '(none)')}
 
-Review it as a senior engineer would before approving: read the diff and whatever surrounding code you need. Look for bugs, regressions, wrong business behaviour, security problems, concurrency and transaction issues, error handling, compatibility breaks for callers, and missing tests for changed behaviour.
+Review it as a senior engineer would before approving: read the diff and whatever surrounding code you need. ${DEPENDENCY_CHECK} Look for bugs, regressions, wrong business behaviour, security problems, concurrency and transaction issues, error handling, compatibility breaks for callers, and missing tests for changed behaviour.
 
 Report only real, actionable issues. For each one give:
 - severity (P1 critical … P4 minor)
@@ -246,7 +251,7 @@ The lines above are the reviewed head, numbered with their real line numbers (ne
     }
   } else if (unit.hunt) {
     const lens = LENSES.find((l) => l.name === unit.lens) || LENSES[0];
-    lines.push(`FREE REVIEW ${unit.id}${unit.lens && unit.lens !== 'general' ? ` (lens: ${unit.lens})` : ''}: review this pull request. ${lens.brief} Read the diff of the files below and whatever surrounding code you need (callers, persistence, configuration, tests). Hunt for real defects: wrong business behaviour, data loss or inconsistent state, security, concurrency and transactions, error handling, money and rounding, compatibility for callers. Think through concrete inputs and sequences; go deep on the riskiest change rather than wide on everything. Ignore style. Planned units review these files too; your job is what a unit-by-unit reading misses: behaviour across files and the paths a whole-PR reading reveals.
+    lines.push(`FREE REVIEW ${unit.id}${unit.lens && unit.lens !== 'general' ? ` (lens: ${unit.lens})` : ''}: review this pull request. ${lens.brief} Read the diff of the files below and whatever surrounding code you need (callers, persistence, configuration, tests). Hunt for real defects: wrong business behaviour, data loss or inconsistent state, security, concurrency and transactions, error handling, money and rounding, compatibility for callers. Think through concrete inputs and sequences; go deep on the riskiest change rather than wide on everything. Ignore style. Exception to the search budget: ${DEPENDENCY_CHECK} Planned units review these files too; your job is what a unit-by-unit reading misses: behaviour across files and the paths a whole-PR reading reveals.
 - One coverage row only (${unit.id}): "reviewed" with code evidence of what you read.
 - Files: ${unit.covers.filter((c) => c.startsWith('file:')).map((c) => c.slice(5)).join(', ')}`);
   } else if (unit.kind === 'viewpoint') lines.push(`VIEWPOINT ${unit.id}: sweep the whole diff from this angle; most coverage rows will be short.`);

@@ -45,7 +45,9 @@ test('a review runs the plain review first, keeps its prose and turns it into ch
   const fake = require('./fixtures/fake-review-executor');
   const plainCalls = [];
   const convertCalls = [];
+  const huntCalls = [];
   const executor = async (opts) => {
+    if (/^UNIT: \{"id":"V0"/m.test(opts.prompt)) huntCalls.push(opts);
     if (opts.prompt.startsWith('You are reviewing a pull request in this repository.')) {
       plainCalls.push(opts);
       fs.mkdirSync(opts.attemptDir, { recursive: true });
@@ -95,6 +97,15 @@ test('a review runs the plain review first, keeps its prose and turns it into ch
   // (vnstock#1 P2 2/2 -> 0/2). It discovers the change; the diff stays out.
   assert.ok(!first.includes(`diff --git a/${ORDER}`), 'no inline diff');
   assert.ok(!first.includes(IF_LINE), 'no changed code in the plain prompt');
+  // Incident (vnstock#1, 21 Oct 2026): the PR stubbed a module to dodge a
+  // library's import failure; DeepSeek read the installed library and found
+  // the stub's eager import was not needed, Luna never looked. Both free
+  // reviews may now read the installed source of that one library.
+  const DEP = /works around, wraps or relies on specific behaviour of a third-party library[\s\S]*read the installed source of that library's module/;
+  assert.match(first, DEP);
+  assert.equal(huntCalls.length, 1, 'the free review V0 ran');
+  assert.match(huntCalls[0].prompt, DEP);
+  assert.match(huntCalls[0].prompt, /only that module, not a scan of the dependency folder/);
   assert.equal(plainCalls[0].effort, 'max');
   assert.equal(plainCalls[0].sandbox, 'read-only');
   assert.match(plainCalls[1].prompt, /REJECTED[\s\S]*end with a one-line verdict/);
