@@ -26,6 +26,30 @@ test('plan: the plain review P0 reads the whole PR, on unless ARW_PLAIN_REVIEW=o
   assert.equal(huntUnits(files, { ARW_PLAIN_REVIEW: 'off' }).some((u) => u.plain), false);
 });
 
+// Incident (vnstock#1, 21 Oct 2026): told to read the installed library,
+// Luna ran `python`, which had no vnstock, and filed what the upstream
+// source showed (the guard can never trigger) as a limitation, then
+// approved. The harness names the interpreter it runs the tests with, and an
+// assumption the source disproves is an issue.
+test('dependency check: a Python change names the test interpreter; a disproved assumption is an issue', () => {
+  const { dependencyCheck } = require('../src/lib/prompts');
+  const ctx = (files) => ({ source: { reviewable: files } });
+  const before = process.env.ARW_PYTHON;
+  process.env.ARW_PYTHON = 'C:/tools/py312/python.exe';
+  try {
+    const py = dependencyCheck(ctx(['bot.py', 'README.md']));
+    assert.match(py, /the interpreter this harness runs this repository's tests with: C:\/tools\/py312\/python\.exe/);
+    assert.match(py, /C:\/tools\/py312\/python\.exe -c "import pkg\.mod; print\(pkg\.mod\.__file__\)"/);
+    assert.match(py, /report it as an issue, not as a limitation/);
+    const java = dependencyCheck(ctx(['src/A.java']));
+    assert.doesNotMatch(java, /py312/);
+    assert.match(java, /report it as an issue, not as a limitation/);
+  } finally {
+    if (before === undefined) delete process.env.ARW_PYTHON;
+    else process.env.ARW_PYTHON = before;
+  }
+});
+
 test('validatePlain: prose that ends with a verdict', () => {
   assert.deepEqual(validatePlain({ text: '- **P2 — a.java:3**: wrong\n\nrequest changes' }), []);
   assert.deepEqual(validatePlain({ text: 'No issues found.\n\nApprove' }), []);
