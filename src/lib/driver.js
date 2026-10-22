@@ -243,11 +243,12 @@ async function runModelJob(env, spec) {
         throw new ContextDrift(`after ${spec.label}: ${after.join('; ')}`);
       }
       if (res.error_class === 'rate_limit' && tries < max429) {
-        // A rate-limited call is still a call: receipted, then the slot is freed.
-        (receipts[spec.outRel] = receipts[spec.outRel] || []).push({ label: spec.label, attempt: attempt + 1, mode: 'rate_limited', model: res.model, exit_code: res.exit_code, elapsed_ms: res.elapsed_ms, usage: res.usage, error_class: res.error_class, error_message: res.error_message, at: nowIso() });
+        // A rate-limited call is still a call: receipted with the wait that
+        // follows it, then the slot is freed.
+        const wait = backoffBase * (tries + 1);
+        (receipts[spec.outRel] = receipts[spec.outRel] || []).push({ label: spec.label, attempt: attempt + 1, mode: 'rate_limited', model: res.model, exit_code: res.exit_code, elapsed_ms: res.elapsed_ms, wait_ms: wait, usage: res.usage, error_class: res.error_class, error_message: res.error_message, at: nowIso() });
         flushReceipts();
         release();
-        const wait = backoffBase * (tries + 1);
         log(`rate limited on ${spec.label}; sleeping ${wait} ms`);
         await sleep(wait);
         continue;

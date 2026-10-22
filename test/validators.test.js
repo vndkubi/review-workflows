@@ -258,6 +258,8 @@ test('driver job: 429 backs off and retries; auth failure blocks without retryin
     const ok = await runModelJob(env, { label: 'j', outRel: 'out/j.json', buildPrompt: () => 'p', validate: () => [] });
     assert.equal(ok.status, 'EXECUTED_PASS');
     assert.equal(n, 2);
+    // The wait is receipted, so evals can split model time from waiting.
+    assert.deepEqual(env.receipts['out/j.json'].map((r) => [r.mode, r.wait_ms]), [['rate_limited', 1], ['full', undefined]]);
 
     let calls = 0;
     const denied = async () => {

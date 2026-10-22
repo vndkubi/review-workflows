@@ -76,4 +76,20 @@ test('eval: the raw-prompt configuration is scored like the others', async () =>
   assert.equal(s.found, 1);
   assert.equal(s.cost.calls, 1);
   assert.ok(s.cost.input_tokens > 0);
+  // Quotes checked against the PR head, priced calls, and time split.
+  assert.deepEqual(s.evidence.final, { quotes: 1, fabricated: 0, rate: 0 });
+  assert.deepEqual(s.evidence.attempts, { quotes: 1, fabricated: 0, rate: 0 });
+  assert.equal(s.cost.usd, null, 'no prices: USD stays null');
+  assert.deepEqual(s.cost.unpriced, ['fake']);
+  assert.equal(typeof s.time.model_ms, 'number');
+  assert.equal(s.time.exec_ms, 0);
+  assert.ok(card.totals.wall_ms.p50 > 0 && card.totals.wall_ms.p95 >= card.totals.wall_ms.p50);
+  assert.deepEqual(card.totals.evidence.final, { quotes: 1, fabricated: 0, rate: 0 });
+
+  fs.writeFileSync(path.join(process.env.ARW_EVAL_DIR, 'prices.json'), JSON.stringify({ date: '2026-10-23', models: { fake: { input: 2, cached_input: 1, output: 8 } } }));
+  const card2 = evals.rescore(card.id);
+  assert.ok(card2.cases[0].cost.usd > 0);
+  assert.equal(card2.totals.usd, card2.cases[0].cost.usd);
+  assert.equal(card2.totals.usd_per_tp, card2.cases[0].cost.usd, 'one true positive');
+  assert.equal(card2.prices.date, '2026-10-23');
 });

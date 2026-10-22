@@ -19,6 +19,7 @@ const { packetRel } = require('./driver');
 const { words, SEVERITY_RANK } = require('./cluster');
 const { effectiveAliases } = require('./outcome');
 const git = require('./git');
+const measure = require('./eval-measure');
 
 const LINE_SLACK = 3;
 const FLAGS = ['singleRole', 'singleAgent', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'noRepro'];
@@ -168,9 +169,9 @@ function ratio(a, b) {
   return b ? Math.round((a / b) * 1000) / 1000 : null;
 }
 
-function scoreCase(c, runDir) {
+function scoreCase(c, runDir, prices = measure.loadPrices()) {
   const res = runDir && reviewFindings(runDir);
-  if (!res) return { id: c.id, status: 'NO_RESULT', expected: (c.expected || []).length, found: 0, recall: (c.expected || []).length ? 0 : null, tp: 0, fp: 0, unlabelled: 0, precision: null, details: { expected: [], findings: [] } };
+  if (!res) return { id: c.id, status: 'NO_RESULT', expected: (c.expected || []).length, found: 0, recall: (c.expected || []).length ? 0 : null, tp: 0, fp: 0, unlabelled: 0, precision: null, evidence: null, time: null, details: { expected: [], findings: [] } };
   const { validation, shown, withdrawn } = res;
   const proseShown = assignProse(shown, c.expected || []);
   const proseWithdrawn = assignProse(withdrawn, c.expected || []);
@@ -199,6 +200,11 @@ function scoreCase(c, runDir) {
   const found = expected.filter((e) => e.found).length;
   const u = validation.usage || {};
   const plan = u.plan || {};
+  // Quotes checked against the case's commits; calls priced by the model
+  // that served each; time split into model, execution and waiting.
+  const src = { dir: c.repo, base: c.base, head: c.head };
+  const receipts = measure.receiptsOf(runDir);
+  const priced = measure.costOf(receipts, prices);
   return {
     id: c.id,
     status: validation.status,
@@ -214,9 +220,25 @@ function scoreCase(c, runDir) {
     unlabelled: findings.length - tp - fp,
     precision: ratio(tp, tp + fp),
     redteam_withdrew_real: expected.filter((e) => !e.found && e.withdrawn_by.length).map((e) => e.id),
-    cost: { calls: (u.calls || 0) + (plan.calls || 0), input_tokens: (u.input_tokens || 0) + (plan.input_tokens || 0), output_tokens: (u.output_tokens || 0) + (plan.output_tokens || 0), elapsed_ms: u.elapsed_ms || 0 },
+    cost: { calls: (u.calls || 0) + (plan.calls || 0), input_tokens: (u.input_tokens || 0) + (plan.input_tokens || 0), cached_input_tokens: receipts.reduce((n, r) => n + ((r.usage && r.usage.cached_input_tokens) || 0), 0), output_tokens: (u.output_tokens || 0) + (plan.output_tokens || 0), elapsed_ms: u.elapsed_ms || 0, usd: priced.usd, by_model: priced.by_model, unpriced: priced.unpriced },
+    evidence: { final: measure.quoteStats(src, shown), attempts: measure.quoteStats(src, measure.attemptFindings(measure.attemptDirs(runDir))) },
+    time: measure.timeOf(runDir, receipts),
     details: { expected, findings },
   };
+}
+
+// Nearest-rank percentiles of the values present.
+function quantiles(values) {
+  const v = values.filter((x) => typeof x === 'number').sort((a, b) => a - b);
+  if (!v.length) return { p50: null, p95: null };
+  const at = (q) => v[Math.max(0, Math.ceil(q * v.length) - 1)];
+  return { p50: at(0.5), p95: at(0.95) };
+}
+
+function quoteTotals(scores, kind) {
+  const quotes = scores.reduce((n, s) => n + ((s.evidence && s.evidence[kind] && s.evidence[kind].quotes) || 0), 0);
+  const fabricated = scores.reduce((n, s) => n + ((s.evidence && s.evidence[kind] && s.evidence[kind].fabricated) || 0), 0);
+  return { quotes, fabricated, rate: ratio(fabricated, quotes) };
 }
 
 function aggregate(scores) {
@@ -225,6 +247,9 @@ function aggregate(scores) {
   const expected = sum('expected');
   const tp = sum('tp');
   const fp = sum('fp');
+  // USD only when every case is priced: a missing price is never 0.
+  const usd = scores.length && scores.every((s) => s.cost && typeof s.cost.usd === 'number') ? Math.round(scores.reduce((n, s) => n + s.cost.usd, 0) * 10000) / 10000 : null;
+  const time = (k) => quantiles(scores.map((s) => s.time && s.time[k]));
   return {
     cases: scores.length,
     completed: scores.filter((s) => s.status === 'EXECUTED_PASS').length,
@@ -238,13 +263,28 @@ function aggregate(scores) {
     precision: ratio(tp, tp + fp),
     calls: cost('calls'),
     input_tokens: cost('input_tokens'),
+    cached_input_tokens: cost('cached_input_tokens'),
     output_tokens: cost('output_tokens'),
+    usd,
+    usd_per_tp: usd != null && tp ? Math.round((usd / tp) * 10000) / 10000 : null,
+    unpriced: [...new Set(scores.flatMap((s) => (s.cost && s.cost.unpriced) || []))],
+    evidence: { final: quoteTotals(scores, 'final'), attempts: quoteTotals(scores, 'attempts') },
+    wall_ms: quantiles(scores.map((s) => s.wall_ms)),
+    model_ms: time('model_ms'),
+    exec_ms: time('exec_ms'),
+    wait_ms: time('wait_ms'),
   };
+}
+
+function pricesNote(prices) {
+  return prices ? { date: prices.date || null, models: prices.models || {} } : null;
 }
 
 function pct(x) {
   return x == null ? '–' : `${Math.round(x * 1000) / 10}%`;
 }
+
+const secs = (q) => (q && q.p50 != null ? `${Math.round(q.p50 / 1000)}/${Math.round(q.p95 / 1000)}` : '–');
 
 function renderScorecard(card) {
   const t = card.totals;
@@ -253,7 +293,10 @@ function renderScorecard(card) {
     '',
     `- started ${card.started_at}, finished ${card.finished_at || '(running)'} · tool \`${card.tool_sha256.slice(0, 12)}\` · arw commit \`${(card.arw_commit || '?').slice(0, 12)}\` · model ${card.model || 'default'} · config ${card.config || 'per-case flags'}`,
     `- **recall ${pct(t.recall)}** (${t.found}/${t.expected} expected defects found, ${t.severity_ok} at the expected severity) · **precision ${pct(t.precision)}** on labelled findings (${t.tp} true, ${t.fp} known false) · ${t.unlabelled} unlabelled`,
-    `- ${t.completed}/${t.cases} case(s) complete · ${t.calls} model calls · tokens in ${t.input_tokens} / out ${t.output_tokens}`,
+    `- ${t.completed}/${t.cases} case(s) complete · ${t.calls} model calls · tokens in ${t.input_tokens} (cached ${t.cached_input_tokens || 0}) / out ${t.output_tokens}`,
+    `- cost ${t.usd == null ? `USD unknown${t.unpriced && t.unpriced.length ? ` (no price for ${t.unpriced.join(', ')})` : ''}` : `$${t.usd} · $${t.usd_per_tp == null ? '–' : t.usd_per_tp} per true positive`}${card.prices && card.prices.date ? ` · prices of ${card.prices.date}` : ''}`,
+    `- fabricated quotes: final ${t.evidence ? `${t.evidence.final.fabricated}/${t.evidence.final.quotes}` : '–'} · in all model attempts ${t.evidence ? `${t.evidence.attempts.fabricated}/${t.evidence.attempts.quotes}` : '–'}`,
+    `- time per case p50/p95 (s): wall ${secs(t.wall_ms)} · model ${secs(t.model_ms)} · execution ${secs(t.exec_ms)} · rate-limit waiting ${secs(t.wait_ms)}`,
     '',
     '| Case | Status | Recall | Precision | TP | FP | Unlabelled | Calls | Missed |',
     '|---|---|---|---|---|---|---|---|---|',
@@ -332,6 +375,7 @@ async function runEval({ only, label, config = null, log = () => {}, arw, timeou
     effort: process.env.CODEX_EFFORT || null,
     executor: process.env.ARW_EXECUTOR_MODULE ? 'custom' : 'codex',
     config: config || 'per-case flags',
+    prices: pricesNote(measure.loadPrices()),
     cases: [],
     totals: null,
   };
@@ -366,6 +410,7 @@ function rescore(runId) {
     return { ...s, ...scoreCase(c, s.run_dir ? path.join(outDir, s.run_dir) : null) };
   });
   card.totals = aggregate(card.cases);
+  card.prices = pricesNote(measure.loadPrices());
   card.rescored_at = nowIso();
   writeJsonAtomic(path.join(outDir, 'scorecard.json'), card);
   writeFileAtomic(path.join(outDir, 'scorecard.md'), renderScorecard(card));
