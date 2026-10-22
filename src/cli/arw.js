@@ -343,7 +343,7 @@ async function cmdEval(argv) {
     return cases.some((c) => c.errors.length) ? 1 : 0;
   }
   if (sub === 'run') {
-    const { outDir, card } = await evals.runEval({ only: args.case ? String(args.case).split(',') : undefined, label: args.label || args.config, config: args.config, log });
+    const { outDir, card } = await evals.runEval({ only: args.case ? String(args.case).split(',') : undefined, label: args.label || args.config, config: args.config, repeat: args.repeat ? Number(args.repeat) : 1, log });
     const t = card.totals;
     console.log(`recall ${pct(t.recall)} (${t.found}/${t.expected}) · precision ${pct(t.precision)} (${t.tp} TP, ${t.fp} FP) · ${t.unlabelled} unlabelled · ${t.calls} calls\nscorecard: ${path.join(outDir, 'scorecard.md')}`);
     return t.completed === t.cases ? 0 : 1;
@@ -365,8 +365,36 @@ async function cmdEval(argv) {
   if (sub === 'compare') {
     const c = evals.compare(String(args._[0] || ''), String(args._[1] || ''));
     console.log(`${c.a.id} -> ${c.b.id}\nrecall ${pct(c.a.totals.recall)} -> ${pct(c.b.totals.recall)} · precision ${pct(c.a.totals.precision)} -> ${pct(c.b.totals.precision)} · calls ${c.a.totals.calls} -> ${c.b.totals.calls}`);
+    const st = c.stats;
+    const ci = (d, f = pct) => (d && d.est != null ? `${f(d.est)} [${f(d.lo)}, ${f(d.hi)}]` : '-');
+    if (st.tool_mismatch) console.log(`no paired statistics: ${st.tool_mismatch}`);
+    else {
+      console.log(`paired on ${st.cases} case(s): McNemar b=${st.mcnemar.b} (only A) c=${st.mcnemar.c} (only B) p=${st.mcnemar.p}`);
+      console.log(`B - A, 95% bootstrap CI: recall ${ci(st.recall_diff)} · precision ${ci(st.precision_diff)} · USD per TP ${ci(st.usd_per_tp_diff, (x) => (x == null ? '-' : `${x}`))} · wall ${ci(st.wall_ms_diff, (x) => (x == null ? '-' : `${Math.round(x / 1000)}s`))}`);
+    }
     for (const r of c.rows) console.log(`  ${r.id.padEnd(30)} recall ${pct(r.recall[0])} -> ${pct(r.recall[1])} · FP ${r.fp[0]} -> ${r.fp[1]}${r.newly_missed.length ? ` · NEWLY MISSED ${r.newly_missed.join(', ')}` : ''}${r.newly_found.length ? ` · newly found ${r.newly_found.join(', ')}` : ''}`);
     return c.rows.some((r) => r.newly_missed.length) ? 1 : 0;
+  }
+  if (sub === 'matrix') {
+    if (!args.file) throw new Error('usage: arw eval matrix --file cells.json [--label name] [--repeat k] [--case a,b] [--budget-usd x] [--budget-calls n] [--budget-hours h]');
+    const cells = JSON.parse(fs.readFileSync(path.resolve(String(args.file)), 'utf8'));
+    const budget = { usd: args.budgetUsd ? Number(args.budgetUsd) : null, calls: args.budgetCalls ? Number(args.budgetCalls) : null, hours: args.budgetHours ? Number(args.budgetHours) : null };
+    const res = await evals.runMatrix({ cells, label: args.label || 'matrix', budget, repeat: args.repeat ? Number(args.repeat) : 1, only: args.case ? String(args.case).split(',') : undefined, log });
+    for (const c of res.cells) console.log(`${c.name.padEnd(28)} ${c.card.id} · recall ${pct(c.card.totals.recall)} · precision ${pct(c.card.totals.precision)} · ${c.card.totals.calls} calls · ${c.card.totals.usd == null ? 'USD ?' : `${c.card.totals.usd}`}`);
+    if (res.stopped) console.log(`stopped: ${res.stopped}`);
+    return res.stopped ? 2 : 0;
+  }
+  if (sub === 'blind') {
+    const res = evals.blindExport(args._.map(String), { out: args.out ? String(args.out) : null, seed: args.seed ? Number(args.seed) : 1 });
+    console.log(`${res.items} unlabelled finding(s) in ${res.dir}: label items.json in labels.json (tp / fp / empty), then: arw eval blind-import --key ${path.join(res.dir, 'key.json')} --labels ${path.join(res.dir, 'labels.json')}`);
+    return 0;
+  }
+  if (sub === 'blind-import') {
+    if (!args.key || !args.labels) throw new Error('usage: arw eval blind-import --key key.json --labels labels.json');
+    const applied = evals.blindImport({ key: String(args.key), labels: String(args.labels) });
+    for (const a of applied) console.log(`${a.blind_id} -> ${a.as} (${a.case} ${a.label})`);
+    console.log(`${applied.length} label(s) applied; re-score each run with: arw eval rescore <run>`);
+    return 0;
   }
   if (sub === 'label') {
     if (!args.run || !args.case || !args.finding || !args.as) throw new Error('usage: arw eval label --run <eval run> --case <id> --finding <id> --as tp|fp [--severity P2]');
@@ -413,9 +441,14 @@ async function cmdEval(argv) {
   }
   console.log(`usage:
   arw eval cases                                  list and check the labelled cases
-  arw eval run [--case a,b] [--label name] [--config single-agent|multi-agent|multi-agent+repro]
+  arw eval run [--case a,b] [--label name] [--config raw-prompt|single-agent|multi-agent|multi-agent+repro] [--repeat k]
                                                   review every case (one process and runs dir each), then score
   arw eval list | show <run> | rescore <run> | compare <run A> <run B>
+                                                  compare: McNemar and bootstrap 95% CIs when both ran on the same tool code
+  arw eval matrix --file cells.json [--repeat k] [--budget-usd x] [--budget-calls n] [--budget-hours h]
+                                                  cells [{name, config, env}] one after another; stops cleanly at the budget
+  arw eval blind <run>... --out <dir outside the repo> | blind-import --key key.json --labels labels.json
+                                                  unlabelled findings shuffled, source hidden; labels applied back
   arw eval label --run <run> --case <id> --finding <id> --as tp|fp [--severity P2] [--to <prose label id>]
                                                   --to: the finding says what a prose label says, in other words
   arw eval add (--repo owner/name --pr <n> | --run <run dir>) [--id name] [--force]

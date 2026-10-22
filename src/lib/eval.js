@@ -20,6 +20,7 @@ const { words, SEVERITY_RANK } = require('./cluster');
 const { effectiveAliases } = require('./outcome');
 const git = require('./git');
 const measure = require('./eval-measure');
+const stats = require('./eval-stats');
 
 const LINE_SLACK = 3;
 const FLAGS = ['singleRole', 'singleAgent', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'noRepro'];
@@ -193,7 +194,8 @@ function scoreCase(c, runDir, prices = measure.loadPrices()) {
   const findings = shown.map((f) => {
     const exp = (c.expected || []).filter((e) => hitsOf([f], proseShown, e).length).map((e) => e.id);
     const fps = (c.not_expected || []).filter((e) => matches(f, e)).map((e) => e.id);
-    return { id: f.id, severity: f.severity, label: f.label, title: f.title, path: ((f.evidence || []).find((e) => e.kind === 'code') || {}).path || null, verdict: exp.length ? 'tp' : fps.length ? 'fp' : 'unlabelled', labels: exp.length ? exp : fps };
+    const at = (f.evidence || []).find((e) => e.kind === 'code') || {};
+    return { id: f.id, severity: f.severity, label: f.label, title: f.title, path: at.path || null, lines: at.path ? [at.start_line, at.end_line] : null, verdict: exp.length ? 'tp' : fps.length ? 'fp' : 'unlabelled', labels: exp.length ? exp : fps };
   });
   const tp = findings.filter((f) => f.verdict === 'tp').length;
   const fp = findings.filter((f) => f.verdict === 'fp').length;
@@ -276,6 +278,26 @@ function aggregate(scores) {
   };
 }
 
+// Totals pool every repeat; with k > 1, the spread across repeats and how
+// much they agree.
+function finalize(card) {
+  card.totals = aggregate(card.cases);
+  const k = card.repeat || 1;
+  if (k > 1) {
+    const groups = Array.from({ length: k }, (_, i) => card.cases.filter((x) => (x.repeat || 1) === i + 1)).filter((g) => g.length);
+    const per = groups.map((g) => aggregate(g));
+    const meanWall = (g) => (g.length ? g.reduce((n, x) => n + (x.wall_ms || 0), 0) / g.length : null);
+    card.repeats = {
+      recall: stats.meanSd(per.map((t) => t.recall)),
+      precision: stats.meanSd(per.map((t) => t.precision)),
+      usd: stats.meanSd(per.map((t) => t.usd)),
+      wall_ms: stats.meanSd(groups.map(meanWall)),
+    };
+    card.stability = stats.stability(groups);
+  }
+  return card;
+}
+
 function pricesNote(prices) {
   return prices ? { date: prices.date || null, models: prices.models || {} } : null;
 }
@@ -315,8 +337,8 @@ function renderScorecard(card) {
 }
 
 // ---------- running ----------
-function runOne(c, { outDir, arw = path.join(ROOT, 'src', 'cli', 'arw.js'), timeoutMs, log, configFlags = null }) {
-  const caseDir = ensureDir(path.join(outDir, 'cases', c.id));
+function runOne(c, { outDir, arw = path.join(ROOT, 'src', 'cli', 'arw.js'), timeoutMs, log, configFlags = null, dirName = c.id }) {
+  const caseDir = ensureDir(path.join(outDir, 'cases', dirName));
   const rawPrompt = Boolean(configFlags && configFlags.raw);
   const args = rawPrompt
     ? [arw, 'raw-review', '--repo', c.repo, '--base', c.base, '--head', c.head, '--out', path.join(caseDir, 'raw')]
@@ -354,7 +376,10 @@ function evalRunId(label) {
   return `${stamp}${label ? `-${String(label).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 40)}` : ''}`;
 }
 
-async function runEval({ only, label, config = null, log = () => {}, arw, timeoutMs = envInt('ARW_EVAL_TIMEOUT_MS', 3600000) } = {}) {
+// repeat: each case k times, each in its own runs dir. shouldStop(card) is
+// asked before every case; a reason stops the run cleanly, scorecard kept.
+async function runEval({ only, label, config = null, log = () => {}, arw, timeoutMs = envInt('ARW_EVAL_TIMEOUT_MS', 3600000), repeat = 1, shouldStop = null } = {}) {
+  if (!Number.isInteger(repeat) || repeat < 1) throw new Error('--repeat: a positive integer');
   if (config && !CONFIGS[config]) throw new Error(`--config: one of ${Object.keys(CONFIGS).join(', ')}`);
   const cases = loadCases({ only });
   if (!cases.length) throw new Error(`no eval cases in ${casesDir()}${only ? ` matching ${only.join(', ')}` : ''}`);
@@ -376,22 +401,32 @@ async function runEval({ only, label, config = null, log = () => {}, arw, timeou
     executor: process.env.ARW_EXECUTOR_MODULE ? 'custom' : 'codex',
     config: config || 'per-case flags',
     prices: pricesNote(measure.loadPrices()),
+    repeat,
+    stopped: null,
     cases: [],
     totals: null,
   };
   const save = () => {
-    card.totals = aggregate(card.cases);
+    finalize(card);
     writeJsonAtomic(path.join(outDir, 'scorecard.json'), card);
     writeFileAtomic(path.join(outDir, 'scorecard.md'), renderScorecard(card));
   };
   save();
-  for (const c of cases) {
-    const res = await runOne(c, { outDir, arw, timeoutMs, log, configFlags: config ? CONFIGS[config] : null });
-    const score = { ...scoreCase(c, res.runDir), exit_code: res.exit_code, wall_ms: res.elapsed_ms, run_dir: res.runDir ? path.relative(outDir, res.runDir).split(path.sep).join('/') : null };
-    if (score.status === 'NO_RESULT' || res.exit_code !== 0) score.error = res.tail;
-    card.cases.push(score);
-    log(`case ${c.id}: ${score.status} · recall ${pct(score.recall)} · precision ${pct(score.precision)} · ${score.unlabelled} unlabelled · ${score.cost ? score.cost.calls : 0} calls`);
-    save();
+  run: for (let r = 1; r <= repeat; r += 1) {
+    for (const c of cases) {
+      const why = shouldStop ? shouldStop(card) : null;
+      if (why) {
+        card.stopped = why;
+        log(`stopped: ${why}`);
+        break run;
+      }
+      const res = await runOne(c, { outDir, arw, timeoutMs, log, configFlags: config ? CONFIGS[config] : null, dirName: repeat > 1 ? `${c.id}__r${r}` : c.id });
+      const score = { ...scoreCase(c, res.runDir), repeat: r, exit_code: res.exit_code, wall_ms: res.elapsed_ms, run_dir: res.runDir ? path.relative(outDir, res.runDir).split(path.sep).join('/') : null };
+      if (score.status === 'NO_RESULT' || res.exit_code !== 0) score.error = res.tail;
+      card.cases.push(score);
+      log(`case ${c.id}${repeat > 1 ? ` (repeat ${r})` : ''}: ${score.status} · recall ${pct(score.recall)} · precision ${pct(score.precision)} · ${score.unlabelled} unlabelled · ${score.cost ? score.cost.calls : 0} calls`);
+      save();
+    }
   }
   card.finished_at = nowIso();
   save();
@@ -409,7 +444,7 @@ function rescore(runId) {
     if (!c) return s;
     return { ...s, ...scoreCase(c, s.run_dir ? path.join(outDir, s.run_dir) : null) };
   });
-  card.totals = aggregate(card.cases);
+  finalize(card);
   card.prices = pricesNote(measure.loadPrices());
   card.rescored_at = nowIso();
   writeJsonAtomic(path.join(outDir, 'scorecard.json'), card);
@@ -438,7 +473,7 @@ function scoredNow(id) {
   const outDir = path.join(runsDir(), id);
   const cases = new Map(loadCases().map((c) => [c.id, c]));
   const scored = card.cases.map((s) => (cases.get(s.id) ? { ...s, ...scoreCase(cases.get(s.id), s.run_dir ? path.join(outDir, s.run_dir) : null) } : s));
-  return { ...card, cases: scored, totals: aggregate(scored) };
+  return finalize({ ...card, cases: scored });
 }
 
 // What changed between two eval runs, case by case, on the current labels.
@@ -461,7 +496,169 @@ function compare(aId, bId) {
       newly_found: [...after].filter((x) => !before.has(x)),
     };
   });
-  return { a: { id: a.id, totals: a.totals, model: a.model, tool: a.tool_sha256 }, b: { id: b.id, totals: b.totals, model: b.model, tool: b.tool_sha256 }, rows };
+  return { a: { id: a.id, totals: a.totals, model: a.model, config: a.config, tool: a.tool_sha256 }, b: { id: b.id, totals: b.totals, model: b.model, config: b.config, tool: b.tool_sha256 }, rows, stats: pairedStats(a, b) };
+}
+
+// Per case, averaged over its repeats; per label, found by a majority of them.
+function perCase(card) {
+  const out = new Map();
+  for (const s of card.cases) {
+    const o = out.get(s.id) || { n: 0, found: 0, expected: 0, tp: 0, fp: 0, usd: 0, priced: true, wall: 0, labels: new Map() };
+    o.n += 1;
+    o.found += s.found || 0;
+    o.expected += s.expected || 0;
+    o.tp += s.tp || 0;
+    o.fp += s.fp || 0;
+    if (s.cost && typeof s.cost.usd === 'number') o.usd += s.cost.usd;
+    else o.priced = false;
+    o.wall += s.wall_ms || 0;
+    for (const e of (s.details && s.details.expected) || []) o.labels.set(e.id, (o.labels.get(e.id) || 0) + (e.found ? 1 : 0));
+    out.set(s.id, o);
+  }
+  for (const o of out.values()) {
+    for (const k of ['found', 'expected', 'tp', 'fp', 'usd', 'wall']) o[k] /= o.n;
+    if (!o.priced) o.usd = null;
+    o.majority = new Map([...o.labels].map(([id, hits]) => [id, hits / o.n >= 0.5]));
+  }
+  return out;
+}
+
+// McNemar on the labels both runs scored, and bootstrap CIs (cases resampled,
+// fixed seed) for B - A. Runs on different tool code are not compared.
+function pairedStats(a, b, { n = 10000, seed = 42 } = {}) {
+  if (a.tool_sha256 !== b.tool_sha256) return { tool_mismatch: `tool_sha256 differs (${String(a.tool_sha256).slice(0, 12)} vs ${String(b.tool_sha256).slice(0, 12)}): rerun both on the same code` };
+  const pa = perCase(a);
+  const pb = perCase(b);
+  const ids = [...pa.keys()].filter((id) => pb.has(id)).sort();
+  let only_a = 0;
+  let only_b = 0;
+  for (const id of ids) {
+    for (const [label, foundA] of pa.get(id).majority) {
+      if (!pb.get(id).majority.has(label)) continue;
+      const foundB = pb.get(id).majority.get(label);
+      if (foundA && !foundB) only_a += 1;
+      if (!foundA && foundB) only_b += 1;
+    }
+  }
+  const ra = ids.map((id) => pa.get(id));
+  const rb = ids.map((id) => pb.get(id));
+  const sum = (rows, k) => rows.reduce((x, r) => x + r[k], 0);
+  const recall = (rows) => (sum(rows, 'expected') ? sum(rows, 'found') / sum(rows, 'expected') : null);
+  const precision = (rows) => (sum(rows, 'tp') + sum(rows, 'fp') ? sum(rows, 'tp') / (sum(rows, 'tp') + sum(rows, 'fp')) : null);
+  const usdPerTp = (rows) => (rows.every((r) => r.usd != null) && sum(rows, 'tp') ? sum(rows, 'usd') / sum(rows, 'tp') : null);
+  const wall = (rows) => (rows.length ? sum(rows, 'wall') / rows.length : null);
+  const opts = { n, seed };
+  return {
+    tool_mismatch: null,
+    cases: ids.length,
+    mcnemar: stats.mcnemar(only_a, only_b),
+    recall_diff: stats.bootstrapDiff(ra, rb, recall, opts),
+    precision_diff: stats.bootstrapDiff(ra, rb, precision, opts),
+    usd_per_tp_diff: stats.bootstrapDiff(ra, rb, usdPerTp, opts),
+    wall_ms_diff: stats.bootstrapDiff(ra, rb, wall, opts),
+  };
+}
+
+// ---------- matrix ----------
+// Cells run one after another, each with its env (model, effort...) set for
+// its review processes. Before every case the accumulated spend is checked
+// against the budget; reaching it stops cleanly and keeps every scorecard.
+async function runMatrix({ cells, label = 'matrix', budget = {}, repeat = 1, only, log = () => {}, arw } = {}) {
+  const started = Date.now();
+  const done = [];
+  let stopped = null;
+  let tool = null;
+  for (const cell of cells) {
+    if (stopped) break;
+    if (!cell.name || !/^[A-Za-z0-9._-]+$/.test(cell.name)) throw new Error('every cell needs a name of letters, digits, . _ -');
+    const saved = {};
+    for (const [k, v] of Object.entries(cell.env || {})) {
+      saved[k] = Object.prototype.hasOwnProperty.call(process.env, k) ? process.env[k] : undefined;
+      process.env[k] = String(v);
+    }
+    const spentBefore = () => done.reduce((acc, d) => ({ calls: acc.calls + d.card.totals.calls, usd: acc.usd == null || d.card.totals.usd == null ? null : acc.usd + d.card.totals.usd }), { calls: 0, usd: 0 });
+    const shouldStop = (card) => {
+      const before = spentBefore();
+      const calls = before.calls + ((card.totals && card.totals.calls) || 0);
+      const usd = before.usd == null || !card.totals || card.totals.usd == null ? null : before.usd + card.totals.usd;
+      if (tool && card.tool_sha256 !== tool) return `the tool code changed during the matrix (${tool.slice(0, 12)} -> ${card.tool_sha256.slice(0, 12)})`;
+      if (budget.calls && calls >= budget.calls) return `budget: ${budget.calls} model calls reached (${calls})`;
+      if (budget.usd && card.cases.length && usd == null) return `budget: ${budget.usd} USD cannot be checked, a price is missing (${(card.totals.unpriced || []).join(', ') || 'unknown'})`;
+      if (budget.usd && usd != null && usd >= budget.usd) return `budget: ${budget.usd} USD reached (${Math.round(usd * 100) / 100})`;
+      if (budget.hours && (Date.now() - started) / 3600000 >= budget.hours) return `budget: ${budget.hours} hours of wall clock reached`;
+      return null;
+    };
+    try {
+      log(`cell ${cell.name}: ${cell.config} ${JSON.stringify(cell.env || {})}`);
+      const { card } = await runEval({ only, label: `${label}-${cell.name}`, config: cell.config, repeat, shouldStop, log, arw });
+      tool = tool || card.tool_sha256;
+      done.push({ name: cell.name, card });
+      if (card.stopped) stopped = card.stopped;
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  }
+  const summary = { label, started_at: new Date(started).toISOString(), finished_at: nowIso(), budget, repeat, stopped, tool_sha256: tool, cells: done.map((d) => ({ name: d.name, run: d.card.id, config: d.card.config, model: d.card.model, totals: d.card.totals })) };
+  writeJsonAtomic(path.join(ensureDir(path.join(evalDir(), 'matrix')), `${evalRunId(label)}.json`), summary);
+  return { cells: done, stopped, summary };
+}
+
+// ---------- blind labelling ----------
+// Every unlabelled finding of the given runs, shuffled, with nothing naming
+// the model or configuration. The key that maps them back is a separate file.
+function blindExport(runIds, { out, seed = 1 } = {}) {
+  if (!out) throw new Error('--out: a directory outside the repository');
+  const dir = path.resolve(out);
+  const rel = path.relative(ROOT, dir);
+  if (!rel.startsWith('..') && !path.isAbsolute(rel)) throw new Error(`--out must be outside the repository (${ROOT})`);
+  const items = [];
+  for (const id of runIds) {
+    const card = scoredNow(id);
+    for (const s of card.cases) {
+      const res = s.run_dir ? reviewFindings(path.join(runsDir(), id, s.run_dir)) : null;
+      if (!res) continue;
+      for (const f of (s.details && s.details.findings) || []) {
+        if (f.verdict !== 'unlabelled') continue;
+        const full = res.shown.find((x) => x.id === f.id);
+        if (!full) continue;
+        items.push({
+          item: { case: s.id, severity: full.severity, title: full.title, asis: full.asis, tobe: full.tobe, impact: full.impact || '', evidence: (full.evidence || []).filter((e) => e.kind === 'code').map((e) => ({ path: e.path, start_line: e.start_line, end_line: e.end_line, quote: e.quote })) },
+          key: { run: id, case: s.id, repeat: s.repeat || 1, finding: f.id },
+        });
+      }
+    }
+  }
+  const rand = stats.mulberry32(seed);
+  for (let i = items.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(rand() * (i + 1));
+    [items[i], items[j]] = [items[j], items[i]];
+  }
+  const width = String(items.length).length;
+  const blind = items.map((x, i) => ({ blind_id: `B${String(i + 1).padStart(width, '0')}`, ...x }));
+  ensureDir(dir);
+  writeJsonAtomic(path.join(dir, 'items.json'), blind.map((x) => ({ blind_id: x.blind_id, ...x.item })));
+  writeJsonAtomic(path.join(dir, 'key.json'), Object.fromEntries(blind.map((x) => [x.blind_id, x.key])));
+  writeJsonAtomic(path.join(dir, 'labels.json'), Object.fromEntries(blind.map((x) => [x.blind_id, ''])));
+  return { items: blind.length, dir };
+}
+
+// labels.json: { blind_id: "tp" | "fp" | "" } filled in by a person.
+function blindImport({ key, labels }) {
+  const k = readJson(path.resolve(key));
+  const l = readJson(path.resolve(labels));
+  const applied = [];
+  for (const [bid, as] of Object.entries(l)) {
+    if (!as) continue;
+    if (!['tp', 'fp'].includes(as)) throw new Error(`${bid}: label "tp", "fp" or leave it empty`);
+    const src = k[bid];
+    if (!src) throw new Error(`${bid}: not in the key`);
+    const label = labelFinding({ runId: src.run, caseId: src.case, repeat: src.repeat, findingId: src.finding, as });
+    applied.push({ blind_id: bid, as, label: label.id, case: src.case });
+  }
+  return applied;
 }
 
 // ---------- building the corpus ----------
@@ -521,11 +718,11 @@ function caseFromRun(runDir, { id, force } = {}) {
 
 // Label one finding of an eval run as a true (tp) or false (fp) positive in
 // its case file.
-function labelFinding({ runId, caseId, findingId, as, severity, linkTo }) {
+function labelFinding({ runId, caseId, findingId, as, severity, linkTo, repeat = null }) {
   if (!['tp', 'fp'].includes(as)) throw new Error('--as tp|fp');
   if (linkTo && as !== 'tp') throw new Error('--label links a true positive to a prose label');
   const card = loadRun(runId);
-  const s = card.cases.find((x) => x.id === caseId);
+  const s = card.cases.find((x) => x.id === caseId && (repeat == null || (x.repeat || 1) === repeat));
   if (!s || !s.run_dir) throw new Error(`case ${caseId} has no run in ${runId}`);
   const res = reviewFindings(path.join(runsDir(), runId, s.run_dir));
   const f = res && [...res.shown, ...res.withdrawn].find((x) => x.id === findingId);
@@ -549,4 +746,4 @@ function labelFinding({ runId, caseId, findingId, as, severity, linkTo }) {
   return label;
 }
 
-module.exports = { CONFIGS, evalDir, casesDir, writeCase, loadCases, validateCase, scoreCase, aggregate, renderScorecard, runEval, rescore, listRuns, loadRun, compare, caseFromRun, labelFinding, matches, assignProse, keywordsOf };
+module.exports = { runMatrix, blindExport, blindImport, pairedStats, CONFIGS, evalDir, casesDir, writeCase, loadCases, validateCase, scoreCase, aggregate, renderScorecard, runEval, rescore, listRuns, loadRun, compare, caseFromRun, labelFinding, matches, assignProse, keywordsOf };
