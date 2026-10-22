@@ -63,9 +63,24 @@ function packet(prompt, cwd) {
   return { schema_version: '1.0', context_digest: digest, unit_id: unit.id, role, summary: `${unit.id} reviewed`, dependency_refs: [], coverage, item_verdicts: [], viewpoint_verdicts: viewpointVerdicts(prompt), impact_verdicts: impactVerdicts(prompt), findings, recommendation: findings.length ? 'findings' : 'no_findings' };
 }
 
+// The raw-prompt baseline: one finding per "BUG:" line the change touches.
+function rawReview(prompt, cwd) {
+  const [, base, head] = prompt.match(/git diff ([0-9a-f]{7,40}) ([0-9a-f]{7,40})/);
+  const { execFileSync } = require('node:child_process');
+  const files = execFileSync('git', ['diff', '--name-only', base, head], { cwd, encoding: 'utf8' }).split('\n').filter(Boolean);
+  const findings = [];
+  for (const file of files) {
+    for (const hit of lineOf(cwd, file, (l) => l.includes('BUG:'))) {
+      findings.push({ id: `F${findings.length + 1}`, severity: 'P3', title: hit.text.split('BUG:')[1].trim(), asis: `The code at ${file}:${hit.line} is marked as wrong.`, tobe: 'Fixed.', impact: 'Wrong result.', evidence: [{ kind: 'code', path: file, start_line: hit.line, end_line: hit.line, quote: hit.text.trim() }] });
+    }
+  }
+  return { findings };
+}
+
 module.exports = async function fakeExecutor(opts) {
   fs.mkdirSync(opts.attemptDir, { recursive: true });
   const p = opts.prompt;
+  if (p.includes('RAW-PROMPT OUTPUT')) return result(JSON.stringify(rawReview(p, opts.cwd)), p);
   if (p.startsWith('You are a read-only planner')) return result(JSON.stringify(plan(p)), p);
   if (p.includes('JOB: ')) return result(JSON.stringify(packet(p, opts.cwd)), p);
   return { ok: false, output: null, exit_code: 1, elapsed_ms: 1, usage: null, turns: 0, commands: 0, error_class: 'config', error_message: `fake executor: unexpected prompt ${p.slice(0, 60)}`, model: 'fake', prompt_bytes: p.length };

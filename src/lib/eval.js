@@ -25,6 +25,8 @@ const FLAGS = ['singleRole', 'singleAgent', 'skipSeams', 'skipRebuttals', 'skipS
 // Named configurations, to compare on the same cases (same model and inputs):
 // what the multi-agent waves add over one reviewer, and what execution adds.
 const CONFIGS = {
+  // The traditional baseline: one prompt, one call (config/baselines).
+  'raw-prompt': { raw: true },
   'single-agent': { singleAgent: true, noRepro: true },
   'multi-agent': { singleAgent: false, noRepro: true },
   'multi-agent+repro': { singleAgent: false, noRepro: false },
@@ -85,6 +87,18 @@ function loadCases({ only } = {}) {
 // The findings a reader of the review would see: valid, not withdrawn by
 // the red team, not folded into another as a duplicate.
 function reviewFindings(runDir) {
+  // A raw-prompt run: the model's findings as written, nothing withdrawn.
+  const rawFile = path.join(runDir, 'raw-review.json');
+  if (fs.existsSync(rawFile)) {
+    const r = readJson(rawFile);
+    const usage = { calls: r.receipts.length, input_tokens: 0, output_tokens: 0, elapsed_ms: 0 };
+    for (const x of r.receipts) {
+      usage.input_tokens += (x.usage && x.usage.input_tokens) || 0;
+      usage.output_tokens += (x.usage && x.usage.output_tokens) || 0;
+      usage.elapsed_ms += x.elapsed_ms || 0;
+    }
+    return { validation: { status: r.status, complete: r.status === 'EXECUTED_PASS', recommendation: null, usage }, shown: r.findings.map((f) => ({ ...f, label: null, state: null })), withdrawn: [] };
+  }
   const pointer = readJsonIfExists(path.join(runDir, 'review', 'context.json'));
   if (!pointer) return null;
   const dir = revisionDir(runDir, pointer.context_id);
@@ -260,9 +274,12 @@ function renderScorecard(card) {
 // ---------- running ----------
 function runOne(c, { outDir, arw = path.join(ROOT, 'src', 'cli', 'arw.js'), timeoutMs, log, configFlags = null }) {
   const caseDir = ensureDir(path.join(outDir, 'cases', c.id));
-  const args = [arw, 'review', '--local', c.repo, '--base', c.base, '--head', c.head];
+  const rawPrompt = Boolean(configFlags && configFlags.raw);
+  const args = rawPrompt
+    ? [arw, 'raw-review', '--repo', c.repo, '--base', c.base, '--head', c.head, '--out', path.join(caseDir, 'raw')]
+    : [arw, 'review', '--local', c.repo, '--base', c.base, '--head', c.head];
   const flags = { noRepro: true, ...(c.flags || {}), ...(configFlags || {}) };
-  for (const k of FLAGS) if (flags[k]) args.push(`--${k.replace(/[A-Z]/g, (x) => `-${x.toLowerCase()}`)}`);
+  if (!rawPrompt) for (const k of FLAGS) if (flags[k]) args.push(`--${k.replace(/[A-Z]/g, (x) => `-${x.toLowerCase()}`)}`);
   // Worktrees go to a short path: git on Windows refuses long worktree paths.
   const wtDir = path.join(worktreeRoot(), `ev-${sha256(caseDir).slice(0, 10)}`);
   const env = { ...process.env, ARW_RUNS_DIR: path.join(caseDir, 'runs'), ARW_WT_DIR: wtDir };
@@ -276,7 +293,7 @@ function runOne(c, { outDir, arw = path.join(ROOT, 'src', 'cli', 'arw.js'), time
       clearTimeout(timer);
       fs.closeSync(logFile);
       const prs = path.join(caseDir, 'runs', 'prs');
-      const runDir = fs.existsSync(prs) ? fs.readdirSync(prs).map((d) => path.join(prs, d)).find((d) => fs.existsSync(path.join(d, 'run.json'))) : null;
+      const runDir = rawPrompt ? (fs.existsSync(path.join(caseDir, 'raw', 'raw-review.json')) ? path.join(caseDir, 'raw') : null) : fs.existsSync(prs) ? fs.readdirSync(prs).map((d) => path.join(prs, d)).find((d) => fs.existsSync(path.join(d, 'run.json'))) : null;
       // The review worktree belongs to the case repository; do not leave it registered there.
       if (fs.existsSync(wtDir)) {
         for (const d of fs.readdirSync(wtDir)) git.git(c.repo, ['worktree', 'remove', '--force', path.join(wtDir, d)], { allowFail: true });

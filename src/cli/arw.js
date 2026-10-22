@@ -669,6 +669,28 @@ async function cmdSandbox(argv) {
   return 0;
 }
 
+// The traditional baseline for evals: one prompt, one call (raw-review.js).
+async function cmdRawReview(argv) {
+  const args = parseArgs(argv);
+  if (!args.repo || !args.base || !args.head || !args.out) throw new Error('usage: arw raw-review --repo <clone> --base <rev> --head <rev> --out <dir> [--prompt <file>]');
+  const raw = require('../lib/raw-review');
+  const cfg = executorConfig();
+  const res = await raw.runRawReview({
+    repo: path.resolve(String(args.repo)),
+    base: String(args.base),
+    head: String(args.head),
+    outDir: path.resolve(String(args.out)),
+    executor,
+    model: process.env.CODEX_REVIEW_MODEL || cfg.model,
+    effort: cfg.effort,
+    baseline: args.prompt ? fs.readFileSync(path.resolve(String(args.prompt)), 'utf8') : null,
+    wtDir: process.env.ARW_WT_DIR || null,
+    log,
+  });
+  console.log(`${res.status} · ${res.findings.length} finding(s) · ${res.receipts.length} call(s)`);
+  return res.status === 'EXECUTED_PASS' ? 0 : 1;
+}
+
 async function cmdUi(argv) {
   const args = parseArgs(argv, ['noOpen']);
   const { startDashboard } = require('../web/server');
@@ -699,6 +721,8 @@ async function main(argv) {
       return cmdAcceptance();
     case 'eval':
       return cmdEval(rest);
+    case 'raw-review':
+      return cmdRawReview(rest);
     case 'retro':
       return cmdRetro(rest);
     case 'checklist':

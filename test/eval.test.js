@@ -42,7 +42,7 @@ test('configurations: the single-agent baseline runs one reviewer, no planner, o
   try {
     fs.mkdirSync(path.join(dir, 'cases'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'cases', 'totals.json'), JSON.stringify({ id: 'totals', repo: r.dir, base: r.base, head: r.head, expected: [{ id: 'E1', path: 'billing/total.py', keywords: ['off by one'] }] }));
-    await assert.rejects(evals.runEval({ config: 'everything' }), /--config: one of single-agent, multi-agent, multi-agent\+repro/);
+    await assert.rejects(evals.runEval({ config: 'everything' }), /--config: one of raw-prompt, single-agent, multi-agent, multi-agent\+repro/);
     const { card, outDir } = await evals.runEval({ config: 'single-agent', label: 'single-agent' });
     assert.equal(card.config, 'single-agent');
     const s = card.cases[0];
