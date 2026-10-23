@@ -100,6 +100,21 @@ function killTree(child) {
 // provider's structured outputs; it removes JSON syntax errors entirely.
 // Verified with codex 0.147 that tools stay usable with --output-schema.
 // Disable with CODEX_OUTPUT_SCHEMA=0 for providers that do not support it.
+// One line of codex --json output: an error event telling the response was
+// cut at max_output_tokens.
+function degenerateEvent(line) {
+  if (!/max_output_tokens/.test(line)) return false;
+  let ev;
+  try {
+    ev = JSON.parse(line);
+  } catch {
+    return false;
+  }
+  if (!ev || !['error', 'turn.failed'].includes(ev.type)) return false;
+  const message = ev.message || (ev.error && ev.error.message) || '';
+  return /max_output_tokens/.test(String(message));
+}
+
 function runCodex({ prompt: rawPrompt, cwd, attemptDir, model, effort, sandbox = 'read-only', timeoutMs, outputSchema, images = [] }) {
   ensureDir(attemptDir);
   const { text: prompt, redactions } = redactSecrets(rawPrompt);
@@ -130,13 +145,18 @@ function runCodex({ prompt: rawPrompt, cwd, attemptDir, model, effort, sandbox =
       timedOut = true;
       killTree(child);
     }, limit);
+    let pending = '';
     child.stdout.on('data', (d) => {
       events.write(d);
       stdoutText += d;
       // A response cut at max_output_tokens is degenerate output (seen: endless
       // whitespace under a strict schema). codex would reconnect and repeat it
-      // until the timeout, so stop now and let the runner fall back.
-      if (!degenerate && /max_output_tokens/.test(String(d))) {
+      // until the timeout, so stop now and let the runner fall back. Only
+      // codex's own error events count: the repository's code can contain the
+      // same words (Sentry does), and it reaches stdout inside command output.
+      const lines = (pending + d).split('\n');
+      pending = lines.pop();
+      if (!degenerate && lines.some(degenerateEvent)) {
         degenerate = true;
         killTree(child);
       }
@@ -223,4 +243,4 @@ function executorConfig() {
   };
 }
 
-module.exports = { runCodex, preflight, summarizeEvents, classifyError, executorConfig, resolveCodex, codexArgs, killTree, DEFAULT_MODEL };
+module.exports = { degenerateEvent, runCodex, preflight, summarizeEvents, classifyError, executorConfig, resolveCodex, codexArgs, killTree, DEFAULT_MODEL };
