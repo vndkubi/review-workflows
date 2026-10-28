@@ -31,7 +31,22 @@ function moduleNotes() {
   return out.sort();
 }
 
-const DOCS = ['AGENTS.md', ...moduleNotes()];
+function skills() {
+  const dir = path.join(ROOT, '.agents', 'skills');
+  return fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => fs.existsSync(path.join(dir, n, 'SKILL.md'))).sort() : [];
+}
+
+const DOCS = ['AGENTS.md', ...moduleNotes(), ...skills().map((n) => `.agents/skills/${n}/SKILL.md`)];
+
+// Skills also cite files that a run writes (review/driver.log, packets/).
+// Those are fine when the runtime names them; repository paths are not.
+const REPO_DIRS = /^(src|test|scripts|config|agents|docs|\.githooks|\.agents|\.claude)\//;
+let runtimeCode = null;
+function namedByRuntime(p) {
+  if (runtimeCode === null) runtimeCode = fs.readdirSync(path.join(ROOT, 'src', 'lib')).filter((f) => f.endsWith('.js')).map((f) => read(`src/lib/${f}`)).join('\n');
+  const base = p.replace(/\/$/, '').split('/').pop();
+  return runtimeCode.includes(`'${base}'`);
+}
 
 function section(text, heading) {
   const start = text.indexOf(`## ${heading}`);
@@ -44,7 +59,7 @@ function citedPaths(text) {
   const out = new Set();
   for (const m of text.matchAll(/`([^`\s]+)`/g)) {
     const p = m[1].replace(/[:,]$/, '');
-    if (/[<>*#@()'"~]|\.com\/|^-|^\.\w+$/.test(p)) continue;
+    if (/[<>*#@()'"~]|:\/\/|\.com\/|^-|^\.\w+$/.test(p)) continue;
     if (/\//.test(p) || /\.(js|md|json|java)$/.test(p)) out.add(p);
   }
   return [...out];
@@ -87,6 +102,7 @@ test('every path the instructions cite is committed, or gitignored on purpose', 
       const candidates = [bare, path.posix.join(base, bare), path.posix.join(base, 'public', bare)];
       if (candidates.some((c) => files.has(c) || dirs.has(c))) continue;
       if (ignored(bare) || ignored(`${bare}/`)) continue;
+      if (doc.startsWith('.agents/') && !REPO_DIRS.test(p) && namedByRuntime(p)) continue;
       problems.push(`${doc}: \`${p}\` is neither committed nor gitignored`);
     }
   }
@@ -167,4 +183,22 @@ test('the lazy requires that keep the require cycle working are still inside fun
     assert.ok(lines.length, `${file} no longer requires ./${mod}: update src/lib/AGENTS.md`);
     for (const l of lines) assert.match(l, /^\s+/, `${file}: require('./${mod}') moved to the top level: ${l.trim()}`);
   }
+});
+
+test('every skill has a name matching its folder and a description, and is listed in AGENTS.md', () => {
+  const listed = section(read('AGENTS.md'), 'Skills');
+  for (const name of skills()) {
+    const text = read(`.agents/skills/${name}/SKILL.md`);
+    const front = text.match(/^---\n([\s\S]*?)\n---\n/);
+    assert.ok(front, `${name}: no frontmatter`);
+    assert.match(front[1], new RegExp(`^name: ${name}$`, 'm'), `${name}: frontmatter name differs from the folder`);
+    assert.match(front[1], /^description: .{40,}$/m, `${name}: no useful description (it decides when the skill loads)`);
+    assert.ok(listed.includes(`\`${name}\``), `${name} is not listed under "## Skills" in AGENTS.md`);
+  }
+});
+
+test('the Claude copies in .claude/skills are byte-identical to .agents/skills', () => {
+  const { compare } = require('../scripts/ai-sync');
+  const { drift, stray } = compare();
+  assert.deepEqual([...drift, ...stray], [], 'run: node scripts/ai-sync.js');
 });

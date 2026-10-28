@@ -8,7 +8,8 @@ const { execFileSync } = require('node:child_process');
 const HANDBOOK = 'Sổ tay làm việc với AI.md'.normalize('NFC');
 const PRIVATE = [
   [(p) => p.normalize('NFC') === HANDBOOK, 'personal handbook'],
-  [(p) => p.startsWith('.claude/'), 'local Claude Code state (worktrees, launch configs with local paths)'],
+  // .claude/skills/ holds the copies scripts/ai-sync.js makes for Claude.
+  [(p) => p.startsWith('.claude/') && !p.startsWith('.claude/skills/'), 'local Claude Code state (worktrees, launch configs with local paths)'],
   [(p) => /^(runs|wt|evals|_study)\//.test(p), 'run data, eval cases or study notes: may hold reviewed-project code'],
   [(p) => p === '.env', 'secrets'],
   [(p) => /^config\/(repos|mcp)\.json$/.test(p), 'local checkout / MCP mapping'],
@@ -33,6 +34,10 @@ for (const p of staged.filter((f) => f.endsWith('.js'))) {
   } catch (err) {
     problems.push(`${p}: does not parse: ${err.message}`);
   }
+}
+if (staged.some((p) => /^\.(agents|claude)\/skills\//.test(p))) {
+  const { drift, stray } = require('../ai-sync').compare();
+  for (const f of [...drift, ...stray]) problems.push(`.claude/skills/${f}: not the same as .agents/skills (run node scripts/ai-sync.js)`);
 }
 if (problems.length) {
   process.stderr.write(`pre-commit: refused\n${problems.map((x) => `  ${x}`).join('\n')}\nUnstage with: git restore --staged <path>\n`);

@@ -7,6 +7,11 @@ skill from the checkout they review or from the user's setup (how: `src/lib/AGEN
 - `src/lib/`, `src/cli/`: `src/lib/AGENTS.md` (tool digest, require cycle, worker isolation, gates).
 - `src/web/`: `src/web/AGENTS.md` (jobs, dashboard guards, browser check).
 
+## Skills
+- Written once in `.agents/skills/<name>/SKILL.md` (codex and Copilot read it). Claude reads only
+  `.claude/skills/`: after an edit run `node scripts/ai-sync.js`; `test/ai-config.test.js` fails on a stale copy.
+- `incident-to-regression`, `packet-contract-change`, `dashboard-change-verify`.
+
 ## Source of truth
 - `src/lib/` is the trusted runtime. Models never decide validity, status or approval.
 - Output contracts: `config/schemas/*.json`. Role charters: `agents/*.md`. Checklist: `config/policies/`.
@@ -17,7 +22,8 @@ skill from the checkout they review or from the user's setup (how: `src/lib/AGEN
 ## Public repository: never commit
 - `origin` (github.com/vndkubi/review-workflows) is public.
 - Private but NOT gitignored: `Sổ tay làm việc với AI.md` (personal handbook) and `.claude/`
-  (worktrees, launch configs with local paths). Stage by path; never `git add -A` or `git add .`.
+  (worktrees, launch configs with local paths), except `.claude/skills/`, which is committed.
+  Stage by path; never `git add -A` or `git add .`.
 - Gitignored, never `git add -f`: `runs/`, `wt/`, `evals/`, `_study/`, `.env`, `config/repos.json`,
   `config/mcp.json`, `config/projects/`.
 - `.githooks/pre-commit` refuses all of the above once enabled: `git config core.hooksPath .githooks`.
