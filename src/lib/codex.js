@@ -6,6 +6,7 @@
 const { spawn, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const { ensureDir, envInt } = require('./util');
 const { redactSecrets } = require('./guard');
 
@@ -28,7 +29,10 @@ function codexArgs({ cwd, outFile, model, effort, sandbox, schemaFile, images = 
   // an instruction channel into the reviewer.
   // --image takes several values: each one is followed by another option so
   // the trailing '-' (prompt on stdin) is never read as an image.
-  const args = ['exec', ...images.flatMap((img) => ['--image', img]), '--json', '--skip-git-repo-check', '--ephemeral', '-s', sandbox, '-C', cwd, '-o', outFile, '-c', 'project_doc_max_bytes=0'];
+  // skills.include_instructions=false: no skill list in the developer
+  // message. codex lists the checkout's .agents/skills and .codex/skills
+  // there, and a PR author controls those.
+  const args = ['exec', ...images.flatMap((img) => ['--image', img]), '--json', '--skip-git-repo-check', '--ephemeral', '-s', sandbox, '-C', cwd, '-o', outFile, '-c', 'project_doc_max_bytes=0', '-c', 'skills.include_instructions=false'];
   if (process.env.CODEX_USE_USER_CONFIG !== '1') {
     args.push('--ignore-user-config');
     // Since codex 0.162 Windows has no default sandbox: without one, every
@@ -44,6 +48,51 @@ function codexArgs({ cwd, outFile, model, effort, sandbox, schemaFile, images = 
   if (schemaFile) args.push('--output-schema', schemaFile);
   args.push('-');
   return args;
+}
+
+// Workers run with their own CODEX_HOME. codex reads the global AGENTS.md
+// and the personal skills from CODEX_HOME whatever project_doc_max_bytes and
+// --ignore-user-config say (seen with codex 0.163: a persona prompt reached
+// every worker). The private home gets the login and, when the user config is
+// wanted (CODEX_USE_USER_CONFIG=1, e.g. a BYOK profile), the top-level .toml
+// files; never AGENTS.md, AGENTS.override.md or skills/. No auth.json is no
+// error: an API key or a BYOK provider needs no login.
+function userCodexHome() {
+  return process.env.CODEX_HOME ? path.resolve(process.env.CODEX_HOME) : path.join(os.homedir(), '.codex');
+}
+
+function codexHome() {
+  return process.env.CODEX_ARW_HOME ? path.resolve(process.env.CODEX_ARW_HOME) : path.join(require('./runs').RUNS, '.codex-home');
+}
+
+// A file is copied when the private copy is missing or older: codex may
+// refresh the login in the private home, and an older user file must not
+// undo that.
+function prepareCodexHome({ source = userCodexHome(), home = codexHome(), userConfig = process.env.CODEX_USE_USER_CONFIG === '1' } = {}) {
+  ensureDir(home);
+  let names = [];
+  try {
+    names = fs.readdirSync(source);
+  } catch {
+    return home;
+  }
+  const wanted = names.filter((n) => n === 'auth.json' || (userConfig && n.endsWith('.toml')));
+  for (const name of wanted) {
+    const from = path.join(source, name);
+    const to = path.join(home, name);
+    try {
+      const src = fs.statSync(from);
+      if (!src.isFile()) continue;
+      if (fs.existsSync(to) && fs.statSync(to).mtimeMs >= src.mtimeMs) continue;
+      const tmp = `${to}.${process.pid}.tmp`;
+      fs.copyFileSync(from, tmp);
+      fs.utimesSync(tmp, src.atime, src.mtime);
+      fs.renameSync(tmp, to);
+    } catch {
+      // Another worker holds or replaced the file: the copy there serves.
+    }
+  }
+  return home;
 }
 
 function classifyError(text) {
@@ -140,7 +189,7 @@ function runCodex({ prompt: rawPrompt, cwd, attemptDir, model, effort, sandbox =
     let stderrText = '';
     let timedOut = false;
     let degenerate = false;
-    const child = spawn(cmd, args, { cwd, env: { ...process.env, RUST_LOG: process.env.RUST_LOG || 'warn' }, windowsHide: true, detached: process.platform !== 'win32' });
+    const child = spawn(cmd, args, { cwd, env: { ...process.env, CODEX_HOME: prepareCodexHome(), RUST_LOG: process.env.RUST_LOG || 'warn' }, windowsHide: true, detached: process.platform !== 'win32' });
     const timer = setTimeout(() => {
       timedOut = true;
       killTree(child);
@@ -243,4 +292,4 @@ function executorConfig() {
   };
 }
 
-module.exports = { degenerateEvent, runCodex, preflight, summarizeEvents, classifyError, executorConfig, resolveCodex, codexArgs, killTree, DEFAULT_MODEL };
+module.exports = { degenerateEvent, runCodex, preflight, summarizeEvents, classifyError, executorConfig, resolveCodex, codexArgs, codexHome, prepareCodexHome, killTree, DEFAULT_MODEL };

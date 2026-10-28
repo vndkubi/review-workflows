@@ -23,7 +23,7 @@ const ENV_SETTINGS = [
   ['ARW_HUNT_LENSES', 'review', 'string', '1', 'Free reviews of the whole PR: a number (1-4) or lenses by name (general, business, adversarial, maintainer). More lenses stand in for effort a provider will not raise.'],
   ['ARW_HUNT_MODELS', 'review', 'string', '', 'Comma-separated models given to the free reviews in turn (for example two self-hosted models). Empty = CODEX_HUNT_MODEL.'],
   ['CODEX_OUTPUT_SCHEMA', 'executor', 'bool', '1', 'Enforce JSON output with --output-schema (falls back automatically if output degenerates).'],
-  ['CODEX_USE_USER_CONFIG', 'executor', 'bool', '0', 'Load ~/.codex/config.toml (plugins, MCP servers, profiles). Off = lean workers.'],
+  ['CODEX_USE_USER_CONFIG', 'executor', 'bool', '0', 'Load ~/.codex/*.toml (plugins, MCP servers, profiles) into the workers\' private CODEX_HOME. Off = lean workers. Never the global AGENTS.md or skills.'],
   ['CODEX_PROFILE', 'executor', 'string', '', 'codex profile (-p); only with user config.'],
   ['CODEX_WINDOWS_SANDBOX', 'executor', 'enum', 'unelevated', 'Windows sandbox for workers (codex >= 0.162).', ['unelevated', 'elevated']],
   ['ARW_EXECUTOR', 'executor', 'enum', 'codex', 'CLI that runs the model jobs. copilot = GitHub Copilot CLI: no structured output (the repair loop keeps JSON valid), repo instructions and hooks never loaded; the CODEX_* model and effort settings still apply.', ['codex', 'copilot']],
