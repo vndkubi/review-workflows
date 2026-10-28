@@ -1,0 +1,4 @@
+#!/bin/sh
+# Commits go straight to main, so a push that breaks the suite breaks main.
+# The same suite CI runs (no network, no model calls), about 2-3 minutes.
+exec node scripts/test.js
