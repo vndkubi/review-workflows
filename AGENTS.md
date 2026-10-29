@@ -12,6 +12,14 @@ skill from the checkout they review or from the user's setup (how: `src/lib/AGEN
   `.claude/skills/`: after an edit run `node scripts/ai-sync.js`; `test/ai-config.test.js` fails on a stale copy.
 - `incident-to-regression`, `packet-contract-change`, `dashboard-change-verify`.
 
+## Agents (read only)
+- Written once in `.agents/agents/<name>.md`; `node scripts/ai-sync.js` renders `.claude/agents/`,
+  `.github/agents/` and `.codex/agents/`. Never edit the rendered files.
+- `run-forensics` (why a run ended as it did), `impact-analyst` (what a change touches, via
+  `node scripts/dev-impact.js`), `claim-verifier` (CONFIRMED / REFUTED / UNPROVEN with file:line).
+- How read-only is enforced: Claude by `scripts/hooks/readonly-bash.js`, Copilot by having no shell or
+  edit tool, codex only by the charter (a role runs with its parent's sandbox).
+
 ## Source of truth
 - `src/lib/` is the trusted runtime. Models never decide validity, status or approval.
 - Output contracts: `config/schemas/*.json`. Role charters: `agents/*.md`. Checklist: `config/policies/`.
@@ -22,7 +30,7 @@ skill from the checkout they review or from the user's setup (how: `src/lib/AGEN
 ## Public repository: never commit
 - `origin` (github.com/vndkubi/review-workflows) is public.
 - Private but NOT gitignored: `Sổ tay làm việc với AI.md` (personal handbook) and `.claude/`
-  (worktrees, launch configs with local paths), except `.claude/skills/`, which is committed.
+  (worktrees, launch configs with local paths), except `.claude/skills/` and `.claude/agents/`, which are committed.
   Stage by path; never `git add -A` or `git add .`.
 - Gitignored, never `git add -f`: `runs/`, `wt/`, `evals/`, `_study/`, `.env`, `config/repos.json`,
   `config/mcp.json`, `config/projects/`.

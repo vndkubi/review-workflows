@@ -36,7 +36,12 @@ function skills() {
   return fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => fs.existsSync(path.join(dir, n, 'SKILL.md'))).sort() : [];
 }
 
-const DOCS = ['AGENTS.md', ...moduleNotes(), ...skills().map((n) => `.agents/skills/${n}/SKILL.md`)];
+function agents() {
+  const dir = path.join(ROOT, '.agents', 'agents');
+  return fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => n.endsWith('.md')).map((n) => n.slice(0, -3)).sort() : [];
+}
+
+const DOCS = ['AGENTS.md', ...moduleNotes(), ...skills().map((n) => `.agents/skills/${n}/SKILL.md`), ...agents().map((n) => `.agents/agents/${n}.md`)];
 
 // Skills also cite files that a run writes (review/driver.log, packets/).
 // Those are fine when the runtime names them; repository paths are not.
@@ -197,8 +202,22 @@ test('every skill has a name matching its folder and a description, and is liste
   }
 });
 
-test('the Claude copies in .claude/skills are byte-identical to .agents/skills', () => {
+test('the skill copies and the rendered agents are what .agents/ generates', () => {
   const { compare } = require('../scripts/ai-sync');
   const { drift, stray } = compare();
   assert.deepEqual([...drift, ...stray], [], 'run: node scripts/ai-sync.js');
+});
+
+test('every agent is listed in AGENTS.md and rendered read-only where the tool allows it', () => {
+  const listed = section(read('AGENTS.md'), 'Agents');
+  const names = agents();
+  assert.ok(names.length >= 1);
+  for (const name of names) {
+    assert.ok(listed.includes(`\`${name}\``), `${name} is not listed under "## Agents" in AGENTS.md`);
+    const claude = read(`.claude/agents/${name}.md`);
+    assert.match(claude, /^disallowedTools: Edit, Write, NotebookEdit$/m, `${name}: Claude agent may edit`);
+    assert.match(claude, /command: .*scripts\/hooks\/readonly-bash\.js/, `${name}: Claude agent runs Bash without the read-only hook`);
+    const tools = JSON.parse(read(`.github/agents/${name}.agent.md`).match(/^tools: (.+)$/m)[1]);
+    assert.deepEqual(tools.filter((t) => !['read', 'search'].includes(t)), [], `${name}: Copilot agent has more than read and search`);
+  }
 });
