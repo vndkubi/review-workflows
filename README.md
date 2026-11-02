@@ -516,6 +516,20 @@ synthesis — the baseline), `--config multi-agent`, and `--config multi-agent+r
 same labels; `arw eval compare` shows recall, precision and calls side by side. Until such runs exist on PRs
 with known defects, any claim that one configuration is better is an opinion.
 
+`--config free-review` (`ARW_REVIEW_MODE=free-review`, `arw review --free-review`) runs only the whole-PR free
+reviews, one per lens of `ARW_HUNT_LENSES`, plus the plain review: no planner and no planned units, so review
+items are not graded. It measures what the planned units add over several independent reads.
+`arw eval yield <run>...` splits stored runs by stage (plan, plain, free, business, technical, seam, red team,
+synthesis): calls, input tokens, shell commands per job, findings, true findings, and the labels only that stage
+found, which is what dropping it would lose on those cases. No model call. The scorecard also counts the shell
+commands workers ran per call (`reads`), to show whether a prompt change made them read deeper.
+`config/baselines/matrix-stages.json` is a matrix of these against the current pipeline, all on one model:
+
+```bash
+node src/cli/arw.js eval matrix --file config/baselines/matrix-stages.json --label stages --budget-hours 6
+node src/cli/arw.js eval yield <run of each cell>
+```
+
 A finding matches a label when it cites code in that file, within ±3 lines of `lines` (if given), and its
 title/ASIS/TOBE contains one of the `keywords` (if given). **Recall** = expected defects found; **precision** =
 true / (true + known false) among the findings a reader would see (not withdrawn by the red team, not folded as

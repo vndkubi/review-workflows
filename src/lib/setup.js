@@ -152,6 +152,7 @@ function applyPreset(id, { probe = defaultProbe, force = false } = {}) {
 function reviewDefaults(args, env = process.env) {
   return {
     singleAgent: Boolean(args.singleAgent) || env.ARW_REVIEW_MODE === 'single-agent',
+    freeReview: !args.singleAgent && (Boolean(args.freeReview) || env.ARW_REVIEW_MODE === 'free-review'),
     noRepro: Boolean(args.noRepro) || env.ARW_REPRO === 'off',
   };
 }

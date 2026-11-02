@@ -31,7 +31,7 @@ const ENV_SETTINGS = [
   ['COPILOT_BIN', 'executor', 'string', '', 'Copilot only. The copilot JS entry or binary. Empty = the npm install.'],
   ['CODEX_TIMEOUT_MS', 'executor', 'number', '1800000', 'Timeout per model call (ms).', null, [60000, 7200000]],
   ['ARW_WORKERS', 'review', 'number', '4', 'Parallel review workers.', null, [1, 8]],
-  ['ARW_REVIEW_MODE', 'review', 'enum', 'multi-agent', 'How a review runs unless a flag says otherwise. multi-agent: planner, units, seams, red team, synthesis. single-agent: one reviewer over the whole diff (cheaper, less coverage).', ['multi-agent', 'single-agent']],
+  ['ARW_REVIEW_MODE', 'review', 'enum', 'multi-agent', 'How a review runs unless a flag says otherwise. multi-agent: planner, units, seams, red team, synthesis. single-agent: one reviewer over the whole diff (cheaper, less coverage). free-review: only the whole-PR free reviews (ARW_HUNT_LENSES) and the plain review, no planned units; review items are not graded (an eval baseline).', ['multi-agent', 'single-agent', 'free-review']],
   ['ARW_PRESET', 'review', 'enum', '', 'The preset last applied from Settings or arw setup (informational).', ['', 'fast', 'thorough', 'java-docker']],
   ['ARW_REPAIR_ATTEMPTS', 'review', 'number', '2', 'Repairs of an invalid model answer before one fresh retry.', null, [0, 5]],
   ['ARW_OUTPUT_LANGUAGE', 'review', 'string', 'English', 'Language of titles, explanations and given/when/then. Quotes stay verbatim.'],

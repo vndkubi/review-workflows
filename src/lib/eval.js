@@ -23,13 +23,15 @@ const measure = require('./eval-measure');
 const stats = require('./eval-stats');
 
 const LINE_SLACK = 3;
-const FLAGS = ['singleRole', 'singleAgent', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'noRepro'];
+const FLAGS = ['singleRole', 'singleAgent', 'freeReview', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'noRepro'];
 // Named configurations, to compare on the same cases (same model and inputs):
 // what the multi-agent waves add over one reviewer, and what execution adds.
 const CONFIGS = {
   // The traditional baseline: one prompt, one call (config/baselines).
   'raw-prompt': { raw: true },
   'single-agent': { singleAgent: true, noRepro: true },
+  // Only the whole-PR free reviews: set ARW_HUNT_LENSES in the matrix cell.
+  'free-review': { freeReview: true, noRepro: true },
   'multi-agent': { singleAgent: false, noRepro: true },
   'multi-agent+repro': { singleAgent: false, noRepro: false },
 };
@@ -222,6 +224,8 @@ function scoreCase(c, runDir, prices = measure.loadPrices()) {
     unlabelled: findings.length - tp - fp,
     precision: ratio(tp, tp + fp),
     redteam_withdrew_real: expected.filter((e) => !e.found && e.withdrawn_by.length).map((e) => e.id),
+    // Shell commands the workers ran (reads, mostly): how deep they looked.
+    reads: measure.readsOf(receipts),
     cost: { calls: (u.calls || 0) + (plan.calls || 0), input_tokens: (u.input_tokens || 0) + (plan.input_tokens || 0), cached_input_tokens: receipts.reduce((n, r) => n + ((r.usage && r.usage.cached_input_tokens) || 0), 0), output_tokens: (u.output_tokens || 0) + (plan.output_tokens || 0), elapsed_ms: u.elapsed_ms || 0, usd: priced.usd, by_model: priced.by_model, unpriced: priced.unpriced },
     evidence: { final: measure.quoteStats(src, shown), attempts: measure.quoteStats(src, measure.attemptFindings(measure.attemptDirs(runDir))) },
     time: measure.timeOf(runDir, receipts),
@@ -271,6 +275,7 @@ function aggregate(scores) {
     usd_per_tp: usd != null && tp ? Math.round((usd / tp) * 10000) / 10000 : null,
     unpriced: [...new Set(scores.flatMap((s) => (s.cost && s.cost.unpriced) || []))],
     evidence: { final: quoteTotals(scores, 'final'), attempts: quoteTotals(scores, 'attempts') },
+    reads: measure.readsTotal(scores.map((s) => s.reads)),
     wall_ms: quantiles(scores.map((s) => s.wall_ms)),
     model_ms: time('model_ms'),
     exec_ms: time('exec_ms'),
@@ -316,6 +321,7 @@ function renderScorecard(card) {
     `- started ${card.started_at}, finished ${card.finished_at || '(running)'} · tool \`${card.tool_sha256.slice(0, 12)}\` · arw commit \`${(card.arw_commit || '?').slice(0, 12)}\` · model ${card.model || 'default'} · config ${card.config || 'per-case flags'}`,
     `- **recall ${pct(t.recall)}** (${t.found}/${t.expected} expected defects found, ${t.severity_ok} at the expected severity) · **precision ${pct(t.precision)}** on labelled findings (${t.tp} true, ${t.fp} known false) · ${t.unlabelled} unlabelled`,
     `- ${t.completed}/${t.cases} case(s) complete · ${t.calls} model calls · tokens in ${t.input_tokens} (cached ${t.cached_input_tokens || 0}) / out ${t.output_tokens}`,
+    `- reads: ${t.reads && t.reads.calls ? `${t.reads.commands} shell commands in ${t.reads.calls} counted call(s), ${t.reads.per_call} per call` : 'not counted (receipts without command counts)'}`,
     `- cost ${t.usd == null ? `USD unknown${t.unpriced && t.unpriced.length ? ` (no price for ${t.unpriced.join(', ')})` : ''}` : `$${t.usd} · $${t.usd_per_tp == null ? '–' : t.usd_per_tp} per true positive`}${card.prices && card.prices.date ? ` · prices of ${card.prices.date}` : ''}`,
     `- fabricated quotes: final ${t.evidence ? `${t.evidence.final.fabricated}/${t.evidence.final.quotes}` : '–'} · in all model attempts ${t.evidence ? `${t.evidence.attempts.fabricated}/${t.evidence.attempts.quotes}` : '–'}`,
     `- time per case p50/p95 (s): wall ${secs(t.wall_ms)} · model ${secs(t.model_ms)} · execution ${secs(t.exec_ms)} · rate-limit waiting ${secs(t.wait_ms)}`,
@@ -746,4 +752,4 @@ function labelFinding({ runId, caseId, findingId, as, severity, linkTo, repeat =
   return label;
 }
 
-module.exports = { runMatrix, blindExport, blindImport, pairedStats, CONFIGS, evalDir, casesDir, writeCase, loadCases, validateCase, scoreCase, aggregate, renderScorecard, runEval, rescore, listRuns, loadRun, compare, caseFromRun, labelFinding, matches, assignProse, keywordsOf };
+module.exports = { runMatrix, blindExport, blindImport, pairedStats, scoredNow, CONFIGS, evalDir, casesDir, writeCase, loadCases, validateCase, scoreCase, aggregate, renderScorecard, runEval, rescore, listRuns, loadRun, compare, caseFromRun, labelFinding, matches, assignProse, keywordsOf };

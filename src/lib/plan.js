@@ -253,6 +253,17 @@ function singleAgentUnits(reviewableFiles, items) {
   return { units: [unit], required_coverage: [...unit.covers].sort(), errors: [], plan };
 }
 
+// The free-review baseline: only the whole-PR free reviews (one per lens of
+// ARW_HUNT_LENSES, plus the plain review), no planner, units or seams. Used
+// to measure what the planned units add over several independent reads.
+// Review items are not graded here, so a spec with risky items leaves the
+// review incomplete.
+function freeReviewUnits(reviewableFiles) {
+  const units = huntUnits(reviewableFiles);
+  const plan = { schema_version: '1.0', hypotheses: [], units: [], gaps: [], notes: 'free-review baseline (no planner)' };
+  return { units, required_coverage: [...new Set(units.flatMap((u) => u.covers))].sort(), errors: [], plan };
+}
+
 function renderPlanMarkdown({ identity, plan, units, items, reviewable, skipped }) {
   const out = [];
   out.push(`# Review plan — ${identity.repo}#${identity.pr}`, '');
@@ -277,4 +288,4 @@ function renderPlanMarkdown({ identity, plan, units, items, reviewable, skipped 
   return `${out.join('\n')}\n`;
 }
 
-module.exports = { buildUnits, singleAgentUnits, smallPrUnits, isSmallPr, huntUnits, renderPlanMarkdown, VIEWPOINTS, LENSES };
+module.exports = { buildUnits, singleAgentUnits, freeReviewUnits, smallPrUnits, isSmallPr, huntUnits, renderPlanMarkdown, VIEWPOINTS, LENSES };

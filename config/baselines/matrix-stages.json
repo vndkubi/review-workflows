@@ -1,0 +1,6 @@
+[
+  { "name": "multi", "config": "multi-agent", "env": { "CODEX_MODEL": "gpt-6-luna" } },
+  { "name": "multi-high", "config": "multi-agent", "env": { "CODEX_MODEL": "gpt-6-luna", "CODEX_EFFORT": "high" } },
+  { "name": "free4", "config": "free-review", "env": { "CODEX_MODEL": "gpt-6-luna", "ARW_HUNT_LENSES": "4", "ARW_PLAIN_REVIEW": "on" } },
+  { "name": "raw", "config": "raw-prompt", "env": { "CODEX_MODEL": "gpt-6-luna" } }
+]

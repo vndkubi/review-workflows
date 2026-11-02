@@ -11,7 +11,7 @@ const git = require('./git');
 const { parsePatch } = require('./patch');
 const { buildEvidencePack } = require('./evidence-pack');
 const { validateAgainst, outputSchema } = require('./schema');
-const { buildUnits, singleAgentUnits, smallPrUnits, isSmallPr, renderPlanMarkdown } = require('./plan');
+const { buildUnits, singleAgentUnits, freeReviewUnits, smallPrUnits, isSmallPr, renderPlanMarkdown } = require('./plan');
 const { assignChecks } = require('./viewpoint-checks');
 const { assignImpacts } = require('./impact-checks');
 const { markBoost } = require('./effort');
@@ -176,7 +176,11 @@ async function ensureSandboxEnvironment({ runDir, identity, log }) {
   return b.prepareReviewEnvironment({ runDir, repo, checkout: identity.checkout, source: identity.source_checkout || (identity.local ? identity.local.dir : null), base: identity.base_sha, head: identity.head_sha, log });
 }
 
-async function planPhase({ runDir, run, info, executor, models, log, singleRole, singleAgent = false, tickets, incremental = false, ciApi = null, impactedRunner }) {
+function reviewMode({ singleAgent, freeReview }) {
+  return singleAgent ? 'single-agent' : freeReview ? 'free-review' : 'multi-agent';
+}
+
+async function planPhase({ runDir, run, info, executor, models, log, singleRole, singleAgent = false, freeReview = false, tickets, incremental = false, ciApi = null, impactedRunner }) {
   const { checkout, head_sha: head, base_sha: base } = run.identity;
   const changed = git.changedFiles(checkout, base, head);
   const patch = git.diffPatch(checkout, base, head);
@@ -230,6 +234,11 @@ async function planPhase({ runDir, run, info, executor, models, log, singleRole,
     const one = singleAgentUnits(reviewable, items);
     plan = one.plan;
     built = one;
+  } else if (freeReview) {
+    // Baseline for evals: the free reviews alone (ARW_HUNT_LENSES), no planner.
+    const free = freeReviewUnits(reviewable);
+    plan = free.plan;
+    built = free;
   } else if (!built && isSmallPr(parsed, reviewable)) {
     // A small PR: no planner, one unit and the free review.
     const small = smallPrUnits(reviewable, items);
@@ -282,7 +291,7 @@ async function planPhase({ runDir, run, info, executor, models, log, singleRole,
   // The riskiest unit reasons at a higher effort (effort.js).
   markBoost(built.units);
   if (size.large) log(`large PR: ${size.files} files, ${size.lines} changed lines (limits ${size.limits.files} files / ${size.limits.lines} lines); reviewing riskiest units first`);
-  run.review = { plan_path: 'pr-review-plan.md', mode: singleAgent ? 'single-agent' : 'multi-agent', required_coverage: built.required_coverage, units: built.units, single_role: Boolean(singleRole), size, split: size.large ? suggestSplit(built.units, parsed) : null };
+  run.review = { plan_path: 'pr-review-plan.md', mode: reviewMode({ singleAgent, freeReview }), required_coverage: built.required_coverage, units: built.units, single_role: Boolean(singleRole), size, split: size.large ? suggestSplit(built.units, parsed) : null };
   const planMd = renderPlanMarkdown({ identity: run.identity, plan, units: built.units, items, reviewable, skipped: pack.skipped.map((f) => f.path) });
   writeFileAtomic(path.join(runDir, 'pr-review-plan.md'), planMd);
   phase(run, runDir, 'plan', 'EXECUTED_PASS', { units: built.units.length });
@@ -315,7 +324,7 @@ function freezePhase({ runDir, run, info, tickets, planned }) {
   return context;
 }
 
-async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight, models = {}, workers, singleRole, singleAgent = false, skipSeams, skipRebuttals, skipSynthesis, refresh, noRepro, reproRunner, testCommand, log = () => {}, prepared, ciApi = null, impactedRunner }) {
+async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight, models = {}, workers, singleRole, singleAgent = false, freeReview = false, skipSeams, skipRebuttals, skipSynthesis, refresh, noRepro, reproRunner, testCommand, log = () => {}, prepared, ciApi = null, impactedRunner }) {
   // The single-agent baseline has no seams, red team or synthesis by definition.
   if (singleAgent) [skipSeams, skipRebuttals, skipSynthesis] = [true, true, true];
   const { runDir, run, info } = prepare({ repo, pr, prepared });
@@ -351,7 +360,7 @@ async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight
     try {
       context = loadContext(runDir);
       const drift = verifyContext(runDir, context);
-      const wantMode = singleAgent ? 'single-agent' : 'multi-agent';
+      const wantMode = reviewMode({ singleAgent, freeReview });
       if (run.review && (run.review.mode || 'multi-agent') !== wantMode) drift.push(`review mode changed to ${wantMode}`);
       if (drift.length || context.source.head_sha !== run.identity.head_sha) {
         log(`frozen context ${context.context_id} is stale: ${drift.join('; ') || 'PR head moved'}`);
@@ -369,7 +378,7 @@ async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight
       const pf = await preflight();
       if (!pf.ok) throw new Error(`executor preflight failed (${pf.error_class}): ${pf.error_message}`);
     }
-    const planned = await planPhase({ runDir, run, info, executor, models, log, singleRole, singleAgent, tickets, incremental: Boolean(previous), ciApi: prepared ? ciApi : github.apiGet, impactedRunner });
+    const planned = await planPhase({ runDir, run, info, executor, models, log, singleRole, singleAgent, freeReview, tickets, incremental: Boolean(previous), ciApi: prepared ? ciApi : github.apiGet, impactedRunner });
     context = freezePhase({ runDir, run, info, tickets, planned });
     log(`froze context ${context.context_id} (${run.review.units.length} units)`);
     if (previous) {

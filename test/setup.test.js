@@ -144,9 +144,9 @@ test('init creates .env and an empty repos.json once, never overwriting them', a
 
 test('review defaults come from settings; flags given on the command line still apply', () => {
   const { reviewDefaults } = require('../src/lib/setup');
-  assert.deepEqual(reviewDefaults({}, {}), { singleAgent: false, noRepro: false });
-  assert.deepEqual(reviewDefaults({}, { ARW_REVIEW_MODE: 'single-agent', ARW_REPRO: 'off' }), { singleAgent: true, noRepro: true });
-  assert.deepEqual(reviewDefaults({ singleAgent: true, noRepro: true }, {}), { singleAgent: true, noRepro: true });
+  assert.deepEqual(reviewDefaults({}, {}), { singleAgent: false, freeReview: false, noRepro: false });
+  assert.deepEqual(reviewDefaults({}, { ARW_REVIEW_MODE: 'single-agent', ARW_REPRO: 'off' }), { singleAgent: true, freeReview: false, noRepro: true });
+  assert.deepEqual(reviewDefaults({ singleAgent: true, noRepro: true }, {}), { singleAgent: true, freeReview: false, noRepro: true });
 });
 
 test('arw setup: --check reports and changes nothing; --preset applies one', async () => {

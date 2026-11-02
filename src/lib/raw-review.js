@@ -41,7 +41,7 @@ async function runRawReview({ repo, base, head, outDir, executor, model = null, 
     for (let attempt = 1; attempt <= 2 && !findings; attempt += 1) {
       const attemptDir = ensureDir(path.join(outDir, 'attempts', `raw-${attempt}`));
       const res = await executor({ prompt, cwd: wt, attemptDir, model, effort, sandbox: 'read-only' });
-      const receipt = { label: 'raw-prompt', attempt, model: res.model || model, exit_code: res.exit_code, elapsed_ms: res.elapsed_ms, usage: res.usage, error_class: res.error_class || null, at: nowIso() };
+      const receipt = { label: 'raw-prompt', attempt, model: res.model || model, exit_code: res.exit_code, elapsed_ms: res.elapsed_ms, usage: res.usage, turns: res.turns, commands: res.commands, error_class: res.error_class || null, at: nowIso() };
       receipts.push(receipt);
       if (res.output != null) fs.writeFileSync(path.join(attemptDir, 'raw-candidate.txt'), String(res.output));
       try {

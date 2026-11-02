@@ -30,6 +30,7 @@ PR review (plan -> freeze -> waves -> validate -> report):
                                                several PRs: reviewed one after another
              [--skip-seams] [--skip-rebuttals] [--skip-synthesis] [--refresh] [--no-repro] [--no-pr-intent]
              [--single-agent]   baseline: one reviewer over the whole diff, no planner/seams/red team/synthesis
+             [--free-review]    baseline: only the free reviews (ARW_HUNT_LENSES) and the plain review, no planned units
   arw validate --repo owner/name --pr <n>      re-validate on disk, no model calls
   arw publish  --repo owner/name --pr <n> [--min-severity P3] [--dry-run]
                                                creates a PENDING GitHub review you submit yourself
@@ -138,7 +139,7 @@ async function cmdTicket(argv) {
 }
 
 async function cmdReview(argv) {
-  const args = parseArgs(argv, ['singleRole', 'singleAgent', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'refresh', 'noRepro', 'noPrIntent']);
+  const args = parseArgs(argv, ['singleRole', 'singleAgent', 'freeReview', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'refresh', 'noRepro', 'noPrIntent']);
   let local = null;
   if (args.local) {
     const { prepareLocal } = require('../lib/local-review');
@@ -182,6 +183,7 @@ async function reviewOne(args, local, pr) {
     workers: Number(args.workers) || envInt('ARW_WORKERS', 4),
     singleRole: args.singleRole,
     singleAgent: defaults.singleAgent,
+    freeReview: defaults.freeReview,
     skipSeams: args.skipSeams,
     skipRebuttals: args.skipRebuttals,
     skipSynthesis: args.skipSynthesis,
@@ -357,6 +359,14 @@ async function cmdEval(argv) {
     console.log(fs.readFileSync(path.join(evals.evalDir(), 'runs', args._[0], 'scorecard.md'), 'utf8'));
     return 0;
   }
+  if (sub === 'yield') {
+    const ids = args._.map(String);
+    if (!ids.length) throw new Error('usage: arw eval yield <run>... [--json]');
+    const { stageYield, renderYield } = require('../lib/eval-yield');
+    const res = stageYield(ids.map((id) => ({ card: evals.scoredNow(id), dir: path.join(evals.evalDir(), 'runs', id) })));
+    console.log(args.json ? JSON.stringify(res, null, 2) : renderYield(res, ids));
+    return 0;
+  }
   if (sub === 'rescore') {
     const card = evals.rescore(String(args._[0] || ''));
     console.log(`recall ${pct(card.totals.recall)} · precision ${pct(card.totals.precision)} · ${card.totals.unlabelled} unlabelled`);
@@ -441,10 +451,11 @@ async function cmdEval(argv) {
   }
   console.log(`usage:
   arw eval cases                                  list and check the labelled cases
-  arw eval run [--case a,b] [--label name] [--config raw-prompt|single-agent|multi-agent|multi-agent+repro] [--repeat k]
+  arw eval run [--case a,b] [--label name] [--config raw-prompt|single-agent|free-review|multi-agent|multi-agent+repro] [--repeat k]
                                                   review every case (one process and runs dir each), then score
   arw eval list | show <run> | rescore <run> | compare <run A> <run B>
                                                   compare: McNemar and bootstrap 95% CIs when both ran on the same tool code
+  arw eval yield <run>... [--json]                per stage: calls, tokens, reads per job, findings, TP, labels only it found
   arw eval matrix --file cells.json [--repeat k] [--budget-usd x] [--budget-calls n] [--budget-hours h]
                                                   cells [{name, config, env}] one after another; stops cleanly at the budget
   arw eval blind <run>... --out <dir outside the repo> | blind-import --key key.json --labels labels.json

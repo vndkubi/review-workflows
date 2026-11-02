@@ -116,9 +116,23 @@ function timeOf(runDir, receipts) {
   return { model_ms: model, exec_ms: exec, wait_ms: wait };
 }
 
+// Shell commands per call, over the calls whose receipt counted them (older
+// receipts and rate-limited attempts did not).
+function readsOf(receipts) {
+  const counted = receipts.filter((r) => typeof r.commands === 'number' && r.mode !== 'rate_limited');
+  const commands = counted.reduce((n, r) => n + r.commands, 0);
+  return { calls: counted.length, commands, per_call: counted.length ? round(commands / counted.length) : null };
+}
+
+function readsTotal(list) {
+  const calls = list.reduce((n, r) => n + ((r && r.calls) || 0), 0);
+  const commands = list.reduce((n, r) => n + ((r && r.commands) || 0), 0);
+  return { calls, commands, per_call: calls ? round(commands / calls) : null };
+}
+
 function loadPrices() {
   const dir = process.env.ARW_EVAL_DIR ? path.resolve(process.env.ARW_EVAL_DIR) : path.join(require('./util').ROOT, 'evals');
   return readJsonIfExists(path.join(dir, 'prices.json'));
 }
 
-module.exports = { quoteStats, attemptFindings, attemptDirs, receiptsOf, costOf, timeOf, loadPrices };
+module.exports = { quoteStats, attemptFindings, attemptDirs, receiptsOf, costOf, timeOf, readsOf, readsTotal, loadPrices };
