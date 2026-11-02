@@ -530,6 +530,11 @@ node src/cli/arw.js eval matrix --file config/baselines/matrix-stages.json --lab
 node src/cli/arw.js eval yield <run of each cell>
 ```
 
+When codex reports the account's usage limit ("try again at 7:09 AM"), a job stops at once instead of
+retrying. An eval waits for the reset when it comes within `ARW_EVAL_QUOTA_WAIT_HOURS` (default 6) and runs the
+cut case again, reusing its valid packets; a later reset (a date) stops the eval and the matrix, with the cases
+not run named in the scorecard. A cut case is never scored as a miss.
+
 A finding matches a label when it cites code in that file, within ±3 lines of `lines` (if given), and its
 title/ASIS/TOBE contains one of the `keywords` (if given). **Recall** = expected defects found; **precision** =
 true / (true + known false) among the findings a reader would see (not withdrawn by the red team, not folded as

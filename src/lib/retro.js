@@ -206,7 +206,7 @@ function suggestions(r) {
   }
   if (t.budget_stops) out.push({ area: 'budget', text: `${t.budget_stops} job(s) stopped at the budget ceiling; raise ARW_MAX_CALLS / ARW_MAX_INPUT_TOKENS or split large PRs.` });
   for (const [cls, n] of Object.entries(r.blocked)) {
-    if (['rate_limit', 'auth', 'billing', 'config'].includes(cls)) out.push({ area: 'executor', text: `${n} call(s) failed with ${cls}.` });
+    if (['rate_limit', 'quota', 'auth', 'billing', 'config'].includes(cls)) out.push({ area: 'executor', text: `${n} call(s) failed with ${cls}.` });
   }
   if (!out.length) out.push({ area: 'none', text: runs ? 'Nothing stands out yet. Suggestions appear once enough runs and feedback exist.' : 'No review runs found.' });
   return out;

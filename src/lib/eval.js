@@ -21,6 +21,7 @@ const { effectiveAliases } = require('./outcome');
 const git = require('./git');
 const measure = require('./eval-measure');
 const stats = require('./eval-stats');
+const { lastUsageLimit } = require('./quota');
 
 const LINE_SLACK = 3;
 const FLAGS = ['singleRole', 'singleAgent', 'freeReview', 'skipSeams', 'skipRebuttals', 'skipSynthesis', 'noRepro'];
@@ -325,6 +326,8 @@ function renderScorecard(card) {
     `- cost ${t.usd == null ? `USD unknown${t.unpriced && t.unpriced.length ? ` (no price for ${t.unpriced.join(', ')})` : ''}` : `$${t.usd} · $${t.usd_per_tp == null ? '–' : t.usd_per_tp} per true positive`}${card.prices && card.prices.date ? ` · prices of ${card.prices.date}` : ''}`,
     `- fabricated quotes: final ${t.evidence ? `${t.evidence.final.fabricated}/${t.evidence.final.quotes}` : '–'} · in all model attempts ${t.evidence ? `${t.evidence.attempts.fabricated}/${t.evidence.attempts.quotes}` : '–'}`,
     `- time per case p50/p95 (s): wall ${secs(t.wall_ms)} · model ${secs(t.model_ms)} · execution ${secs(t.exec_ms)} · rate-limit waiting ${secs(t.wait_ms)}`,
+    ...(card.quota_waits && card.quota_waits.length ? [`- usage limit waited out ${card.quota_waits.length} time(s): ${card.quota_waits.map((w) => `${w.case} until ${w.until}`).join(', ')}`] : []),
+    ...(card.stopped ? [`- **stopped**: ${card.stopped}`] : []),
     '',
     '| Case | Status | Recall | Precision | TP | FP | Unlabelled | Calls | Missed |',
     '|---|---|---|---|---|---|---|---|---|',
@@ -372,7 +375,7 @@ function runOne(c, { outDir, arw = path.join(ROOT, 'src', 'cli', 'arw.js'), time
       }
       git.git(c.repo, ['worktree', 'prune'], { allowFail: true });
       const tail = fs.readFileSync(path.join(caseDir, 'review.log'), 'utf8').trim().split('\n').slice(-3).join(' | ').slice(0, 500);
-      resolve({ exit_code: code, elapsed_ms: Date.now() - started, runDir, tail });
+      resolve({ exit_code: code, elapsed_ms: Date.now() - started, runDir, caseDir, tail });
     });
   });
 }
@@ -384,7 +387,24 @@ function evalRunId(label) {
 
 // repeat: each case k times, each in its own runs dir. shouldStop(card) is
 // asked before every case; a reason stops the run cleanly, scorecard kept.
-async function runEval({ only, label, config = null, log = () => {}, arw, timeoutMs = envInt('ARW_EVAL_TIMEOUT_MS', 3600000), repeat = 1, shouldStop = null } = {}) {
+// A case cut by the account's usage limit: the review log (the driver's
+// lines and the CLI's error) or a raw-prompt receipt names it.
+function usageLimitOf(res, now) {
+  const texts = [];
+  const log = path.join(res.caseDir, 'review.log');
+  if (fs.existsSync(log)) texts.push(fs.readFileSync(log, 'utf8'));
+  const raw = readJsonIfExists(path.join(res.caseDir, 'raw', 'raw-review.json'));
+  for (const r of (raw && raw.receipts) || []) if (r.error_message) texts.push(r.error_message);
+  return lastUsageLimit(texts.join('\n'), now);
+}
+
+// After the usage limit: wait for the reset when it comes within
+// ARW_EVAL_QUOTA_WAIT_HOURS (default 6) and run the case again (its valid
+// packets are reused); otherwise stop. The cut case is never scored: a miss
+// it did not have the calls to find is not a miss.
+const QUOTA_MARGIN_MS = 2 * 60 * 1000;
+
+async function runEval({ only, label, config = null, log = () => {}, arw, timeoutMs = envInt('ARW_EVAL_TIMEOUT_MS', 3600000), repeat = 1, shouldStop = null, now = () => new Date(), sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
   if (!Number.isInteger(repeat) || repeat < 1) throw new Error('--repeat: a positive integer');
   if (config && !CONFIGS[config]) throw new Error(`--config: one of ${Object.keys(CONFIGS).join(', ')}`);
   const cases = loadCases({ only });
@@ -409,6 +429,7 @@ async function runEval({ only, label, config = null, log = () => {}, arw, timeou
     prices: pricesNote(measure.loadPrices()),
     repeat,
     stopped: null,
+    quota_waits: [],
     cases: [],
     totals: null,
   };
@@ -418,15 +439,33 @@ async function runEval({ only, label, config = null, log = () => {}, arw, timeou
     writeFileAtomic(path.join(outDir, 'scorecard.md'), renderScorecard(card));
   };
   save();
+  const maxWaitMs = Number(process.env.ARW_EVAL_QUOTA_WAIT_HOURS || 6) * 3600000;
   run: for (let r = 1; r <= repeat; r += 1) {
-    for (const c of cases) {
+    for (const [i, c] of cases.entries()) {
       const why = shouldStop ? shouldStop(card) : null;
       if (why) {
         card.stopped = why;
         log(`stopped: ${why}`);
         break run;
       }
-      const res = await runOne(c, { outDir, arw, timeoutMs, log, configFlags: config ? CONFIGS[config] : null, dirName: repeat > 1 ? `${c.id}__r${r}` : c.id });
+      let res;
+      for (let waits = 0; ; waits += 1) {
+        res = await runOne(c, { outDir, arw, timeoutMs, log, configFlags: config ? CONFIGS[config] : null, dirName: repeat > 1 ? `${c.id}__r${r}` : c.id });
+        const limit = usageLimitOf(res, now());
+        if (!limit) break;
+        const wait = limit.reset ? limit.reset.getTime() - now().getTime() + QUOTA_MARGIN_MS : null;
+        if (wait == null || wait > maxWaitMs || waits >= 2) {
+          const left = [...cases.slice(i).map((x) => x.id), ...(r < repeat ? [`repeats ${r + 1}-${repeat}`] : [])];
+          card.stopped = `usage limit until ${limit.reset ? limit.reset.toISOString() : 'an unknown time'}${waits >= 2 ? ' (still hit after two waits)' : ''}; not run: ${left.join(', ')}`;
+          log(`stopped: ${card.stopped}`);
+          break run;
+        }
+        const until = new Date(now().getTime() + wait);
+        card.quota_waits.push({ case: c.id, at: now().toISOString(), until: until.toISOString(), message: limit.message });
+        save();
+        log(`usage limit: waiting until ${until.toISOString()} then running ${c.id} again`);
+        await sleep(wait);
+      }
       const score = { ...scoreCase(c, res.runDir), repeat: r, exit_code: res.exit_code, wall_ms: res.elapsed_ms, run_dir: res.runDir ? path.relative(outDir, res.runDir).split(path.sep).join('/') : null };
       if (score.status === 'NO_RESULT' || res.exit_code !== 0) score.error = res.tail;
       card.cases.push(score);

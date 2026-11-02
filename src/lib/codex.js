@@ -9,6 +9,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { ensureDir, envInt } = require('./util');
 const { redactSecrets } = require('./guard');
+const { isUsageLimit } = require('./quota');
 
 function resolveCodex() {
   // CODEX_BIN: the npm package's JS entry (run with this node) or a
@@ -97,6 +98,8 @@ function prepareCodexHome({ source = userCodexHome(), home = codexHome(), userCo
 
 function classifyError(text) {
   const t = String(text || '');
+  // The account's usage limit: a retry fails the same way until it resets.
+  if (isUsageLimit(t)) return 'quota';
   // A rejected request (bad schema, bad parameter) fails identically on every
   // retry: report it as configuration, not as a flaky model.
   if (/invalid_request_error|invalid_json_schema/i.test(t) && !/rate.?limit|not supported when using/i.test(t)) return 'config';

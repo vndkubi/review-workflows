@@ -276,7 +276,7 @@ async function runModelJob(env, spec) {
     release(); // the receipt now counts this call; same synchronous step, no gap
     // integrity: a worker wrote to the checkout or ran a write/exec flag; a
     // retry would read what it left behind.
-    if (['auth', 'billing', 'rate_limit', 'config', 'integrity'].includes(res.error_class)) {
+    if (['auth', 'billing', 'quota', 'rate_limit', 'config', 'integrity'].includes(res.error_class)) {
       log(`blocked ${spec.label}: ${res.error_class} ${res.error_message}`);
       return { status: STATUS.BLOCKED, errors: [`${res.error_class}: ${res.error_message}`] };
     }

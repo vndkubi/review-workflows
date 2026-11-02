@@ -49,7 +49,7 @@ async function runLooseJob({ executor, label, workDir, cwd, model, effort, build
     };
     // integrity: a worker wrote to the checkout or ran a write/exec flag; a
     // retry would read what it left behind.
-    if (['auth', 'billing', 'rate_limit', 'config', 'integrity'].includes(res.error_class)) {
+    if (['auth', 'billing', 'quota', 'rate_limit', 'config', 'integrity'].includes(res.error_class)) {
       return { ok: false, blocked: true, errors: [`${res.error_class}: ${res.error_message}`] };
     }
     if (!res.ok || res.output == null) {
