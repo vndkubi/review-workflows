@@ -10,11 +10,18 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { tmpDir, makeRepo } = require('./helpers');
+
+// Before anything under src/lib is required: runs.js reads ARW_RUNS_DIR once,
+// when it is first loaded (src/lib/AGENTS.md). Requiring eval.js below loads
+// runs.js, so setting this later wrote into the real runs/ directory.
+const RUNS_DIR = tmpDir('arw-free-runs-');
+process.env.ARW_RUNS_DIR = RUNS_DIR;
+process.env.ARW_WT_DIR = tmpDir('arw-free-wt-');
+
 const { freeReviewUnits } = require('../src/lib/plan');
 const { reviewDefaults } = require('../src/lib/setup');
 const { CONFIGS } = require('../src/lib/eval');
-
-process.env.ARW_RUNS_DIR = tmpDir('arw-free-runs-');
+const { RUNS } = require('../src/lib/runs');
 
 function restore([lenses, plain]) {
   for (const [k, v] of [['ARW_HUNT_LENSES', lenses], ['ARW_PLAIN_REVIEW', plain]]) {
@@ -22,6 +29,12 @@ function restore([lenses, plain]) {
     else process.env[k] = v;
   }
 }
+
+// Incident: this file used to set ARW_RUNS_DIR after requiring eval.js, which
+// loads runs.js: `npm test` wrote an acme/free run into the real runs/ dir.
+test('the test runs directory is the temporary one', () => {
+  assert.equal(path.resolve(RUNS), path.resolve(RUNS_DIR));
+});
 
 test('free-review units: one free review per lens and the plain review, nothing planned', () => {
   const files = ['src/A.java', 'src/B.java'];

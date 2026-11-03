@@ -57,6 +57,9 @@ async function evalWithLimit(message, now) {
   const saved = { ...process.env };
   Object.assign(process.env, {
     ARW_EVAL_DIR: dir,
+    // The eval creates a worktree for each case: keep it in the temp dir, not
+    // under the checkout's wt/ (the other eval tests do the same).
+    ARW_WT_DIR: path.join(dir, 'wt'),
     ARW_EXECUTOR_MODULE: path.join(__dirname, 'fixtures', 'quota-once-executor.js'),
     ARW_TEST_QUOTA_MARK: path.join(dir, 'quota-hit'),
     ARW_TEST_QUOTA_MESSAGE: message,
