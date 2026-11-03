@@ -43,6 +43,9 @@ skill from the checkout they review or from the user's setup (how: `src/lib/AGEN
   smoke PR: never merge.
 - While a review, eval or repro of this checkout runs, do not edit anything the frozen hashes cover
   (below): the next verify reports drift and the run aborts. Wait, or work in a worktree.
+- Enable the git hooks once per clone: `git config core.hooksPath .githooks`. The
+  `guard-frozen-edit` Claude hook stays personal (`.claude/settings.local.json`, see
+  `docs/hooks.md`); it is not committed project settings.
 - The reviewer model is `gpt-6-luna`. Improve findings through the runtime (what must be checked,
   prompts, effort) and measure with Luna re-runs on the same PRs; do not switch models to get quality.
   Other models only when the user asks for a comparison baseline.
