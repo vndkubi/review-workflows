@@ -122,8 +122,7 @@ function numbered(text) {
 
 function inputCatalog(context) {
   return context.inputs
-    .filter((i) => i.kind !== 'policy' || /checklist|severity/.test(i.id))
-    .map((i) => `- ${i.id} (${i.kind})`)
+    .filter((i) => i.kind !== 'policy' || /checklist|severity/.test(i.id))    .map((i) => `- ${i.id} (${i.kind})`)
     .join('\n');
 }
 
@@ -141,7 +140,7 @@ function runBlock(runDir, context) {
 - frozen inputs (cite with kind "input" and path = id):
 ${inputCatalog(context)}`,
   ];
-  for (const id of ['evidence-pack', 'review-items', 'spec', 'requirements', 'policy-policies-checklist', 'policy-policies-severity-rubric']) {
+  for (const id of ['evidence-pack', 'review-items', 'spec', 'requirements', 'policy-policies-checklist', 'policy-project-checklist', 'project-profile', 'policy-policies-severity-rubric']) {
     const text = readInput(runDir, context, id);
     if (text != null) parts.push(`INPUT ${id}:\n${numbered(text)}`);
   }
@@ -296,7 +295,8 @@ The lines above are the reviewed head, numbered with their real line numbers (ne
   }
   const checks = unit.checks || [];
   if (checks.length && job.role === checkRole(unit)) {
-    lines.push(`VIEWPOINT CHECKS (required): give exactly one viewpoint_verdicts entry for each of ${checks.join(', ')} (text in input "policy-policies-checklist"). The runtime chose them from what this unit's changed lines touch; answer each against this unit's changed code and the callers it reaches.
+    const where = checks.some((id) => id.startsWith('PRJ-')) ? 'text in input "policy-policies-checklist"; PRJ-* in input "policy-project-checklist"' : 'text in input "policy-policies-checklist"';
+    lines.push(`VIEWPOINT CHECKS (required): give exactly one viewpoint_verdicts entry for each of ${checks.join(', ')} (${where}). The runtime chose them from what this unit's changed lines touch; answer each against this unit's changed code and the callers it reaches.
 - "pass": code evidence that the change meets the viewpoint (the guard, the transaction, the timeout you saw).
 - "fail": it does not — record a finding with authority {"kind":"curated_viewpoint","id":<that id>}.
 - "not_applicable": the change does not reach what the viewpoint is about; say why in note.

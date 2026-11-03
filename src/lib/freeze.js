@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { ROOT, sha256, sha256Value, writeFileAtomic, writeJsonAtomic, readJson, readJsonIfExists, nowIso } = require('./util');
 const git = require('./git');
+const { loadProject } = require('./project-policy');
 
 const POLICY_GLOBS = [
   ['agents', /\.md$/],
@@ -22,16 +23,21 @@ function policyFiles() {
   return out;
 }
 
-// Charters, checklists and schemas as frozen inputs. Charters are read back
+// Charters, checklists and schemas as frozen inputs, plus the reviewed
+// repository's project policy (project-policy.js). Charters are read back
 // from their snapshots; schemas are read live by the validator, so
 // verifyContext checks the live files against the frozen hashes.
-function policyInputs() {
-  return policyFiles().map((file) => ({
+function policyInputs(project = null) {
+  const shared = policyFiles().map((file) => ({
     id: `policy-${path.basename(path.dirname(file))}-${path.basename(file).replace(/\.(md|json)$/, '').replace(/\./g, '-')}`,
     kind: 'policy',
     content: fs.readFileSync(file, 'utf8'),
   }));
+  const own = project ? loadProject(project) : null;
+  return own ? [...shared, ...own.inputs] : shared;
 }
+
+const FROZEN_POLICY_KINDS = new Set(['policy', 'project']);
 
 // Hash of the trusted runtime. Upgrading the tool changes what "valid" means,
 // so a context frozen by an older tool must be refreshed.
@@ -96,12 +102,14 @@ function revisionDir(runDir, contextId) {
 }
 
 // inputs: [{ id, kind, content }] — content is written to inputs/<id>.txt.
-function freezeContext({ runDir, checkout, base, head, changed, reviewable, patch, review, inputs }) {
+// project: the reviewed repository (owner/name), whose project policy is
+// frozen with the shared one.
+function freezeContext({ runDir, checkout, base, head, changed, reviewable, patch, review, inputs, project = null }) {
   if (!git.isClean(checkout)) throw new Error(`checkout ${checkout} has uncommitted or untracked changes`);
   const actualHead = git.revParse(checkout, 'HEAD');
   if (actualHead !== head) throw new Error(`checkout HEAD ${actualHead} != frozen head ${head}`);
 
-  const allInputs = [...inputs, ...policyInputs()];
+  const allInputs = [...inputs, ...policyInputs(project)];
   const ids = new Set();
   for (const input of allInputs) {
     if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(input.id)) throw new Error(`bad input id ${input.id}`);
@@ -111,6 +119,7 @@ function freezeContext({ runDir, checkout, base, head, changed, reviewable, patc
 
   const body = {
     schema_version: '1.0',
+    project,
     source: {
       checkout: path.resolve(checkout),
       base_sha: base,
@@ -184,8 +193,13 @@ function verifyContext(runDir, context, { checkTool = true } = {}) {
   if (!run || !run.review || planDigest(run.review) !== context.plan_sha256) errors.push('run.json review plan changed since freeze');
   if (checkTool && toolDigest() !== context.tool_sha256) errors.push('tool source (src/lib, src/cli) changed since freeze; refresh the context');
   if (checkTool) {
-    const live = new Map(policyInputs().map((p) => [p.id, sha256(p.content)]));
-    const frozen = new Map(context.inputs.filter((i) => i.kind === 'policy').map((i) => [i.id, i.sha256]));
+    let live = new Map();
+    try {
+      live = new Map(policyInputs(context.project || null).map((p) => [p.id, sha256(p.content)]));
+    } catch (err) {
+      errors.push(err.message);
+    }
+    const frozen = new Map(context.inputs.filter((i) => FROZEN_POLICY_KINDS.has(i.kind)).map((i) => [i.id, i.sha256]));
     const drift = [...new Set([...live.keys(), ...frozen.keys()])].filter((id) => live.get(id) !== frozen.get(id)).sort();
     if (drift.length) errors.push(`policy files changed since freeze: ${drift.join(', ')}; refresh the context`);
     const now = executionManifest();

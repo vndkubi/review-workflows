@@ -9,5 +9,7 @@ _study/
 # local repo -> checkout mapping
 config/repos.json
 config/mcp.json
+# per-repository viewpoints and profiles describe private code
+config/projects/
 # eval cases point at private clones and runs hold their code
 evals/

@@ -46,6 +46,8 @@ Measuring the reviewer:
   arw retro [--since 30] [--save]              where calls go, what the validator rejects, suggestions
   arw checklist propose | accept <id> [--text "..."] [--category BZ]
                                                checklist items mined from kept and rejected findings
+  arw project init | check <owner/name>        one repository's own viewpoints and profile
+                                               (config/projects/<owner>/<name>/)
 
 Human gates (the runtime never approves):
   arw gate approve|reject|status (--ticket KEY | --repo owner/name --pr <n>) --gate ${Object.keys(GATES).join('|')} [--note "..."]
@@ -316,6 +318,28 @@ function cmdChecklist(argv) {
     return 0;
   }
   throw new Error('usage: arw checklist propose [--min-runs 2] | accept <id> [--text "..."] [--category BZ]');
+}
+
+function cmdProject(argv) {
+  const [sub, repo] = argv;
+  const project = require('../lib/project-policy');
+  if (sub === 'init' && repo) {
+    const dir = project.initProject(repo);
+    console.log(`wrote ${dir}/checklist.md and profile.md. Replace the example, then: arw project check ${repo}`);
+    return 0;
+  }
+  if (sub === 'check' && repo) {
+    const entry = github.reposConfig().repos[repo];
+    const checkout = entry && entry.checkout && fs.existsSync(entry.checkout) ? entry.checkout : null;
+    const r = project.checkProject(repo, { checkout });
+    for (const item of r.items) console.log(`${item.id}  ${item.text}\n    source: ${item.source}\n    asked when: ${item.paths.length ? `paths ${item.paths.join(', ')}` : 'any non-test source file'}${item.lines ? `, lines ${item.lines}` : ''}`);
+    for (const w of r.warnings) console.log(`warning: ${w}`);
+    for (const e of r.errors) console.log(`error: ${e}`);
+    if (!checkout) console.log(`(sources not checked: no checkout for ${repo} in config/repos.json)`);
+    console.log(`${r.items.length} viewpoint(s) in ${r.dir}`);
+    return r.errors.length ? 1 : 0;
+  }
+  throw new Error('usage: arw project init <owner/name> | check <owner/name>');
 }
 
 function cmdRetro(argv) {
@@ -771,6 +795,8 @@ async function main(argv) {
       return cmdRetro(rest);
     case 'checklist':
       return cmdChecklist(rest);
+    case 'project':
+      return cmdProject(rest);
     case 'watch':
       return cmdWatch(rest);
     case 'status':

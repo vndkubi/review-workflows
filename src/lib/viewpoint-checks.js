@@ -98,23 +98,36 @@ function applies(rule, file) {
   return Boolean(rule.lines && rule.lines.some((re) => all.some((l) => re.test(l))));
 }
 
+// A project viewpoint (project-policy.js) applies where its paths and lines
+// both hold; one without paths is asked of non-test source files only.
+function appliesProject(rule, file) {
+  const p = file.path || file.old_path || '';
+  if (rule.pathRes.length ? !rule.pathRes.some((re) => re.test(p)) : !SOURCE.test(p) || TEST.test(p)) return false;
+  const { added, removed } = changedLines(file);
+  const all = [...added, ...removed];
+  return rule.lines ? all.some((l) => rule.lines.test(l)) : all.length > 0;
+}
+
 // files: parsed patch entries of one unit. Returns checklist ids, in
-// checklist order, at most `max`.
-function selectChecks(files, checklistText, { max = maxChecks() } = {}) {
+// checklist order, then the project's viewpoints in theirs, at most `max`.
+function selectChecks(files, checklistText, { max = maxChecks(), projectRules = [] } = {}) {
   const hit = new Set();
-  for (const rule of RULES) if (files.some((f) => !f.binary && applies(rule, f))) hit.add(rule.id);
-  return checklistIds(checklistText).filter((id) => hit.has(id)).slice(0, max);
+  const live = files.filter((f) => !f.binary);
+  for (const rule of RULES) if (live.some((f) => applies(rule, f))) hit.add(rule.id);
+  const shared = checklistIds(checklistText).filter((id) => hit.has(id));
+  const own = projectRules.filter((rule) => live.some((f) => appliesProject(rule, f))).map((rule) => rule.id);
+  return [...shared, ...own].slice(0, max);
 }
 
 // Whole-diff sweeps and seams answer no matrix: the substantive unit that
 // owns a file answers for it.
 const ANSWERING_KINDS = new Set(['business', 'technical', 'orphan']);
 
-function assignChecks(units, parsed, checklistText) {
+function assignChecks(units, parsed, checklistText, projectRules = []) {
   const byPath = new Map(parsed.map((f) => [f.path, f]));
   for (const u of units) {
     const files = ANSWERING_KINDS.has(u.kind) ? u.covers.filter((c) => c.startsWith('file:')).map((c) => byPath.get(c.slice(5))).filter(Boolean) : [];
-    u.checks = files.length ? selectChecks(files, checklistText) : [];
+    u.checks = files.length ? selectChecks(files, checklistText, { projectRules }) : [];
   }
   return units;
 }

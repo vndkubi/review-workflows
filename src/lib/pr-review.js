@@ -16,6 +16,7 @@ const { assignChecks } = require('./viewpoint-checks');
 const { assignImpacts } = require('./impact-checks');
 const { markBoost } = require('./effort');
 const { freezeContext, loadContext, verifyContext } = require('./freeze');
+const { loadProject } = require('./project-policy');
 const { runLooseJob } = require('./loose-job');
 const { redactSecrets, scanInjection, addedLines, textLines } = require('./guard');
 const { runBatch, finish, runModelJob } = require('./driver');
@@ -281,8 +282,10 @@ async function planPhase({ runDir, run, info, executor, models, log, singleRole,
   }
   // The viewpoint matrix: which checklist viewpoints each unit must answer,
   // from what its changed lines touch (code decides, never the planner).
+  // The repository's own PRJ viewpoints follow the shared ones.
   const checklistFile = path.join(ROOT, 'config', 'policies', 'checklist.md');
-  assignChecks(built.units, parsed, fs.existsSync(checklistFile) ? fs.readFileSync(checklistFile, 'utf8') : '');
+  const project = loadProject(run.identity.repo);
+  assignChecks(built.units, parsed, fs.existsSync(checklistFile) ? fs.readFileSync(checklistFile, 'utf8') : '', project ? project.rules : []);
   // Impact checks: the callers of each unit's changed declarations.
   assignImpacts(built.units, pack.impact);
   // Size and risk: riskiest units run first; a large PR gets a split proposal.
@@ -319,6 +322,7 @@ function freezePhase({ runDir, run, info, tickets, planned }) {
     patch: planned.patch,
     review: run.review,
     inputs,
+    project: run.identity.repo,
   });
   phase(run, runDir, 'freeze', 'EXECUTED_PASS', { context_id: context.context_id });
   return context;

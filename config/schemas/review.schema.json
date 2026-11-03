@@ -466,7 +466,7 @@
       "properties": {
         "viewpoint": {
           "type": "string",
-          "pattern": "^CK-[A-Z]+-[0-9]+$"
+          "pattern": "^(CK|PRJ)-[A-Z]+-[0-9]+$"
         },
         "verdict": {
           "enum": [

@@ -201,7 +201,7 @@ function prDriverLog(id) {
 function viewpointView(checks, packets, checklistText) {
   if (!checks || !checks.length) return null;
   const text = new Map();
-  for (const m of String(checklistText || '').matchAll(/^\s*-\s*(CK-[A-Z]+-[0-9]+):\s*(.*)$/gm)) if (!text.has(m[1])) text.set(m[1], m[2].trim());
+  for (const m of String(checklistText || '').matchAll(/^\s*-\s*((?:CK|PRJ)-[A-Z]+-[0-9]+):\s*(.*)$/gm)) if (!text.has(m[1])) text.set(m[1], m[2].trim());
   const order = [...text.keys()];
   const ids = [...new Set(checks.map((c) => c.viewpoint))].sort((a, b) => (order.indexOf(a) + 1 || 1e9) - (order.indexOf(b) + 1 || 1e9) || a.localeCompare(b));
   const tally = {};
@@ -300,9 +300,14 @@ function prDetail(id) {
     if (packet) packets.push({ unit_id: job.unit_id, role: job.role, packet });
     if (packet) for (const f of packet.findings) full.set(f.id, f);
   }
-  const checklistFile = path.join(rdir, 'inputs', 'policy-policies-checklist.txt');
+  // The shared checklist, then the repository's own PRJ viewpoints.
+  const checklistText = ['policy-policies-checklist', 'policy-project-checklist']
+    .map((id) => path.join(rdir, 'inputs', `${id}.txt`))
+    .filter((file) => fs.existsSync(file))
+    .map((file) => fs.readFileSync(file, 'utf8'))
+    .join('\n');
   out.impact = impactView(out.static && out.static.impact, validation.impacts, packets);
-  out.viewpoints = viewpointView(validation.checks, packets, fs.existsSync(checklistFile) ? fs.readFileSync(checklistFile, 'utf8') : '');
+  out.viewpoints = viewpointView(validation.checks, packets, checklistText);
   const synthesis = validation.synthesis && validation.synthesis.valid ? readJsonIfExists(path.join(rdir, 'synthesis.json')) : null;
   const aliasOf = new Map((synthesis ? synthesis.aliases : []).map((a) => [a.id, a.duplicate_of]));
   const scope = memory.memoryScope(run.identity);
