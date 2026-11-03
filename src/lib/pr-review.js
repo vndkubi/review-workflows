@@ -6,7 +6,7 @@
 // the PR head and the tool are unchanged.
 const fs = require('node:fs');
 const path = require('node:path');
-const { ROOT, readJson, readJsonIfExists, writeJsonAtomic, writeFileAtomic, nowIso, ensureDir, samePath } = require('./util');
+const { ROOT, readJson, readJsonIfExists, writeJsonAtomic, writeFileAtomic, nowIso, ensureDir, samePath, envInt } = require('./util');
 const git = require('./git');
 const { parsePatch } = require('./patch');
 const { buildEvidencePack } = require('./evidence-pack');
@@ -36,6 +36,25 @@ const prompts = require('./prompts');
 function phase(run, runDir, name, status, extra = {}) {
   run.phases[name] = { status, at: nowIso(), ...extra };
   writeJsonAtomic(path.join(runDir, 'run.json'), run);
+}
+
+// The preflight is a real model call (a canary that the worker can read a
+// file). Receipt it with the planning calls so the run's usage and the call
+// budget see it.
+function recordPreflight(runDir, pf) {
+  const file = path.join(ensureDir(path.join(runDir, 'plan-work')), 'receipts.json');
+  const receipts = readJsonIfExists(file, {});
+  (receipts.preflight = receipts.preflight || []).push({
+    label: 'preflight',
+    mode: 'full',
+    model: null,
+    exit_code: 0,
+    elapsed_ms: pf.elapsed_ms,
+    usage: pf.usage,
+    commands: pf.commands,
+    at: nowIso(),
+  });
+  writeJsonAtomic(file, receipts);
 }
 
 // Phase 0. `prepared` lets tests inject a ready checkout instead of GitHub.
@@ -257,6 +276,7 @@ async function planPhase({ runDir, run, info, executor, models, log, singleRole,
       model: models.plan,
       effort: models.effort,
       log,
+      budget: { calls: envInt('ARW_MAX_CALLS', 0), input: envInt('ARW_MAX_INPUT_TOKENS', 0) },
       buildPrompt: (repair) =>
         prompts.planPrompt({
           identity: run.identity,
@@ -381,6 +401,7 @@ async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight
     if (preflight) {
       const pf = await preflight();
       if (!pf.ok) throw new Error(`executor preflight failed (${pf.error_class}): ${pf.error_message}`);
+      recordPreflight(runDir, pf);
     }
     const planned = await planPhase({ runDir, run, info, executor, models, log, singleRole, singleAgent, freeReview, tickets, incremental: Boolean(previous), ciApi: prepared ? ciApi : github.apiGet, impactedRunner });
     context = freezePhase({ runDir, run, info, tickets, planned });
@@ -392,6 +413,7 @@ async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight
   } else if (preflight) {
     const pf = await preflight();
     if (!pf.ok) throw new Error(`executor preflight failed (${pf.error_class}): ${pf.error_message}`);
+    recordPreflight(runDir, pf);
   }
 
   phase(run, runDir, 'batch', 'RUNNING');

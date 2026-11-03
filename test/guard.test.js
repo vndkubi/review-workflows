@@ -64,6 +64,21 @@ test('budget: a job that would start beyond the ceiling stops without calling th
   delete process.env.ARW_MAX_CALLS;
 });
 
+test('budget: planning shares the ceiling; a call past it is not made', async () => {
+  const { runLooseJob } = require('../src/lib/loose-job');
+  const workDir = tmpDir('arw-loose-budget-');
+  fs.writeFileSync(path.join(workDir, 'receipts.json'), JSON.stringify({ preflight: [{ usage: { input_tokens: 10 } }] }));
+  let called = 0;
+  const executor = async () => {
+    called += 1;
+    return { ok: true, output: '{"ok":true}', exit_code: 0, usage: { input_tokens: 10 } };
+  };
+  const res = await runLooseJob({ executor, label: 'plan', workDir, cwd: workDir, buildPrompt: () => 'prompt', validate: () => [], budget: { calls: 1 } });
+  assert.equal(res.ok, false);
+  assert.match(res.errors[0], /budget exceeded: 1 model calls \(limit 1\)/);
+  assert.equal(called, 0, 'the preflight receipt already used the only slot');
+});
+
 test('cleanup previews by default and only touches runs older than the cutoff', () => {
   const { clean, diskUsage } = require('../src/lib/cleanup');
   const runs = process.env.ARW_RUNS_DIR;
