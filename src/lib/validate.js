@@ -238,12 +238,17 @@ function canonicalizeCandidate(candidate, sources) {
     }
     const lines = linesFor(ev, sources);
     if (!lines) return;
-    if (quoteMatchesAt(lines, ev.start_line, ev.end_line, ev.quote).ok) return;
+    const match = quoteMatchesAt(lines, ev.start_line, ev.end_line, ev.quote);
+    // A quote found only by extending past the cited end line is at the
+    // wrong place even though the validator would accept it today. Locate
+    // the exact bytes instead, so the report and the review point at the
+    // real line. A wholly missing range follows the same path.
+    if (match.ok && !String(match.how || '').includes('end_slack')) return;
     const { hits, height } = locateQuote(lines, ev.quote);
     // Code must be unambiguous; a frozen input is the same evidence wherever
     // the text repeats, so its first occurrence is as good as any.
     if (hits.length === 1 || (ev.kind === 'input' && hits.length > 1)) {
-      changes.push(`${at}: re-anchored ${ev.start_line}-${ev.end_line} -> ${hits[0]}-${hits[0] + height - 1}`);
+      changes.push(`${at}: re-anchored ${ev.start_line}-${ev.end_line} -> ${hits[0]}-${hits[0] + height - 1} (canonicalized)`);
       ev.start_line = hits[0];
       ev.end_line = hits[0] + height - 1;
     }
@@ -426,6 +431,13 @@ function validateEvidence(ev, sources, at) {
   }
   const match = quoteMatchesAt(lines, ev.start_line, ev.end_line, ev.quote);
   if (!match.ok) errors.push(`${at}: ${match.error} of ${ev.kind} "${ev.path}" — re-read the lines and copy the quote verbatim, or fix the range`);
+  else if (String(match.how || '').includes('end_slack')) {
+    // The text exists, but only because the end line was stretched. If it
+    // occurs more than once, the cited line is not a location: reject and
+    // repair rather than silently pick one.
+    const { hits } = locateQuote(lines, ev.quote);
+    if (hits.length > 1) errors.push(`${at}: quote is ambiguous in ${ev.kind} "${ev.path}" (it occurs more than once); cite lines that identify one occurrence`);
+  }
   return errors;
 }
 
