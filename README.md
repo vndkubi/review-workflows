@@ -16,6 +16,24 @@ review:  PR + worktree → ticket inputs → plan (model, repaired until valid)
                 → validate (no model) → report.md → publish as a PENDING GitHub review → [person submits]
 ```
 
+## Quickstart
+
+Prerequisites: Node 20+, git, and a signed-in `codex` CLI (for GitHub PRs also `gh auth login`); there
+are no npm dependencies. The five commands below check the machine, create the local config with the
+safe `fast` preset, run one tiny doctor call, review a PR, and open the dashboard.
+
+```bash
+node src/cli/arw.js setup --check                  # what this machine has; changes nothing
+node src/cli/arw.js setup --preset fast            # install .env/repositories and the fast preset
+node src/cli/arw.js doctor                         # one tiny model call
+node src/cli/arw.js review --repo owner/name --pr 123
+node src/cli/arw.js ui                             # open the dashboard; the review prints report.md
+```
+
+The review prints the exact `runs/prs/<owner>__<name>__<pr>/report.md`; the dashboard is another way to
+read the same run. The `fast` preset is the safe first review: one reviewer, no reproduction, at most
+20 calls.
+
 ## From spec text to review items
 
 A model only *declares* the spec: decision areas, input variables, value classes (ranges for numbers and dates,
@@ -321,7 +339,8 @@ npm start            # = node src/cli/arw.js ui  → http://127.0.0.1:8787/
 
 The dashboard lists runs, starts reviews and ticket runs as queued jobs (one at a time) that run the same `arw`
 commands and stream their logs. It shows findings with diffs, rebuttals and the cited source lines at the frozen
-commit, lets you edit requirement items, record gate decisions, and preview or create the pending GitHub review.
+commit, lets you approve or reject the spec (a rejection note rebuilds it), record gate decisions, and preview
+or create the pending GitHub review.
 **Settings** (top bar) edits everything that used to need a text editor: executor, review and repro options
 (written to `.env`, comments kept, applied to new jobs without a restart), the ticket source (an MCP server
 with a connection test, or Jira/Confluence REST), and the repository list. Secrets are write-only: the page
