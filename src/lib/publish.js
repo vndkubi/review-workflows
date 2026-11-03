@@ -5,7 +5,7 @@
 // acceptance can be measured later.
 const fs = require('node:fs');
 const path = require('node:path');
-const { readJson, writeJsonAtomic, nowIso } = require('./util');
+const { readJson, readJsonIfExists, writeJsonAtomic, nowIso } = require('./util');
 const { loadContext, revisionDir } = require('./freeze');
 const { parsePatch, commentableLines } = require('./patch');
 const { packetRel } = require('./driver');
@@ -60,8 +60,11 @@ function buildReview(runDir, { minSeverity = 'P3' } = {}) {
     if (job.status !== 'EXECUTED_PASS') continue;
     for (const f of readJson(path.join(dir, packetRel(job.unit_id, job.role))).findings) byId.set(f.id, f);
   }
-  const metas = validation.findings
-    .filter((m) => m.state !== 'withdrawn' && !aliased.has(m.id) && m.canonical !== false && SEVERITY_RANK[m.severity] <= SEVERITY_RANK[minSeverity])
+  const all = validation.findings.filter((m) => !aliased.has(m.id) && m.canonical !== false);
+  const withdrawn = all.filter((m) => m.state === 'withdrawn');
+  const suggestions = all.filter((m) => m.suggestion);
+  const metas = all
+    .filter((m) => m.state !== 'withdrawn' && !m.suggestion && SEVERITY_RANK[m.severity] <= SEVERITY_RANK[minSeverity])
     .sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || a.id.localeCompare(b.id));
   const comments = [];
   const summaryOnly = [];
@@ -84,17 +87,36 @@ function buildReview(runDir, { minSeverity = 'P3' } = {}) {
     if (ev && line) comments.push({ path: ev.path, line, side: 'RIGHT', body, finding_id: f.id });
     else summaryOnly.push({ body, finding_id: f.id });
   }
+  const notInline = summaryOnly.length + withdrawn.length + suggestions.length + omitted.length;
   const header = [
-    `Automated review draft for \`${run.identity.head_sha.slice(0, 12)}\` — ${comments.length + summaryOnly.length} finding(s), runtime recommendation **${validation.recommendation}**${validation.complete ? '' : ' (review incomplete)'}.`,
+    `Automated review draft for \`${run.identity.head_sha.slice(0, 12)}\` — ${comments.length} finding(s) inline; ${notInline} not posted inline; runtime recommendation **${validation.recommendation}**${validation.complete ? '' : ' (review incomplete)'}.`,
     'Findings are SUSPECTED (static evidence, quotes machine-verified) unless marked otherwise. A person reviewed and submitted this draft.',
   ];
   if (validation.warnings && validation.warnings.length) {
     header.push('', `**Instruction-like text aimed at automated reviewers** was found in this PR (${validation.warnings.length}); it was treated as data:`, ...validation.warnings.map((w) => `- \`${w.where}\` ${w.text}`));
   }
+  header.push('', `Not posted inline: ${summaryOnly.length} in the body because no changed line; ${withdrawn.length} withdrawn / not proven; ${suggestions.length} suggestions (not in the verdict); ${omitted.length} omitted after a person rejected them or similar.`);
+  if (withdrawn.length) {
+    header.push('', '## Withdrawn / not proven', '');
+    for (const meta of withdrawn) {
+      const f = byId.get(meta.id);
+      if (!f) continue;
+      const r = readJsonIfExists(path.join(dir, 'rebuttals', `${meta.rebuttal_from || meta.id}.json`));
+      header.push(`- \`${f.id}\` [${meta.severity}] ${f.title} — withdrawn by the red team${r && r.reason ? `: ${r.reason}` : '.'} No executed reproduction overruled it.`);
+    }
+  }
+  if (suggestions.length) {
+    header.push('', '## Suggestions (not in the verdict)', '');
+    for (const meta of suggestions) {
+      const f = byId.get(meta.id);
+      if (!f) continue;
+      header.push(`- \`${f.id}\` [${meta.severity}] (${f.category}) ${f.title}`);
+    }
+  }
   if (omitted.length) header.push('', `${omitted.length} finding(s) were left out because a person rejected them or similar ones before.`);
   if (validation.gaps.length) header.push('', '**Not verified:**', ...validation.gaps.map((g) => `- ${g}`));
   if (summaryOnly.length) header.push('', '---', '', ...summaryOnly.map((s) => s.body).join('\n\n---\n\n').split('\n'));
-  return { context, run, comments, summaryOnly, omitted, body: header.join('\n') };
+  return { context, run, comments, summaryOnly, omitted, withdrawn, suggestions, body: header.join('\n') };
 }
 
 function publish(runDir, { minSeverity, dryRun, createPendingReview }) {

@@ -137,6 +137,16 @@ function renderReport(runDir, validation, identity) {
     for (const r of impacted.results) out.push(`- \`${r.test}\`: **${r.verdict}**${r.head && r.head.failing && r.head.failing.length ? ` — ${r.head.failing.map((f) => `${f.name}: ${String(f.message || '').replace(/\s+/g, ' ').slice(0, 160)}`).join('; ')}` : ''}`);
   }
   if (validation.gaps.length) out.push('', '## Not verified', '', ...validation.gaps.map((g) => `- ${g}`));
+  const withdrawn = metas.filter((m) => m.state === 'withdrawn' && !aliased.has(m.id));
+  if (withdrawn.length) {
+    out.push('', '## Withdrawn / not proven', '');
+    for (const meta of withdrawn) {
+      const f = findings.get(meta.id);
+      if (!f) continue;
+      const r = rebuttal(meta.rebuttal_from || meta.id);
+      out.push(`- \`${f.id}\` [${meta.severity}] ${f.title} — withdrawn by the red team${r && r.reason ? `: ${r.reason}` : '.'} No executed reproduction overruled it.`);
+    }
+  }
   if (validation.items && validation.items.length) {
     const texts = new Map(JSON.parse(readInput(runDir, loadContext(runDir), 'review-items') || '[]').map((i) => [i.id, i]));
     const tally = {};
@@ -193,9 +203,10 @@ function renderReport(runDir, validation, identity) {
     const f = findings.get(meta.id);
     if (!f) continue;
     if (meta.suggestion) {
-      suggestions.push(`- \`${meta.id}\` (${f.category}) ${f.title}`);
+      suggestions.push(`- \`${meta.id}\` [${meta.severity}] (${f.category}) ${f.title}`);
       continue;
     }
+    if (meta.state === 'withdrawn') continue;
     out.push(renderFinding(f, meta, rebuttal(meta.rebuttal_from || meta.id)), '');
     const reach = reachability(f, staticImpact, ctxSource);
     if (reach && BLOCKING_SEVERITIES.has(f.severity)) out.push(`**Reachability** — ${reach}`, '');
