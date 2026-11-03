@@ -789,7 +789,7 @@ async function main(argv) {
       return cmdClean(rest);
     default:
       console.log(USAGE);
-      return cmd ? 1 : 0;
+      return ['--help', '-h', 'help'].includes(cmd) ? 0 : cmd ? 1 : 0;
   }
 }
 
