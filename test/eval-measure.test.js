@@ -30,8 +30,8 @@ test('fabricated quotes: a code quote that is not at its cited lines, at head or
     { evidence: [ev('return x * 2'), { kind: 'input', path: 'spec', start_line: 1, end_line: 1, quote: 'anything' }] },
     { evidence: [{ ...ev('return x + 1'), path: 'missing.py' }] },
   ];
-  assert.deepEqual(m.quoteStats(r, findings), { quotes: 4, fabricated: 2, rate: 0.5 });
-  assert.deepEqual(m.quoteStats(r, []), { quotes: 0, fabricated: 0, rate: null });
+  assert.deepEqual(m.quoteStats(r, findings), { quotes: 4, fabricated: 1, unchecked: 1, rate: 0.333 });
+  assert.deepEqual(m.quoteStats(r, []), { quotes: 0, fabricated: 0, unchecked: 0, rate: null });
 });
 
 test('attempt quotes: every candidate a model wrote, before any rejection', () => {

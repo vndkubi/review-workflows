@@ -539,7 +539,12 @@ node src/cli/arw.js eval run --label baseline                       # each case:
 node src/cli/arw.js eval label --run <run> --case <id> --finding T1-technical-F2 --as fp
 node src/cli/arw.js eval rescore <run>
 node src/cli/arw.js eval compare <baseline run> <new run>           # exits 1 when an expected defect is newly missed
+node src/cli/arw.js eval compare <run A> <run B> --allow-tool-diff   # compare across tool changes, with a warning
 ```
+
+A compare normally refuses paired statistics when the two runs used different `tool_sha256` values: rerun both
+on the same code first. `--allow-tool-diff` returns the case rows and the paired statistics with a
+`tool_changed` warning, for measuring a prompt or check change across versions.
 
 **Is the multi-agent harness worth its calls?** Run the same cases under named configurations and compare:
 `arw eval run --config single-agent` (one reviewer over the whole diff: no planner, seams, red team or
@@ -567,10 +572,12 @@ cut case again, reusing its valid packets; a later reset (a date) stops the eval
 not run named in the scorecard. A cut case is never scored as a miss.
 
 A finding matches a label when it cites code in that file, within ±3 lines of `lines` (if given), and its
-title/ASIS/TOBE contains one of the `keywords` (if given). **Recall** = expected defects found; **precision** =
-true / (true + known false) among the findings a reader would see (not withdrawn by the red team, not folded as
-duplicates); everything else is listed as unlabelled for you to label. The scorecard also records a defect the
-red team wrongly withdrew, the cost of every case, the tool hash, the arw commit and the model. Comparisons
+title/ASIS/TOBE contains one of the `keywords` (if given). **Recall** = expected defects found in cases that
+produced a score; a `NO_RESULT` case is a gap and is excluded from the denominator, never counted as a miss.
+**Precision** = true / (true + known false) among the findings a reader would see (not withdrawn by the red
+team, not folded as duplicates); with no `not_expected` labels it is **N/A**, not 100%. Everything else is
+listed as unlabelled for you to label. The scorecard also records repeat count and per-case spread, a defect
+the red team wrongly withdrew, the cost of every case, the tool hash, the arw commit and the model. Comparisons
 re-score both runs on the current labels. The dashboard's **Evals** page runs cases as a job, labels findings
 with one click and compares runs. `ARW_EXECUTOR_MODULE` replaces codex with a module (tests use
 `test/fixtures/fake-review-executor.js`).

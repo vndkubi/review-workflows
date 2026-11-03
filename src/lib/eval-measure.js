@@ -12,7 +12,9 @@ const { quoteMatchesAt, splitLines } = require('./validate');
 const { revisionDir } = require('./freeze');
 const git = require('./git');
 
-// { repo, base, head }, findings -> { quotes, fabricated, rate }
+// { repo, base, head }, findings -> { quotes, fabricated, unchecked, rate }
+// A quote whose source or line cannot be read is unchecked, not fabricated:
+// raw-review has no validator, and its score must say what it could not see.
 function quoteStats({ dir, base, head }, findings) {
   const files = new Map();
   const lines = (rev, file) => {
@@ -25,15 +27,22 @@ function quoteStats({ dir, base, head }, findings) {
   };
   let quotes = 0;
   let fabricated = 0;
+  let unchecked = 0;
   for (const f of findings || []) {
     for (const ev of (f && Array.isArray(f.evidence) ? f.evidence : [])) {
       if (!ev || ev.kind !== 'code' || typeof ev.quote !== 'string' || typeof ev.path !== 'string') continue;
       quotes += 1;
+      const start = Number(ev.start_line);
+      const end = Number(ev.end_line);
       const src = lines(ev.revision === 'base' ? base : head, ev.path);
-      if (!src || !quoteMatchesAt(src, Number(ev.start_line), Number(ev.end_line), ev.quote).ok) fabricated += 1;
+      if (!src || !Number.isInteger(start) || !Number.isInteger(end) || !quoteMatchesAt(src, start, end, ev.quote).ok) {
+        if (!src || !Number.isInteger(start) || !Number.isInteger(end)) unchecked += 1;
+        else fabricated += 1;
+      }
     }
   }
-  return { quotes, fabricated, rate: quotes ? Math.round((fabricated / quotes) * 1000) / 1000 : null };
+  const checkable = quotes - unchecked;
+  return { quotes, fabricated, unchecked, rate: checkable ? Math.round((fabricated / checkable) * 1000) / 1000 : null };
 }
 
 // Findings of every raw candidate under the given directories' attempts.

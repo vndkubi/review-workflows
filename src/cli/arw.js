@@ -363,7 +363,7 @@ function cmdRetro(argv) {
 async function cmdEval(argv) {
   const evals = require('../lib/eval');
   const [sub, ...rest] = argv;
-  const args = parseArgs(rest, ['force']);
+  const args = parseArgs(rest, ['force', 'allowToolDiff']);
   const pct = (x) => (x == null ? '-' : `${Math.round(x * 1000) / 10}%`);
   if (sub === 'cases') {
     const cases = evals.loadCases();
@@ -400,12 +400,13 @@ async function cmdEval(argv) {
     return 0;
   }
   if (sub === 'compare') {
-    const c = evals.compare(String(args._[0] || ''), String(args._[1] || ''));
+    const c = evals.compare(String(args._[0] || ''), String(args._[1] || ''), { allowToolDiff: Boolean(args.allowToolDiff) });
     console.log(`${c.a.id} -> ${c.b.id}\nrecall ${pct(c.a.totals.recall)} -> ${pct(c.b.totals.recall)} · precision ${pct(c.a.totals.precision)} -> ${pct(c.b.totals.precision)} · calls ${c.a.totals.calls} -> ${c.b.totals.calls}`);
     const st = c.stats;
     const ci = (d, f = pct) => (d && d.est != null ? `${f(d.est)} [${f(d.lo)}, ${f(d.hi)}]` : '-');
     if (st.tool_mismatch) console.log(`no paired statistics: ${st.tool_mismatch}`);
     else {
+      if (st.tool_changed) console.log(`tool_changed: ${st.tool_changed}; paired statistics are descriptive across tool versions`);
       console.log(`paired on ${st.cases} case(s): McNemar b=${st.mcnemar.b} (only A) c=${st.mcnemar.c} (only B) p=${st.mcnemar.p}`);
       console.log(`B - A, 95% bootstrap CI: recall ${ci(st.recall_diff)} · precision ${ci(st.precision_diff)} · USD per TP ${ci(st.usd_per_tp_diff, (x) => (x == null ? '-' : `${x}`))} · wall ${ci(st.wall_ms_diff, (x) => (x == null ? '-' : `${Math.round(x / 1000)}s`))}`);
     }

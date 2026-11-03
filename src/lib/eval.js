@@ -175,7 +175,27 @@ function ratio(a, b) {
 
 function scoreCase(c, runDir, prices = measure.loadPrices()) {
   const res = runDir && reviewFindings(runDir);
-  if (!res) return { id: c.id, status: 'NO_RESULT', expected: (c.expected || []).length, found: 0, recall: (c.expected || []).length ? 0 : null, tp: 0, fp: 0, unlabelled: 0, precision: null, evidence: null, time: null, details: { expected: [], findings: [] } };
+  const notExpected = (c.not_expected || []).length;
+  if (!res) {
+    return {
+      id: c.id,
+      status: 'NO_RESULT',
+      expected: (c.expected || []).length,
+      scored_expected: 0,
+      not_expected: notExpected,
+      found: 0,
+      // No result is a gap, not a miss: it is excluded from the recall denominator.
+      recall: null,
+      tp: 0,
+      fp: 0,
+      unlabelled: 0,
+      precision: null,
+      gap: 'no review result: the case was not scored',
+      evidence: null,
+      time: null,
+      details: { expected: [], findings: [] },
+    };
+  }
   const { validation, shown, withdrawn } = res;
   const proseShown = assignProse(shown, c.expected || []);
   const proseWithdrawn = assignProse(withdrawn, c.expected || []);
@@ -217,13 +237,19 @@ function scoreCase(c, runDir, prices = measure.loadPrices()) {
     recommendation: validation.recommendation,
     recommendation_ok: c.expected_recommendation ? c.expected_recommendation === validation.recommendation : null,
     expected: expected.length,
+    scored_expected: expected.length,
+    not_expected: notExpected,
     found,
     recall: ratio(found, expected.length),
     severity_ok: expected.filter((e) => e.severity_ok).length,
     tp,
     fp,
     unlabelled: findings.length - tp - fp,
-    precision: ratio(tp, tp + fp),
+    // Precision needs at least one known false positive label to have a
+    // denominator that means something. With zero not_expected labels it is
+    // not measurable, not 100%.
+    precision: notExpected ? ratio(tp, tp + fp) : null,
+    precision_denominator: tp + fp,
     redteam_withdrew_real: expected.filter((e) => !e.found && e.withdrawn_by.length).map((e) => e.id),
     // Shell commands the workers ran (reads, mostly): how deep they looked.
     reads: measure.readsOf(receipts),
@@ -245,15 +271,22 @@ function quantiles(values) {
 function quoteTotals(scores, kind) {
   const quotes = scores.reduce((n, s) => n + ((s.evidence && s.evidence[kind] && s.evidence[kind].quotes) || 0), 0);
   const fabricated = scores.reduce((n, s) => n + ((s.evidence && s.evidence[kind] && s.evidence[kind].fabricated) || 0), 0);
-  return { quotes, fabricated, rate: ratio(fabricated, quotes) };
+  const unchecked = scores.reduce((n, s) => n + ((s.evidence && s.evidence[kind] && s.evidence[kind].unchecked) || 0), 0);
+  return { quotes, fabricated, unchecked, rate: ratio(fabricated, quotes - unchecked) };
 }
 
 function aggregate(scores) {
   const sum = (k) => scores.reduce((n, s) => n + (s[k] || 0), 0);
   const cost = (k) => scores.reduce((n, s) => n + ((s.cost && s.cost[k]) || 0), 0);
+  const scored = scores.filter((s) => s.status !== 'NO_RESULT');
   const expected = sum('expected');
+  // A NO_RESULT case is a gap: its labels stay in `expected` for the report
+  // but are excluded from the recall denominator.
+  const scoredExpected = scored.reduce((n, s) => n + (s.scored_expected == null ? (s.expected || 0) : s.scored_expected), 0);
+  const found = scored.reduce((n, s) => n + (s.found || 0), 0);
   const tp = sum('tp');
   const fp = sum('fp');
+  const notExpected = sum('not_expected');
   // USD only when every case is priced: a missing price is never 0.
   const usd = scores.length && scores.every((s) => s.cost && typeof s.cost.usd === 'number') ? Math.round(scores.reduce((n, s) => n + s.cost.usd, 0) * 10000) / 10000 : null;
   const time = (k) => quantiles(scores.map((s) => s.time && s.time[k]));
@@ -261,13 +294,19 @@ function aggregate(scores) {
     cases: scores.length,
     completed: scores.filter((s) => s.status === 'EXECUTED_PASS').length,
     expected,
-    found: sum('found'),
-    recall: ratio(sum('found'), expected),
+    scored_expected: scoredExpected,
+    found,
+    recall: ratio(found, scoredExpected),
     severity_ok: sum('severity_ok'),
     tp,
     fp,
     unlabelled: sum('unlabelled'),
-    precision: ratio(tp, tp + fp),
+    not_expected: notExpected,
+    // No not_expected labels means precision has no real denominator. Show
+    // it as null (N/A), not as a perfect score.
+    precision: notExpected ? ratio(tp, tp + fp) : null,
+    precision_denominator: tp + fp,
+    gaps: scores.filter((s) => s.status === 'NO_RESULT').length,
     calls: cost('calls'),
     input_tokens: cost('input_tokens'),
     cached_input_tokens: cost('cached_input_tokens'),
@@ -287,8 +326,28 @@ function aggregate(scores) {
 // Totals pool every repeat; with k > 1, the spread across repeats and how
 // much they agree.
 function finalize(card) {
+  card.repeat = card.repeat || 1;
   card.totals = aggregate(card.cases);
-  const k = card.repeat || 1;
+  card.gaps = card.cases
+    .filter((s) => s.status === 'NO_RESULT')
+    .map((s) => ({ id: s.id, repeat: s.repeat || 1, reason: s.gap || s.error || 'NO_RESULT' }));
+  const byCase = new Map();
+  for (const s of card.cases) {
+    const a = byCase.get(s.id) || { id: s.id, n: 0, recall: [], precision: [], found: [] };
+    a.n += 1;
+    if (s.recall != null) a.recall.push(s.recall);
+    if (s.precision != null) a.precision.push(s.precision);
+    a.found.push(s.found || 0);
+    byCase.set(s.id, a);
+  }
+  card.case_spread = [...byCase.values()].map((a) => ({
+    id: a.id,
+    n: a.n,
+    recall: stats.meanSd(a.recall),
+    precision: stats.meanSd(a.precision),
+    found: stats.meanSd(a.found),
+  }));
+  const k = card.repeat;
   if (k > 1) {
     const groups = Array.from({ length: k }, (_, i) => card.cases.filter((x) => (x.repeat || 1) === i + 1)).filter((g) => g.length);
     const per = groups.map((g) => aggregate(g));
@@ -319,12 +378,12 @@ function renderScorecard(card) {
   const lines = [
     `# Eval ${card.id}`,
     '',
-    `- started ${card.started_at}, finished ${card.finished_at || '(running)'} · tool \`${card.tool_sha256.slice(0, 12)}\` · arw commit \`${(card.arw_commit || '?').slice(0, 12)}\` · model ${card.model || 'default'} · config ${card.config || 'per-case flags'}`,
-    `- **recall ${pct(t.recall)}** (${t.found}/${t.expected} expected defects found, ${t.severity_ok} at the expected severity) · **precision ${pct(t.precision)}** on labelled findings (${t.tp} true, ${t.fp} known false) · ${t.unlabelled} unlabelled`,
+    `- started ${card.started_at}, finished ${card.finished_at || '(running)'} · tool \`${card.tool_sha256.slice(0, 12)}\` · arw commit \`${(card.arw_commit || '?').slice(0, 12)}\` · model ${card.model || 'default'} · config ${card.config || 'per-case flags'} · repeat ${card.repeat || 1}${(card.repeat || 1) === 1 ? ' (one run per case: spread not measured)' : ''}`,
+    `- **recall ${pct(t.recall)}** (${t.found}/${t.scored_expected == null ? t.expected : t.scored_expected} scored expected defects found${t.gaps ? `; ${t.expected - (t.scored_expected == null ? t.expected : t.scored_expected)} label(s) in ${t.gaps} NO_RESULT gap(s)` : ''}, ${t.severity_ok} at the expected severity) · ${t.not_expected ? `**precision ${pct(t.precision)}** on labelled findings (${t.tp} true, ${t.fp} known false; ${t.not_expected} not_expected label(s))` : `**precision not measurable: no not_expected labels** (${t.tp} true, ${t.fp} known false)`} · ${t.unlabelled} unlabelled`,
     `- ${t.completed}/${t.cases} case(s) complete · ${t.calls} model calls · tokens in ${t.input_tokens} (cached ${t.cached_input_tokens || 0}) / out ${t.output_tokens}`,
     `- reads: ${t.reads && t.reads.calls ? `${t.reads.commands} shell commands in ${t.reads.calls} counted call(s), ${t.reads.per_call} per call` : 'not counted (receipts without command counts)'}`,
     `- cost ${t.usd == null ? `USD unknown${t.unpriced && t.unpriced.length ? ` (no price for ${t.unpriced.join(', ')})` : ''}` : `$${t.usd} · $${t.usd_per_tp == null ? '–' : t.usd_per_tp} per true positive`}${card.prices && card.prices.date ? ` · prices of ${card.prices.date}` : ''}`,
-    `- fabricated quotes: final ${t.evidence ? `${t.evidence.final.fabricated}/${t.evidence.final.quotes}` : '–'} · in all model attempts ${t.evidence ? `${t.evidence.attempts.fabricated}/${t.evidence.attempts.quotes}` : '–'}`,
+    `- fabricated quotes: final ${t.evidence ? `${t.evidence.final.fabricated}/${t.evidence.final.quotes} (${t.evidence.final.unchecked || 0} unchecked)` : '–'} · in all model attempts ${t.evidence ? `${t.evidence.attempts.fabricated}/${t.evidence.attempts.quotes} (${t.evidence.attempts.unchecked || 0} unchecked)` : '–'}`,
     `- time per case p50/p95 (s): wall ${secs(t.wall_ms)} · model ${secs(t.model_ms)} · execution ${secs(t.exec_ms)} · rate-limit waiting ${secs(t.wait_ms)}`,
     ...(card.quota_waits && card.quota_waits.length ? [`- usage limit waited out ${card.quota_waits.length} time(s): ${card.quota_waits.map((w) => `${w.case} until ${w.until}`).join(', ')}`] : []),
     ...(card.stopped ? [`- **stopped**: ${card.stopped}`] : []),
@@ -333,9 +392,23 @@ function renderScorecard(card) {
     '|---|---|---|---|---|---|---|---|---|',
   ];
   for (const s of card.cases) {
-    const missed = (s.details.expected || []).filter((e) => !e.found).map((e) => e.id + (e.withdrawn_by && e.withdrawn_by.length ? ' (withdrawn by red team)' : ''));
-    lines.push(`| ${s.id} | ${s.status} | ${pct(s.recall)} | ${pct(s.precision)} | ${s.tp} | ${s.fp} | ${s.unlabelled} | ${s.cost ? s.cost.calls : 0} | ${missed.join(', ') || '–'} |`);
+    const missed = s.status === 'NO_RESULT'
+      ? 'NO_RESULT (gap, excluded from recall)'
+      : (s.details.expected || []).filter((e) => !e.found).map((e) => e.id + (e.withdrawn_by && e.withdrawn_by.length ? ' (withdrawn by red team)' : '')).join(', ') || '–';
+    lines.push(`| ${s.id} | ${s.status} | ${pct(s.recall)} | ${pct(s.precision)} | ${s.tp} | ${s.fp} | ${s.unlabelled} | ${s.cost ? s.cost.calls : 0} | ${missed} |`);
   }
+  const decision = [
+    `- repeat: ${card.repeat || 1}${(card.repeat || 1) === 1 ? ' (one run per case: the per-case spread is not measured; use --repeat k)' : ''}`,
+    `- precision denominator: ${t.not_expected ? `${t.not_expected} not_expected label(s)` : 'none (N/A; not a perfect score)'}`,
+    `- gaps: ${(card.gaps || []).length} case(s) with NO_RESULT, excluded from recall`,
+  ];
+  lines.push('', '## Decision', '', ...decision);
+  if (card.case_spread && card.case_spread.length) {
+    const spread = (x) => (x.mean == null ? '–' : `${pct(x.mean)} ± ${pct(x.sd)}`);
+    lines.push('', '## Per-case spread', '', '| Case | Runs | Recall mean ± sd | Precision mean ± sd | Found mean ± sd |', '|---|---|---|---|---|',
+      ...card.case_spread.map((s) => `| ${s.id} | ${s.n} | ${spread(s.recall)} | ${spread(s.precision)} | ${spread(s.found)} |`));
+  }
+  if ((card.gaps || []).length) lines.push('', '## Gaps (NO_RESULT, not counted as misses)', '', ...card.gaps.map((g) => `- ${g.id}${g.repeat > 1 ? ` (repeat ${g.repeat})` : ''}: ${g.reason}`));
   const failed = card.cases.filter((s) => s.error);
   if (failed.length) lines.push('', '## Cases without a clean result', '', ...failed.map((s) => `- ${s.id} (exit ${s.exit_code}): ${s.error}`));
   const approx = card.cases.flatMap((s) => (s.details.expected || []).filter((e) => e.approx && e.found).map((e) => `- ${s.id} · ${e.id} by \`${e.by.join(', ')}\`: ${String(e.prose || '').slice(0, 160)}`));
@@ -522,7 +595,7 @@ function scoredNow(id) {
 }
 
 // What changed between two eval runs, case by case, on the current labels.
-function compare(aId, bId) {
+function compare(aId, bId, { allowToolDiff = false } = {}) {
   const a = scoredNow(aId);
   const b = scoredNow(bId);
   const byId = new Map(a.cases.map((s) => [s.id, s]));
@@ -541,17 +614,19 @@ function compare(aId, bId) {
       newly_found: [...after].filter((x) => !before.has(x)),
     };
   });
-  return { a: { id: a.id, totals: a.totals, model: a.model, config: a.config, tool: a.tool_sha256 }, b: { id: b.id, totals: b.totals, model: b.model, config: b.config, tool: b.tool_sha256 }, rows, stats: pairedStats(a, b) };
+  return { a: { id: a.id, totals: a.totals, model: a.model, config: a.config, tool: a.tool_sha256 }, b: { id: b.id, totals: b.totals, model: b.model, config: b.config, tool: b.tool_sha256 }, rows, stats: pairedStats(a, b, { allowToolDiff }) };
 }
 
 // Per case, averaged over its repeats; per label, found by a majority of them.
 function perCase(card) {
   const out = new Map();
   for (const s of card.cases) {
-    const o = out.get(s.id) || { n: 0, found: 0, expected: 0, tp: 0, fp: 0, usd: 0, priced: true, wall: 0, labels: new Map() };
+    const o = out.get(s.id) || { n: 0, found: 0, expected: 0, not_expected: 0, tp: 0, fp: 0, usd: 0, priced: true, wall: 0, labels: new Map() };
     o.n += 1;
     o.found += s.found || 0;
-    o.expected += s.expected || 0;
+    // A NO_RESULT case is a gap, not a miss, so it leaves the denominator.
+    o.expected += s.status === 'NO_RESULT' ? 0 : (s.expected || 0);
+    o.not_expected += s.not_expected || 0;
     o.tp += s.tp || 0;
     o.fp += s.fp || 0;
     if (s.cost && typeof s.cost.usd === 'number') o.usd += s.cost.usd;
@@ -570,8 +645,11 @@ function perCase(card) {
 
 // McNemar on the labels both runs scored, and bootstrap CIs (cases resampled,
 // fixed seed) for B - A. Runs on different tool code are not compared.
-function pairedStats(a, b, { n = 10000, seed = 42 } = {}) {
-  if (a.tool_sha256 !== b.tool_sha256) return { tool_mismatch: `tool_sha256 differs (${String(a.tool_sha256).slice(0, 12)} vs ${String(b.tool_sha256).slice(0, 12)}): rerun both on the same code` };
+function pairedStats(a, b, { n = 10000, seed = 42, allowToolDiff = false } = {}) {
+  const toolDiff = a.tool_sha256 !== b.tool_sha256
+    ? `tool_sha256 differs (${String(a.tool_sha256).slice(0, 12)} vs ${String(b.tool_sha256).slice(0, 12)})`
+    : null;
+  if (toolDiff && !allowToolDiff) return { tool_mismatch: `${toolDiff}: rerun both on the same code, or pass --allow-tool-diff to compare and see the warning` };
   const pa = perCase(a);
   const pb = perCase(b);
   const ids = [...pa.keys()].filter((id) => pb.has(id)).sort();
@@ -589,12 +667,13 @@ function pairedStats(a, b, { n = 10000, seed = 42 } = {}) {
   const rb = ids.map((id) => pb.get(id));
   const sum = (rows, k) => rows.reduce((x, r) => x + r[k], 0);
   const recall = (rows) => (sum(rows, 'expected') ? sum(rows, 'found') / sum(rows, 'expected') : null);
-  const precision = (rows) => (sum(rows, 'tp') + sum(rows, 'fp') ? sum(rows, 'tp') / (sum(rows, 'tp') + sum(rows, 'fp')) : null);
+  const precision = (rows) => (sum(rows, 'not_expected') && sum(rows, 'tp') + sum(rows, 'fp') ? sum(rows, 'tp') / (sum(rows, 'tp') + sum(rows, 'fp')) : null);
   const usdPerTp = (rows) => (rows.every((r) => r.usd != null) && sum(rows, 'tp') ? sum(rows, 'usd') / sum(rows, 'tp') : null);
   const wall = (rows) => (rows.length ? sum(rows, 'wall') / rows.length : null);
   const opts = { n, seed };
   return {
     tool_mismatch: null,
+    tool_changed: toolDiff,
     cases: ids.length,
     mcnemar: stats.mcnemar(only_a, only_b),
     recall_diff: stats.bootstrapDiff(ra, rb, recall, opts),
@@ -791,4 +870,4 @@ function labelFinding({ runId, caseId, findingId, as, severity, linkTo, repeat =
   return label;
 }
 
-module.exports = { runMatrix, blindExport, blindImport, pairedStats, scoredNow, CONFIGS, evalDir, casesDir, writeCase, loadCases, validateCase, scoreCase, aggregate, renderScorecard, runEval, rescore, listRuns, loadRun, compare, caseFromRun, labelFinding, matches, assignProse, keywordsOf };
+module.exports = { runMatrix, blindExport, blindImport, pairedStats, scoredNow, CONFIGS, evalDir, casesDir, writeCase, loadCases, validateCase, scoreCase, aggregate, finalize, renderScorecard, runEval, rescore, listRuns, loadRun, compare, caseFromRun, labelFinding, matches, assignProse, keywordsOf };
