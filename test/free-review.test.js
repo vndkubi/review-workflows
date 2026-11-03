@@ -89,4 +89,9 @@ test('a free-review run calls no planner and reviews with the free reviews only'
   assert.deepEqual([...new Set(units)].sort(), ['V0', 'V1']);
   assert.ok(prompts.some((p) => /FREE REVIEW V1 \(lens: business\)/.test(p)));
   assert.ok(out.validation.jobs.every((j) => j.status === 'EXECUTED_PASS'), JSON.stringify(out.validation.jobs.filter((j) => j.errors.length), null, 1));
+  // The free review reads the whole change: its unit covers every file, so a
+  // missing per-file row is not an unreviewed file.
+  assert.deepEqual(out.validation.gaps, []);
+  assert.equal(out.validation.complete, true);
+  assert.equal(out.validation.status, 'EXECUTED_PASS');
 });

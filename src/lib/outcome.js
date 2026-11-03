@@ -76,10 +76,18 @@ function computeOutcome({ packets, jobs, clusters, rebuttals, items, repro = new
     if (job.required && job.status !== 'EXECUTED_PASS') gaps.push(`${job.unit_id}/${job.role} is ${job.status}`);
   }
   // "unverified" is an honest answer from one reviewer, but a changed file
-  // that no valid packet reviewed was not reviewed at all.
+  // that no valid packet reviewed was not reviewed at all. A free review
+  // (hunt unit) covers every file in its scope by definition: it reads the
+  // whole change and answers one viewpoint row, so its file rows cannot be
+  // asked of the model (coverageIds) but the unit still reviewed them.
   if (reviewable) {
     const reviewed = new Set();
-    for (const { packet } of packets) for (const row of packet.coverage || []) if (row.disposition === 'reviewed') reviewed.add(row.id);
+    const unitById = new Map((units || []).map((u) => [u.id, u]));
+    for (const { unit_id, packet } of packets) {
+      for (const row of packet.coverage || []) if (row.disposition === 'reviewed') reviewed.add(row.id);
+      const unit = unitById.get(unit_id);
+      if (unit && unit.hunt) for (const cover of unit.covers || []) if (cover.startsWith('file:')) reviewed.add(cover);
+    }
     for (const file of reviewable) if (!reviewed.has(`file:${file}`)) gaps.push(`file:${file} has no "reviewed" coverage in any valid packet`);
   }
   const verdicts = new Map();
