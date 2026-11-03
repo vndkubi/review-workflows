@@ -80,20 +80,22 @@ the control from those artifacts and rejects a record that disagrees with them. 
 as well as passing tests. (A person with write access to the run directory could still rewrite artifacts and
 record together; the hashes protect against accidents and partial edits, not against that.)
 
-**Isolation.** By default tests run on this machine in a separate worktree with secrets removed from the
-environment — a build can still read what you can read and reach the network. `ARW_SANDBOX=docker` runs repro
-and impacted tests in a throwaway container instead: only the worktree is mounted, no network
-(`ARW_SANDBOX_NETWORK`), memory/CPU/process limits, killed on timeout. Images per toolchain
-(`ARW_SANDBOX_IMAGE_MAVEN` / `_GRADLE` / `_PYTEST`); `ARW_SANDBOX_M2` mounts a local Maven repository read-only
-so builds work offline. Checked with `maven:3.9-eclipse-temurin-17`: a test passing on base and failing on head,
-no network, about 20 s per run. Built-in commands (Maven, Gradle, pytest) start in the container as a program with
-arguments, no shell; a configured `test_command` runs through `sh -c`. If docker or its daemon is unavailable
-(`ARW_DOCKER` names another CLI), impacted tests are ENVIRONMENT_BLOCKED, and repro falls back to a prepared
-host only when `ARW_SANDBOX_FALLBACK=host` (the default; set it to `off` to refuse). Impacted-test
-results record where they ran. `ARW_DOCKER_TESTS=1 npm test` also runs the isolation tests in real containers
-(network, host environment, links made inside the container, a rewritten `.git` file, timeout). The sandbox settings are part of the frozen context: switching between host and
-docker, or changing image, network, limits or mounts, is drift. Image tags can move; pin `name@sha256:<digest>`
-to make the image exact.
+**Isolation.** `ARW_REPRO=on` and `ARW_SANDBOX=off` are the defaults, but PR code does not run on the host
+without explicit consent: with no sandbox (or a docker fallback) and no `ARW_ALLOW_HOST_CODE=1`, repro is
+ENVIRONMENT_BLOCKED and names the setting; no host command is started. Set `ARW_ALLOW_HOST_CODE=1` only for
+repositories you trust, or use `ARW_SANDBOX=docker`, which runs repro and impacted tests in a throwaway
+container instead: only the worktree is mounted, no network (`ARW_SANDBOX_NETWORK`), memory/CPU/process limits,
+killed on timeout. Images per toolchain (`ARW_SANDBOX_IMAGE_MAVEN` / `_GRADLE` / `_PYTEST`); `ARW_SANDBOX_M2`
+mounts a local Maven repository read-only so builds work offline. Checked with
+`maven:3.9-eclipse-temurin-17`: a test passing on base and failing on head, no network, about 20 s per run.
+Built-in commands (Maven, Gradle, pytest) start in the container as a program with arguments, no shell; a
+configured `test_command` runs through `sh -c`. If docker or its daemon is unavailable (`ARW_DOCKER` names
+another CLI), impacted tests are ENVIRONMENT_BLOCKED, and repro falls back to a prepared host only when both
+`ARW_ALLOW_HOST_CODE=1` and `ARW_SANDBOX_FALLBACK=host` (the latter is the default; set it to `off` to refuse).
+Impacted-test results record where they ran. `ARW_DOCKER_TESTS=1 npm test` also runs the isolation tests in real
+containers (network, host environment, links made inside the container, a rewritten `.git` file, timeout). The
+sandbox settings are part of the frozen context: switching between host and docker, or changing image, network,
+limits or mounts, is drift. Image tags can move; pin `name@sha256:<digest>` to make the image exact.
 
 What the container cannot protect is the harness's own file access on the host. The worktree is PR code, so
 any path in it may be a symlink (tracked, or made by a build). Writing the model's test, applying the fix, and

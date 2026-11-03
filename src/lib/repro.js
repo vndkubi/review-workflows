@@ -81,18 +81,34 @@ function gradleWrapper() {
 // ARW_SANDBOX=docker a container, else the host shell.
 // fallback: false keeps PR code off the host when the sandbox is down. Only
 // repro falls back: it prepares the host and runs the head offline.
+const HOST_CODE_BLOCKED = 'host code execution is disabled: set ARW_ALLOW_HOST_CODE=1 to run PR code on this host (ARW_SANDBOX=off or a sandbox fallback)';
+
+function hostCodeAllowed() {
+  return process.env.ARW_ALLOW_HOST_CODE === '1';
+}
+
+function blockedHostRunner() {
+  return Promise.resolve({ exit_code: null, spawn_error: HOST_CODE_BLOCKED, elapsed_ms: 0 });
+}
+
+function hostRunner() {
+  return hostCodeAllowed() ? shellRunner : blockedHostRunner;
+}
+
 function defaultRunner(runDir = null, log = () => {}, { fallback = true } = {}) {
   const sandbox = require('./sandbox');
   const choice = fallback ? require('./host-env').runnerChoice({ mode: sandbox.mode(), daemonError: sandbox.mode() === 'host' ? null : sandbox.daemonError() }) : null;
   if (choice === 'host' && sandbox.mode() !== 'host') {
-    log(`repro: the ${sandbox.mode()} sandbox is unavailable (${sandbox.daemonError()}); running on the host (ARW_SANDBOX_FALLBACK=off to refuse)`);
-    return shellRunner;
+    log(hostCodeAllowed()
+      ? `repro: the ${sandbox.mode()} sandbox is unavailable (${sandbox.daemonError()}); running on the host (ARW_SANDBOX_FALLBACK=off to refuse)`
+      : `repro: the ${sandbox.mode()} sandbox is unavailable (${sandbox.daemonError()}); host execution is disabled (set ARW_ALLOW_HOST_CODE=1 to allow it)`);
+    return hostRunner();
   }
   if (sandbox.mode() === 'bootstrap') {
     const b = require('./bootstrap');
     return b.environmentRunner(runDir ? b.loadReviewEnvironment(runDir) : null);
   }
-  return sandbox.enabled() ? sandbox.dockerRunner : shellRunner;
+  return sandbox.enabled() ? sandbox.dockerRunner : hostRunner();
 }
 
 // What may be put into a shell command line from a test: a path or a
@@ -601,8 +617,6 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
   const hostEnv = require('./host-env');
   const hostReady = new Map();
   const context = loadContext(runDir);
-  const drift = verifyContext(runDir, context);
-  if (drift.length) throw new Error(`context no longer holds: ${drift.join('; ')}`);
   const rdir = revisionDir(runDir, context.context_id);
   const validation = readJson(path.join(rdir, 'validation.json'));
   const findingsById = new Map();
@@ -613,13 +627,29 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
   }
   const targets = reproTargets(validation, findingsById);
   const outDir = ensureDir(reproDir(runDir, context));
+  const results = [];
+  const hostSelected = execRun === blockedHostRunner || execRun === shellRunner || (!runner && require('./sandbox').mode() === 'host');
+  if (!hostCodeAllowed() && hostSelected) {
+    log(`repro: ${HOST_CODE_BLOCKED}`);
+    for (const { finding, cluster_id } of targets) {
+      const rec = {
+        schema_version: '1.0', context_digest: context.context_digest,
+        finding_id: finding.id, cluster_id: cluster_id || null, at: nowIso(),
+        status: 'ENVIRONMENT_BLOCKED', reason: HOST_CODE_BLOCKED, runs: [],
+      };
+      writeJsonAtomic(path.join(outDir, `${finding.id}.json`), rec);
+      results.push(rec);
+    }
+    return results;
+  }
+  const drift = verifyContext(runDir, context);
+  if (drift.length) throw new Error(`context no longer holds: ${drift.join('; ')}`);
   const existing = loadReproRecords(runDir, context).records;
   const reviewItems = JSON.parse(readInput(runDir, context, 'review-items') || '[]');
   const timeoutMs = envInt('REPRO_TIMEOUT_MS', 15 * 60 * 1000);
   const receiptsFile = path.join(rdir, 'receipts.json');
   const receipts = readJsonIfExists(receiptsFile, {});
   const env = { runDir, context, executor, log, receipts, flushReceipts: () => writeJsonAtomic(receiptsFile, receipts), sources: makeSources(runDir, context) };
-  const results = [];
   if (!targets.length) log('repro: no blocking finding to reproduce');
   let wt = null;
 
@@ -838,4 +868,4 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
   return results;
 }
 
-module.exports = { reproDone, runRepro, compileErrors, readJunitReport, removeJunitReports, loadReproRecords, validateReproTest, reproTargetNames, applyFix, parseJunit, classify, statusFromRuns, controlOf, trailer, parseTrailer, detectToolchain, commandFor, moduleOf, shellRunner, scrubbedEnv, reproTargets, pythonCommand, sandboxPython, gradleWrapper, defaultRunner };
+module.exports = { reproDone, runRepro, compileErrors, readJunitReport, removeJunitReports, loadReproRecords, validateReproTest, reproTargetNames, applyFix, parseJunit, classify, statusFromRuns, controlOf, trailer, parseTrailer, detectToolchain, commandFor, moduleOf, shellRunner, blockedHostRunner, hostCodeAllowed, HOST_CODE_BLOCKED, scrubbedEnv, reproTargets, pythonCommand, sandboxPython, gradleWrapper, defaultRunner };

@@ -80,14 +80,55 @@ test('no docker, ARW_SANDBOX_FALLBACK=off: the run is ENVIRONMENT_BLOCKED, nothi
   }
 });
 
-test('no docker, default fallback: the run moves to the (prepared) host runner', () => {
+test('no docker, default fallback without host consent: the host is refused', () => {
   const dir = tmpDir('arw-boundary-fallback-');
   const repro = require('../src/lib/repro');
-  const runner = withEnv({ ARW_SANDBOX: 'docker', ARW_DOCKER: path.join(dir, 'no-such-docker'), ARW_SANDBOX_FALLBACK: undefined }, () => {
+  const runner = withEnv({ ARW_SANDBOX: 'docker', ARW_DOCKER: path.join(dir, 'no-such-docker'), ARW_SANDBOX_FALLBACK: undefined, ARW_ALLOW_HOST_CODE: null }, () => {
     sandbox._resetDaemon();
     return repro.defaultRunner(null, () => {});
   });
-  assert.equal(runner, repro.shellRunner);
+  assert.equal(runner, repro.blockedHostRunner);
+  withEnv({ ARW_ALLOW_HOST_CODE: '1' }, () => assert.equal(repro.defaultRunner(null, () => {}), repro.shellRunner));
+});
+
+test('host repro without consent is ENVIRONMENT_BLOCKED and names ARW_ALLOW_HOST_CODE', async () => {
+  const { sha256Value } = require('../src/lib/util');
+  const { runRepro, shellRunner } = require('../src/lib/repro');
+  const { revisionDir, reviewDir } = require('../src/lib/freeze');
+  const dir = tmpDir('arw-boundary-host-consent-');
+  const contextId = '0123456789abcdef';
+  const body = { schema_version: '1.0', project: null, source: {}, plan_sha256: 'p', tool_sha256: 't', execution: {}, inputs: [] };
+  const digest = sha256Value(body);
+  const rev = revisionDir(dir, contextId);
+  fs.mkdirSync(path.join(rev, 'packets', 'business'), { recursive: true });
+  fs.mkdirSync(reviewDir(dir), { recursive: true });
+  fs.writeFileSync(path.join(reviewDir(dir), 'context.json'), JSON.stringify({ context_id: contextId, context_digest: digest }));
+  fs.writeFileSync(path.join(rev, 'context.json'), JSON.stringify({ ...body, context_id: contextId, context_digest: digest, frozen_at: '2026-11-04T00:00:00.000Z' }));
+  const finding = {
+    id: 'B1-business-F1', severity: 'P2', title: 'a boundary', state: 'not_challenged',
+    suggestion: false, canonical: true, cluster_id: null,
+  };
+  fs.writeFileSync(path.join(rev, 'packets', 'business', 'B1.json'), JSON.stringify({ findings: [{ id: finding.id, severity: 'P2', title: finding.title, evidence: [] }] }));
+  fs.writeFileSync(path.join(rev, 'validation.json'), JSON.stringify({
+    context_id: contextId, context_digest: digest,
+    findings: [finding],
+    jobs: [{ unit_id: 'B1', role: 'business', status: 'EXECUTED_PASS' }],
+  }));
+  let started = false;
+  const results = await withEnv({ ARW_SANDBOX: 'off', ARW_REPRO: 'on', ARW_ALLOW_HOST_CODE: null }, () => runRepro({
+    runDir: dir,
+    runner: shellRunner,
+    prompts: {},
+    runModelJob: () => {
+      started = true;
+      throw new Error('no model call for a blocked host');
+    },
+    makeSources: () => ({}),
+  }));
+  assert.equal(started, false, 'not even the test writer ran');
+  assert.equal(results[0].status, 'ENVIRONMENT_BLOCKED');
+  assert.match(results[0].reason, /ARW_ALLOW_HOST_CODE/);
+  assert.ok(!fs.existsSync(path.join(dir, 'repro-wt')), 'no worktree was made');
 });
 
 test('impacted-test results record where they ran', async () => {

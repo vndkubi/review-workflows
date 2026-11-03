@@ -116,14 +116,16 @@ test('the environment check lists each tool, says which are required and how to 
   const { checkEnvironment } = require('../src/lib/setup');
   const r = checkEnvironment({ probe: probeWith({ ...allOk, codex: false, 'codex login': false, jdk: false }), platform: 'win32' });
   const byId = Object.fromEntries(r.items.map((i) => [i.id, i]));
-  assert.deepEqual(Object.keys(byId), ['node', 'git', 'codex', 'codex login', 'gh', 'gh auth', 'docker', 'jdk']);
+  assert.deepEqual(Object.keys(byId), ['node', 'git', 'codex', 'codex login', 'gh', 'gh auth', 'docker', 'host-code', 'jdk']);
   assert.equal(r.ready, false, 'codex is required');
   assert.equal(byId.codex.required, true);
   assert.match(byId.codex.fix, /npm i -g @openai\/codex/);
   assert.equal(byId.jdk.required, false);
   assert.match(byId.jdk.fix, /Temurin/);
   assert.equal(byId.git.fix, null, 'nothing to fix');
-  assert.equal(checkEnvironment({ probe: probeWith(allOk) }).ready, true);
+  const { defaultProbe } = require('../src/lib/setup');
+  assert.match(defaultProbe('host-code').fix, /ARW_ALLOW_HOST_CODE=1/);
+  assert.equal(checkEnvironment({ probe: probeWith({ ...allOk, 'host-code': true }) }).ready, true);
   // A probe can say what fixes it (Docker installed but not running: start it).
   const stopped = checkEnvironment({ probe: (id) => (id === 'docker' ? { ok: false, detail: 'installed, daemon not running', fix: 'start Docker Desktop' } : { ok: true }) });
   assert.equal(stopped.items.find((i) => i.id === 'docker').fix, 'start Docker Desktop');
@@ -155,6 +157,7 @@ test('arw setup: --check reports and changes nothing; --preset applies one', asy
     const check = spawnSync(process.execPath, [path.join(ROOT, 'src', 'cli', 'arw.js'), 'setup', '--check'], { encoding: 'utf8', env, timeout: 120000 });
     assert.match(check.stdout, /Presets/);
     assert.match(check.stdout, /fast .*Fast/);
+    assert.match(check.stdout, /ARW_ALLOW_HOST_CODE=1/);
     assert.ok(!fs.existsSync(path.join(dir, '.env')), '--check writes nothing');
     const apply = spawnSync(process.execPath, [path.join(ROOT, 'src', 'cli', 'arw.js'), 'setup', '--preset', 'fast'], { encoding: 'utf8', env, timeout: 120000 });
     assert.equal(apply.status, 0, apply.stdout + apply.stderr);

@@ -144,16 +144,18 @@ test('sandbox fallback: an unreachable docker daemon falls back to the host unle
 // Incident (suite run with Docker Desktop stopped): impacted tests, which run
 // online and without host prep, fell back to the host although the sandbox
 // environment was recorded BLOCKED. Only repro may fall back.
-test('sandbox fallback: only repro moves to the host, impacted tests never do', () => {
-  const saved = { s: process.env.ARW_SANDBOX, d: process.env.ARW_DOCKER };
+test('sandbox fallback: only repro may move to the host, and only with consent', () => {
+  const saved = { s: process.env.ARW_SANDBOX, d: process.env.ARW_DOCKER, a: process.env.ARW_ALLOW_HOST_CODE };
   process.env.ARW_SANDBOX = 'docker';
   process.env.ARW_DOCKER = path.join(tmpDir('arw-nodocker-'), 'no-such-docker');
   try {
-    const { defaultRunner, shellRunner } = require('../src/lib/repro');
-    assert.equal(defaultRunner(null), shellRunner, 'repro falls back to the prepared host');
+    const { defaultRunner, shellRunner, blockedHostRunner } = require('../src/lib/repro');
+    assert.equal(defaultRunner(null), blockedHostRunner, 'repro refuses the host without ARW_ALLOW_HOST_CODE=1');
+    process.env.ARW_ALLOW_HOST_CODE = '1';
+    assert.equal(defaultRunner(null), shellRunner, 'with consent repro falls back to the prepared host');
     assert.notEqual(defaultRunner(null, () => {}, { fallback: false }), shellRunner, 'impacted tests stay in the sandbox (and are blocked)');
   } finally {
-    for (const [k, v] of [['ARW_SANDBOX', saved.s], ['ARW_DOCKER', saved.d]]) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    for (const [k, v] of [['ARW_SANDBOX', saved.s], ['ARW_DOCKER', saved.d], ['ARW_ALLOW_HOST_CODE', saved.a]]) if (v === undefined) delete process.env[k]; else process.env[k] = v;
   }
 });
 

@@ -45,6 +45,7 @@ const TOOLS = [
   ['gh', 'GitHub CLI (for GitHub PRs)', false, 'gh auth'],
   ['gh auth', 'GitHub signed in', false, null],
   ['docker', 'Docker (sandboxed tests)', false, 'docker'],
+  ['host-code', 'Host PR-code execution consent', false, null],
   ['jdk', 'JDK 11+ (Java call resolution)', false, 'JDK for Java impact (javac)'],
 ];
 const SIGN_IN = { 'codex login': 'run: codex login', 'gh auth': 'run: gh auth login (only needed for GitHub PR reviews and publishing)' };
@@ -91,6 +92,14 @@ function defaultProbe(id) {
       if (r.ok || r.missing) return { ok: r.ok, detail: r.ok ? `daemon ${r.out}` : 'not found' };
       // Installed but not running: starting it is the fix, not installing it.
       return { ok: false, detail: 'installed, daemon not running', fix: 'start Docker Desktop (or the docker service), then check again' };
+    }
+    case 'host-code': {
+      const allowed = process.env.ARW_ALLOW_HOST_CODE === '1';
+      return {
+        ok: allowed,
+        detail: allowed ? 'consented: ARW_ALLOW_HOST_CODE=1' : 'blocked: host repro needs ARW_ALLOW_HOST_CODE=1',
+        fix: allowed ? null : 'set ARW_ALLOW_HOST_CODE=1 only for repositories you trust, or use ARW_SANDBOX=docker',
+      };
     }
     case 'jdk': {
       const ji = require('./java-ast').javaInfo();
