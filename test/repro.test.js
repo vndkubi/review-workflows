@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { tmpDir, makeRepo } = require('./helpers');
-const { parseJunit, classify, statusFromRuns, applyFix, validateReproTest, scrubbedEnv, detectToolchain, commandFor } = require('../src/lib/repro');
+const { parseJunit, classify, statusFromRuns, applyFix, validateReproTest, reproTargetNames, scrubbedEnv, detectToolchain, commandFor } = require('../src/lib/repro');
 
 const SUREFIRE_FAIL = `<?xml version="1.0" encoding="UTF-8"?>
 <testsuite name="com.acme.OrderServiceReproTest" tests="1" errors="0" skipped="0" failures="1">
@@ -74,6 +74,20 @@ test('model-written tests: new file, matching package/class/selector', () => {
   const py = { language: 'python', path: 'tests/test_fee_repro.py', selector: 'tests/test_fee_repro.py::test_31_days', content: 'def test_31_days():\n    assert late_fee(31) > 0\n', fails_because: 'x' };
   assert.deepEqual(validateReproTest(py, { context }), []);
   assert.ok(validateReproTest({ ...py, path: 'tests/fee.py', selector: 'tests/fee.py::t' }, { context }).some((e) => /test_<name>\.py/.test(e)));
+});
+
+// Incident (code-graph#2, B2-business-F1): the finding quotes code that calls
+// node's fs functions; the target check demanded one of them and rejected a
+// test that exercised the finding's own module. Library calls are not the
+// code under test; only declarations of the repository are targets.
+test('repro targets: library calls are not the code under test; a declared method is', () => {
+  const repo = makeRepo();
+  const context = { source: { checkout: repo.dir, head_sha: repo.head, base_sha: repo.base } };
+  const ev = (quote) => ({ kind: 'code', path: 'billing/fees.py', start_line: 1, end_line: 1, quote });
+  const library = { evidence: [ev('value = readFileSync(path)')], fix: { kind: 'not_code' } };
+  assert.deepEqual(reproTargetNames(library, context), []);
+  const own = { evidence: [ev('late_fee(days, rate=0.5)')], fix: { kind: 'not_code' } };
+  assert.deepEqual(reproTargetNames(own, context), ['late_fee']);
 });
 
 test('test commands run without secrets; toolchains are detected from build files', () => {

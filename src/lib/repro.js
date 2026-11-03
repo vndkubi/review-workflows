@@ -391,21 +391,33 @@ function applyFix(wt, finding) {
 }
 
 // ---------- test validation ----------
-// Names a reproduction test must call: functions/methods named in the
-// finding's code evidence and fix, and the declaration enclosing that code.
+// Names a reproduction test must call: declarations of the repository that the
+// finding's code evidence names, and the declaration enclosing that code. A
+// library call inside the quoted code (readFileSync, join) is not the code the
+// finding is about, and requiring it rejected valid tests (seen on a trading
+// finding whose only targets were library functions).
 const NOT_TARGETS = new Set(['if', 'for', 'while', 'switch', 'return', 'print', 'assert', 'len', 'int', 'str', 'float', 'range', 'def', 'new', 'catch', 'super', 'this', 'self', 'list', 'dict', 'set', 'min', 'max', 'sum', 'abs', 'round', 'isinstance', 'Exception', 'BigDecimal', 'String', 'Integer', 'Decimal', 'equals', 'valueOf', 'compareTo', 'add', 'get']);
 function reproTargetNames(finding, context) {
-  const names = new Set();
   const code = (finding.evidence || []).filter((e) => e.kind === 'code');
-  const texts = [...code.map((e) => e.quote), finding.fix && finding.fix.kind === 'code_change' ? finding.fix.asis : ''];
-  for (const t of texts) for (const m of String(t || '').matchAll(/([A-Za-z_$][\w$]*)\s*\(/g)) if (m[1].length >= 3 && !NOT_TARGETS.has(m[1])) names.add(m[1]);
+  const declared = new Set();
   if (context && context.source) {
     const { indexFile, enclosing } = require('./impact');
     for (const e of code) {
       const text = git.showFile(context.source.checkout, e.revision === 'base' ? context.source.base_sha : context.source.head_sha, e.path);
       const idx = text == null ? null : indexFile(e.path, text);
-      const m = idx && enclosing(idx, e.start_line);
-      if (m && !NOT_TARGETS.has(m.name)) names.add(m.name);
+      if (!idx) continue;
+      for (const m of idx.methods || []) declared.add(m.name);
+      for (const t of idx.types || []) declared.add(t.name);
+      const owner = enclosing(idx, e.start_line);
+      if (owner) declared.add(owner.name);
+    }
+  }
+  if (!declared.size) return [];
+  const names = new Set();
+  const texts = [...code.map((e) => e.quote), finding.fix && finding.fix.kind === 'code_change' ? finding.fix.asis : ''];
+  for (const t of texts) {
+    for (const m of String(t || '').matchAll(/([A-Za-z_$][\w$]*)\s*\(/g)) {
+      if (m[1].length >= 3 && !NOT_TARGETS.has(m[1]) && declared.has(m[1])) names.add(m[1]);
     }
   }
   return [...names];
