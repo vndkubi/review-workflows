@@ -261,7 +261,12 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
       data.sourceSnippet(m[1], q.get('path') || '', { revision: q.get('revision') === 'base' ? 'base' : 'reviewed', start: Number(q.get('start')) || 1, end: Number(q.get('end')) || Number(q.get('start')) || 1 })],
     ['POST', /^\/api\/prs\/([^/]+)\/gate$/, (m, q, body) => {
       const { dir } = data.prDirFromId(m[1]);
-      return recordGate(dir, 'REVIEW', decisionOf(body), { by: who, note: String(body.note || '') });
+      const decision = decisionOf(body);
+      try {
+        return recordGate(dir, 'REVIEW', decision, { by: who, note: String(body.note || '') });
+      } catch (err) {
+        throw data.httpError(409, err.message);
+      }
     }],
     ['POST', /^\/api\/prs\/([^/]+)\/validate$/, (m) => {
       const { repo, pr } = data.prDirFromId(m[1]);

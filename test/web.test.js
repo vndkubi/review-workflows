@@ -147,6 +147,21 @@ test('dashboard server', async (t) => {
     assert.equal(gateState(ticketDir('WEB-1'), 'SPEC').valid, true);
   });
 
+  await t.test('an invalid review gate is a 409, not a 500', async () => {
+    const file = path.join(fixtureRev, 'validation.json');
+    const original = fs.readFileSync(file, 'utf8');
+    const validation = JSON.parse(original);
+    validation.complete = false;
+    fs.writeFileSync(file, JSON.stringify(validation, null, 2));
+    try {
+      const refused = await call(port, 'POST', '/api/prs/acme__web__9/gate', { body: { decision: 'approved', note: 'looks fine' }, headers: auth });
+      assert.equal(refused.status, 409, JSON.stringify(refused.json));
+      assert.match(refused.json.error, /cannot approve REVIEW/);
+    } finally {
+      fs.writeFileSync(file, original);
+    }
+  });
+
   await t.test('job logs stream over SSE until the job ends', async () => {
     // A queue whose job writes its log in three steps, then finishes.
     let step = 0;

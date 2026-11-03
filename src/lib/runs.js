@@ -63,6 +63,16 @@ function gateBinding(runDir, gate) {
 
 function recordGate(runDir, gate, decision, { by = os.userInfo().username, note = '' } = {}) {
   if (!['approved', 'rejected'].includes(decision)) throw new Error('decision must be approved or rejected');
+  if (gate === 'REVIEW' && decision === 'approved') {
+    const pointer = readJsonIfExists(path.join(runDir, 'review', 'context.json'));
+    const validation = pointer ? readJsonIfExists(path.join(runDir, 'review', 'revisions', pointer.context_id, 'validation.json')) : null;
+    const why = !validation ? 'the review has not been validated yet'
+      : validation.status === 'INVALIDATED' ? 'the review is INVALIDATED'
+        : validation.drift && validation.drift.length ? `the context drifted: ${validation.drift.join('; ')}`
+          : validation.complete !== true ? 'the review is incomplete'
+            : validation.status !== 'EXECUTED_PASS' ? `the review status is ${validation.status || 'unknown'}` : null;
+    if (why) throw new Error(`cannot approve REVIEW: ${why}. Reject it or run the review again.`);
+  }
   const record = { gate, decision, by, at: nowIso(), note, bound: gateBinding(runDir, gate) };
   writeJsonAtomic(path.join(ensureDir(path.join(runDir, 'gates')), `${gate}.json`), record);
   return record;
