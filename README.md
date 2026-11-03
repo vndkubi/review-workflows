@@ -70,7 +70,8 @@ and impacted tests in a throwaway container instead: only the worktree is mounte
 so builds work offline. Checked with `maven:3.9-eclipse-temurin-17`: a test passing on base and failing on head,
 no network, about 20 s per run. Built-in commands (Maven, Gradle, pytest) start in the container as a program with
 arguments, no shell; a configured `test_command` runs through `sh -c`. If docker or its daemon is unavailable
-(`ARW_DOCKER` names another CLI), the run is ENVIRONMENT_BLOCKED; it never falls back to the host. Impacted-test
+(`ARW_DOCKER` names another CLI), impacted tests are ENVIRONMENT_BLOCKED, and repro falls back to a prepared
+host only when `ARW_SANDBOX_FALLBACK=host` (the default; set it to `off` to refuse). Impacted-test
 results record where they ran. `ARW_DOCKER_TESTS=1 npm test` also runs the isolation tests in real containers
 (network, host environment, links made inside the container, a rewritten `.git` file, timeout). The sandbox settings are part of the frozen context: switching between host and
 docker, or changing image, network, limits or mounts, is drift. Image tags can move; pin `name@sha256:<digest>`
@@ -85,8 +86,8 @@ could still swap a directory in between. Git in such a worktree never reads its 
 it at a repository whose config runs commands, or delete it so git finds a parent repository): the git dir
 comes from the main repository's records, with hooks and fsmonitor off.
 
-After the review, every blocking (P1/P2) finding that was not withdrawn gets one reproduction attempt per
-duplicate cluster:
+After the review, every blocking (P1/P2) finding gets one reproduction attempt per duplicate cluster,
+including a finding the red team withdrew (the executed test can overrule the withdrawal):
 
 1. A model writes **one new test file** (JUnit or pytest, in the style of the repository's own tests) that
    asserts the *expected* result for the finding's trigger values. It returns the file as JSON and does not
@@ -565,6 +566,17 @@ runs/prs/<owner>__<repo>__<n>/
 - `config/policies/checklist.md`: your team's viewpoints. Findings cite ids such as `CK-TX-1`.
 - `agents/*.md`: role charters. They are frozen per review, so editing them invalidates older contexts.
 - `config/schemas/*.json`: the output contracts.
+- `config/projects/<owner>/<name>/`: what one repository adds (`arw project init owner/name`, then
+  `arw project check owner/name`). Gitignored: it describes private code.
+  - `checklist.md`: `PRJ-<AREA>-<n>` viewpoints. Each needs a `source:` (path:line, ADR, incident) and may
+    say when it is asked: `paths:` (globs, `**` spans folders) and `lines:` (`/regex/flags` over changed
+    lines). The runtime asks them after the shared ones; a finding cites one as curated_viewpoint authority.
+  - `profile.md`: glossary, architecture, hot spots. Shown to every worker, never authority.
+
+  Both are frozen with the review (editing one is drift) and read only from here, never from the reviewed
+  checkout, whose files the PR author controls. A malformed checklist stops the review. A local review
+  (`arw review --local`) uses `local/<folder name>`. Add a viewpoint when an eval or a kept finding shows
+  a defect the shared checklist misses, and put that case in the eval corpus.
 
 ## Tests
 
