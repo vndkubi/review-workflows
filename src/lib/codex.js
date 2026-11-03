@@ -10,6 +10,7 @@ const os = require('node:os');
 const { ensureDir, envInt } = require('./util');
 const { redactSecrets } = require('./guard');
 const { isUsageLimit } = require('./quota');
+const { workerEnv } = require('./worker-env');
 
 function resolveCodex() {
   // CODEX_BIN: the npm package's JS entry (run with this node) or a
@@ -192,7 +193,12 @@ function runCodex({ prompt: rawPrompt, cwd, attemptDir, model, effort, sandbox =
     let stderrText = '';
     let timedOut = false;
     let degenerate = false;
-    const child = spawn(cmd, args, { cwd, env: { ...process.env, CODEX_HOME: prepareCodexHome(), RUST_LOG: process.env.RUST_LOG || 'warn' }, windowsHide: true, detached: process.platform !== 'win32' });
+    const child = spawn(cmd, args, {
+      cwd,
+      env: workerEnv({ home: prepareCodexHome(), homeKey: 'CODEX_HOME', extra: { RUST_LOG: process.env.RUST_LOG || 'warn' } }),
+      windowsHide: true,
+      detached: process.platform !== 'win32',
+    });
     const timer = setTimeout(() => {
       timedOut = true;
       killTree(child);

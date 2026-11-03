@@ -126,13 +126,24 @@ test('sandboxed session: the denied write is recorded, the read still ran', () =
 });
 
 function fakeEnv(dir, extra = {}) {
+  const value = (key, fallback) => (Object.prototype.hasOwnProperty.call(extra, key) ? extra[key] : fallback);
+  const fake = {
+    FAKE_COPILOT_EVENTS: value('FAKE_COPILOT_EVENTS', path.join(FIX, 'canary-read.jsonl')),
+    FAKE_COPILOT_USAGE: value('FAKE_COPILOT_USAGE', path.join(FIX, 'canary-read.usage.json')),
+    FAKE_COPILOT_RECORD: value('FAKE_COPILOT_RECORD', path.join(dir, 'record.json')),
+    FAKE_COPILOT_TOUCH: value('FAKE_COPILOT_TOUCH', null),
+  };
+  // The worker gets an allowlist, so test knobs cannot ride in its environment.
+  // This wrapper sets them inside the child, then loads the fixture.
+  const wrapper = path.join(dir, 'fake-copilot-wrapper.js');
+  fs.writeFileSync(wrapper, [
+    "'use strict';",
+    ...Object.entries(fake).map(([k, v]) => (v == null ? `delete process.env.${k};` : `process.env.${k} = ${JSON.stringify(v)};`)),
+    `require(${JSON.stringify(path.join(__dirname, 'fixtures', 'fake-copilot.js'))});`,
+  ].join('\n'));
   return {
-    COPILOT_BIN: path.join(__dirname, 'fixtures', 'fake-copilot.js'),
+    COPILOT_BIN: wrapper,
     COPILOT_ARW_HOME: path.join(dir, 'home'),
-    FAKE_COPILOT_EVENTS: path.join(FIX, 'canary-read.jsonl'),
-    FAKE_COPILOT_USAGE: path.join(FIX, 'canary-read.usage.json'),
-    FAKE_COPILOT_RECORD: path.join(dir, 'record.json'),
-    FAKE_COPILOT_TOUCH: null,
     COPILOT_SANDBOX: null,
     ...extra,
   };

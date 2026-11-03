@@ -23,6 +23,7 @@
 // "sandboxed": true, so the sandbox is proven by a write canary in
 // preflight, never assumed.
 const { spawn, execFileSync } = require('node:child_process');
+const { workerEnv } = require('./worker-env');
 const fs = require('node:fs');
 const path = require('node:path');
 const { ensureDir, envInt, writeJsonAtomic, readJsonIfExists } = require('./util');
@@ -243,7 +244,12 @@ function runCopilot({ prompt: rawPrompt, cwd, attemptDir, model, effort, timeout
     let stdoutText = '';
     let stderrText = '';
     let timedOut = false;
-    const child = spawn(cmd, args, { cwd, env: { ...process.env, COPILOT_HOME: home, COPILOT_AUTO_UPDATE: 'false', COPILOT_ALLOW_ALL: '' }, windowsHide: true, detached: process.platform !== 'win32' });
+    const child = spawn(cmd, args, {
+      cwd,
+      env: workerEnv({ home, homeKey: 'COPILOT_HOME', extra: { COPILOT_AUTO_UPDATE: 'false', COPILOT_ALLOW_ALL: '' } }),
+      windowsHide: true,
+      detached: process.platform !== 'win32',
+    });
     const timer = setTimeout(() => {
       timedOut = true;
       killTree(child);
@@ -347,7 +353,7 @@ function copilotVersion() {
   if (versionCache) return versionCache;
   try {
     const { cmd, pre } = resolveCopilot();
-    const out = execFileSync(cmd, [...pre, '--no-auto-update', '--version'], { encoding: 'utf8', input: '', timeout: 30000, stdio: ['pipe', 'pipe', 'ignore'], env: { ...process.env, COPILOT_AUTO_UPDATE: 'false' } });
+    const out = execFileSync(cmd, [...pre, '--no-auto-update', '--version'], { encoding: 'utf8', input: '', timeout: 30000, stdio: ['pipe', 'pipe', 'ignore'], env: workerEnv({ homeKey: 'COPILOT_HOME', extra: { COPILOT_AUTO_UPDATE: 'false' } }) });
     versionCache = (out.match(/\d+\.\d+\.\d+/) || ['unknown'])[0];
   } catch {
     versionCache = 'unknown';
