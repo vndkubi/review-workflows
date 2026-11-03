@@ -196,7 +196,7 @@ async function reviewOne(args, local, pr) {
   });
   if (res.awaiting === 'intent') {
     console.log(`AWAITING_INTENT · no ticket: the intent was derived from the PR as ${res.ticket}.\nConfirm it first: read ${path.join(RUNS, 'tickets', res.ticket, 'spec.md')}, then\n  arw gate approve --ticket ${res.ticket} --gate SPEC   (or reject with --note to rebuild it)\nand run this review again.`);
-    return 0;
+    return 3;
   }
   const v = res.validation;
   const identity = readJsonIfExists(path.join(res.runDir, 'run.json'), {}).identity || {};
@@ -211,7 +211,10 @@ function cmdValidate(argv) {
   const args = parseArgs(argv);
   const res = revalidate(runDirFrom(args));
   console.log(`${res.validation.status} · ${res.validation.recommendation}\nreport: ${res.report}`);
-  if (res.validation.drift.length) console.log(`drift: ${res.validation.drift.join('; ')}`);
+  if (res.validation.drift.length) {
+    console.log(`drift: ${res.validation.drift.join('; ')}`);
+    return 2;
+  }
   return res.validation.status === 'EXECUTED_PASS' ? 0 : 1;
 }
 
@@ -814,8 +817,12 @@ async function main(argv) {
     case 'clean':
       return cmdClean(rest);
     default:
-      console.log(USAGE);
-      return ['--help', '-h', 'help'].includes(cmd) ? 0 : cmd ? 1 : 0;
+      if (!cmd || ['--help', '-h', 'help'].includes(cmd)) {
+        console.log(USAGE);
+        return 0;
+      }
+      console.error(USAGE);
+      return 1;
   }
 }
 

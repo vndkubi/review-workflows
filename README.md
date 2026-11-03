@@ -333,6 +333,15 @@ are not touched. Untracked files are not included. The run lives at `runs/prs/lo
 one run per (repository, branch, mode) so re-running refreshes it. Repro uses the `test_command` of the
 configured repository whose `checkout` is that directory. It can be previewed but not published.
 
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | success, including `--help`, `-h`, `help` and running with no command |
+| 1 | the command ran but did not pass, or the command is unknown (usage is on stderr) |
+| 2 | drift or another uncaught CLI error (bad arguments, missing artifact, failed preflight) |
+| 3 | `AWAITING_INTENT`: the derived PR intent must be confirmed at the SPEC gate, then the review is run again |
+
 ### Dashboard (personal, local)
 
 ```bash
