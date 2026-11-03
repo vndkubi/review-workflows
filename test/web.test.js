@@ -15,7 +15,8 @@ process.env.ARW_EVAL_DIR = tmpDir('arw-web-evals-');
 
 const { createServer } = require('../src/web/server');
 const { advanceTicket } = require('../src/lib/ticket-pipeline');
-const { gateState, ticketDir } = require('../src/lib/runs');
+const { gateState, ticketDir, prDir } = require('../src/lib/runs');
+const { revisionDir } = require('../src/lib/freeze');
 
 const TOKEN = 't'.repeat(48);
 const fakeQueue = { list: () => [], get: () => null, readLog: () => ({ text: '', next: 0 }), cancel: () => null, enqueue: (j) => ({ id: 'job1', ...j }) };
@@ -54,6 +55,32 @@ test('dashboard server', async (t) => {
   const exec = scriptedExecutor((prompt) => (prompt.startsWith('You audit') ? '{"missing":[],"invalid":[]}' : JSON.stringify(refundModel)));
   const res = await advanceTicket({ key: 'WEB-1', fromFile: ticketFile, executor: exec });
   assert.equal(res.state, 'AWAIT_GATE_SPEC', res.message);
+
+  // A run with the appsmith#42411 shape: execution passed, but verification
+  // still has four unverified areas and one cannot_determine item.
+  const fixtureId = 'acme__web__9';
+  const fixtureDir = prDir('acme/web', 9);
+  const fixtureContext = '0123456789abcdef';
+  fs.mkdirSync(path.join(fixtureDir, 'review'), { recursive: true });
+  fs.writeFileSync(path.join(fixtureDir, 'run.json'), JSON.stringify({
+    created_at: '2026-11-04T00:00:00.000Z',
+    identity: { repo: 'acme/web', pr: 9, title: 'fixture with unverified work' },
+    phases: {},
+  }));
+  fs.writeFileSync(path.join(fixtureDir, 'review', 'context.json'), JSON.stringify({ context_id: fixtureContext, context_digest: 'fixture' }));
+  const fixtureRev = revisionDir(fixtureDir, fixtureContext);
+  fs.mkdirSync(fixtureRev, { recursive: true });
+  fs.writeFileSync(path.join(fixtureRev, 'validation.json'), JSON.stringify({
+    context_id: fixtureContext,
+    status: 'EXECUTED_PASS',
+    recommendation: 'no_blocking_findings',
+    complete: true,
+    findings: [],
+    items: [{ result: 'cannot_determine' }],
+    gaps: [],
+    usage: { calls: 1, input_tokens: 1, output_tokens: 1, elapsed_ms: 1 },
+  }));
+  fs.writeFileSync(path.join(fixtureRev, 'synthesis.json'), JSON.stringify({ unverified: ['a', 'b', 'c', 'd'] }));
 
   const server = createServer({ port: 0, token: TOKEN, queue: fakeQueue });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -97,6 +124,11 @@ test('dashboard server', async (t) => {
     const runs = await call(port, 'GET', '/api/runs');
     assert.deepEqual(runs.json.tickets.map((x) => [x.key, x.state]), [['WEB-1', 'AWAIT_GATE_SPEC']]);
     assert.ok(runs.json.tickets[0].items >= 3);
+    const row = runs.json.prs.find((p) => p.id === fixtureId);
+    assert.ok(row, 'the fixture PR is listed');
+    assert.deepEqual([row.unverified, row.cannot_determine, row.gaps], [4, 1, 0]);
+    assert.equal(row.status, 'EXECUTED_PASS');
+    assert.equal(row.recommendation, 'no_blocking_findings');
     const d = await call(port, 'GET', '/api/tickets/WEB-1');
     assert.equal(d.json.requirements.items[0].risk, 'money');
     assert.equal((await call(port, 'GET', '/api/tickets/..%2F..%2Fetc')).status, 400);

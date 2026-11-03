@@ -38,6 +38,20 @@ function currentValidation(dir) {
   return readJsonIfExists(path.join(revisionDir(dir, pointer.context_id), 'validation.json'));
 }
 
+// Execution and verification are different questions (D3): a run can execute
+// every required unit and still leave unverified work. Keep the three counts
+// separate so the home table and the review header cannot show a green pass
+// while any of them is non-zero.
+function verificationCounts(dir, validation) {
+  if (!validation) return { unverified: 0, cannot_determine: 0, gaps: 0 };
+  const synthesis = readJsonIfExists(path.join(revisionDir(dir, validation.context_id), 'synthesis.json'));
+  return {
+    unverified: synthesis && Array.isArray(synthesis.unverified) ? synthesis.unverified.length : 0,
+    cannot_determine: (validation.items || []).filter((item) => item.result === 'cannot_determine').length,
+    gaps: (validation.gaps || []).length,
+  };
+}
+
 function countBySeverity(findings, aliased = new Set()) {
   const out = { P1: 0, P2: 0, P3: 0, P4: 0, withdrawn: 0 };
   for (const f of findings || []) {
@@ -72,6 +86,7 @@ function listRuns() {
       const run = readJsonIfExists(path.join(pdir, id, 'run.json'));
       if (!run || !run.identity) continue;
       const v = currentValidation(path.join(pdir, id));
+      const verification = verificationCounts(path.join(pdir, id), v);
       prs.push({
         id,
         repo: run.identity.repo,
@@ -82,6 +97,9 @@ function listRuns() {
         recommendation: v ? v.recommendation : null,
         complete: v ? v.complete : null,
         counts: v ? countBySeverity(v.findings) : null,
+        unverified: verification.unverified,
+        cannot_determine: verification.cannot_determine,
+        gaps: verification.gaps,
         confirmed: v ? v.findings.filter((f) => f.label === 'CONFIRMED').length : 0,
         usage: v && v.usage ? { calls: v.usage.calls + ((v.usage.plan && v.usage.plan.calls) || 0), tokens_in: v.usage.input_tokens + ((v.usage.plan && v.usage.plan.input_tokens) || 0), tokens_out: v.usage.output_tokens + ((v.usage.plan && v.usage.plan.output_tokens) || 0), elapsed_ms: v.usage.elapsed_ms } : null,
         updated_at: latest(Object.values(run.phases || {}).map((p) => p.at)) || run.created_at,
@@ -280,6 +298,7 @@ function prDetail(id) {
     published: readJsonIfExists(path.join(dir, 'published.json')),
     static: readJsonIfExists(path.join(dir, 'static.json')),
     validation: null,
+    verification: { unverified: 0, cannot_determine: 0, gaps: 0 },
     findings: [],
     overview: null,
     gate: null,
@@ -291,6 +310,7 @@ function prDetail(id) {
     out.preliminary = preliminaryFindings(dir);
     return out;
   }
+  out.verification = verificationCounts(dir, validation);
   const rdir = revisionDir(dir, validation.context_id);
   const full = new Map();
   const packets = [];

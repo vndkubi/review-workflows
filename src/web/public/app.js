@@ -76,9 +76,31 @@ function fmtMs(ms) {
   return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
 }
 
-function statusBadge(status) {
-  const cls = /PASS|READY|CONFIRMED|succeeded|approved|no_blocking/.test(status) ? 'ok' : /FAIL|BLOCKED|INVALID|EXCEEDED|failed|rejected|changes_requested/.test(status) ? 'bad' : 'warn';
+function statusBadge(status, tone = null) {
+  const cls = tone || (/PASS|READY|CONFIRMED|succeeded|approved|no_blocking/.test(status) ? 'ok' : /FAIL|BLOCKED|INVALID|EXCEEDED|failed|rejected|changes_requested/.test(status) ? 'bad' : 'warn');
   return h('span', { class: `badge ${cls}` }, status || '–');
+}
+
+function verificationCountsOf(source) {
+  return {
+    unverified: Number(source && source.unverified) || 0,
+    cannot_determine: Number(source && source.cannot_determine) || 0,
+    gaps: Number(source && source.gaps) || 0,
+  };
+}
+
+function verificationIssues(source) {
+  const c = verificationCountsOf(source);
+  return c.unverified + c.cannot_determine + c.gaps;
+}
+
+function verificationBadge(source) {
+  const c = verificationCountsOf(source);
+  if (!verificationIssues(c)) return h('span', { class: 'badge ok' }, 'verified');
+  return h('span', {
+    class: 'badge warn',
+    title: 'Execution is separate from verification: these areas were not verified',
+  }, `${c.unverified} unverified · ${c.cannot_determine} cannot determine · ${c.gaps} gaps`);
 }
 
 function sevCounts(c) {
@@ -250,17 +272,21 @@ function stat(n, label) {
 
 function prTable(prs) {
   return h('table', {},
-    h('thead', {}, h('tr', {}, ['PR', 'Title', 'Status', 'Recommendation', 'Open', 'Confirmed', 'Calls', 'Tokens in / out', 'Updated'].map((c) => h('th', {}, c)))),
-    h('tbody', {}, prs.map((p) => h('tr', {},
-      h('td', {}, h('a', { href: `#/pr/${p.id}` }, `${p.repo}#${p.pr}`), activeJobFor('pr', p.id) ? h('span', { class: 'pulse' }) : null),
-      h('td', {}, p.title || ''),
-      h('td', {}, statusBadge(p.status)),
-      h('td', {}, p.recommendation ? statusBadge(p.recommendation) : '–'),
-      h('td', {}, sevCounts(p.counts) || '–'),
-      h('td', {}, p.confirmed ? h('span', { class: 'badge ok' }, `${p.confirmed} CONFIRMED`) : '–'),
-      h('td', {}, p.usage ? fmtNum(p.usage.calls) : '–'),
-      h('td', { class: 'small' }, p.usage ? `${fmtNum(p.usage.tokens_in)} / ${fmtNum(p.usage.tokens_out)}` : '–'),
-      h('td', { class: 'muted small' }, fmtTime(p.updated_at))))));
+    h('thead', {}, h('tr', {}, ['PR', 'Title', 'Status', 'Verification', 'Recommendation', 'Open', 'Confirmed', 'Calls', 'Tokens in / out', 'Updated'].map((c) => h('th', {}, c)))),
+    h('tbody', {}, prs.map((p) => {
+      const pending = verificationIssues(p) > 0;
+      return h('tr', {},
+        h('td', {}, h('a', { href: `#/pr/${p.id}` }, `${p.repo}#${p.pr}`), activeJobFor('pr', p.id) ? h('span', { class: 'pulse' }) : null),
+        h('td', {}, p.title || ''),
+        h('td', {}, statusBadge(p.status, pending ? 'warn' : null)),
+        h('td', {}, verificationBadge(p)),
+        h('td', {}, p.recommendation ? statusBadge(p.recommendation, pending ? 'warn' : null) : '–'),
+        h('td', {}, sevCounts(p.counts) || '–'),
+        h('td', {}, p.confirmed ? h('span', { class: `badge ${pending ? 'warn' : 'ok'}` }, `${p.confirmed} CONFIRMED`) : '–'),
+        h('td', {}, p.usage ? fmtNum(p.usage.calls) : '–'),
+        h('td', { class: 'small' }, p.usage ? `${fmtNum(p.usage.tokens_in)} / ${fmtNum(p.usage.tokens_out)}` : '–'),
+        h('td', { class: 'muted small' }, fmtTime(p.updated_at)));
+    })));
 }
 
 // ---------- PR view ----------
@@ -395,9 +421,13 @@ function logTools(pres, name) {
 function prSummary(d) {
   const v = d.validation;
   const c = v.counts;
+  const verification = d.verification || verificationCountsOf(v);
+  const pending = verificationIssues(verification) > 0;
   return h('div', {},
     h('div', { class: 'row my10' },
-      statusBadge(v.status), statusBadge(v.recommendation), h('span', { class: `badge ${v.complete ? 'ok' : 'warn'}` }, v.complete ? 'complete' : 'incomplete'),
+      statusBadge(v.status, pending ? 'warn' : null), statusBadge(v.recommendation, pending ? 'warn' : null),
+      h('span', { class: `badge ${pending ? 'warn' : v.complete ? 'ok' : 'warn'}` }, v.complete ? (pending ? 'execution complete' : 'complete') : 'incomplete'),
+      verificationBadge(verification),
       h('span', { class: 'muted small' }, `context ${v.context_id} · validated ${fmtTime(v.validated_at)}`)),
     h('div', { class: 'stats' }, stat(c.P1, 'P1'), stat(c.P2, 'P2'), stat(c.P3, 'P3'), stat(c.P4, 'P4'), stat(c.withdrawn, 'withdrawn')),
     v.drift && v.drift.length ? h('div', { class: 'notice bad' }, `Context drift: ${v.drift.join('; ')}. Re-run the review with “Refresh”.`) : null,
