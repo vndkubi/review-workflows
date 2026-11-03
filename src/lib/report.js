@@ -212,6 +212,9 @@ function renderReport(runDir, validation, identity) {
 }
 
 function writeReport(runDir, validation, identity) {
+  // The report quotes packet text and claims it was generated from validated
+  // packets: verify the binding before writing that claim.
+  require('./artifacts').verifyArtifacts(runDir, validation);
   const text = renderReport(runDir, validation, identity);
   const file = path.join(revisionDir(runDir, validation.context_id), 'report.md');
   fs.writeFileSync(file, text);

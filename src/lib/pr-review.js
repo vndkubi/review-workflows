@@ -399,10 +399,9 @@ async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight
   // can overrule a withdrawal and so change the recommendation the synthesis
   // copies (vnstock#1: it was written, invalidated and written again).
   let validation = await runBatch({ runDir, executor, workers, skipSeams, skipRebuttals, skipSynthesis: skipSynthesis || !noRepro, models });
-  const fresh = readJson(path.join(runDir, 'run.json'));
+  let fresh = readJson(path.join(runDir, 'run.json'));
   fresh.phases.batch = { status: validation.status, at: nowIso() };
   writeJsonAtomic(path.join(runDir, 'run.json'), fresh);
-
   // Phase 3.5: executed reproduction of blocking findings (CONFIRMED = L3).
   if (!noRepro && validation.status !== 'INVALIDATED') {
     // Local reviews take the test command of the configured repo at that path.
@@ -424,6 +423,10 @@ async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight
     // The synthesis, once, over the packets and the reproduction records
     // (every other job is reused).
     validation = skipSynthesis ? finish(runDir, { skipSeams, skipRebuttals, skipSynthesis }) : await runBatch({ runDir, executor, workers, skipSeams, skipRebuttals, skipSynthesis, models });
+    // finish/runBatch writes run.json with the validation binding and the
+    // unit statuses: read it again instead of writing the stale pre-repro copy
+    // over it (a changed CONFIRMED state would otherwise lose its hash).
+    fresh = readJson(path.join(runDir, 'run.json'));
     fresh.phases.batch = { status: validation.status, at: nowIso() };
     fresh.phases.repro = { status: 'EXECUTED_PASS', at: nowIso(), results: results.map((r) => ({ finding: r.finding_id, status: r.status, fix_verified: r.fix ? r.fix.verified : null })) };
   } else {
@@ -442,9 +445,11 @@ async function reproOnly({ runDir, executor, models = {}, testCommand = null, lo
   const repoCfg = github.reposConfig().repos[run.identity.repo] || {};
   const results = await runRepro({ runDir, executor, models, testCommand: testCommand || repoCfg.test_command || null, log, prompts, runModelJob, makeSources, retry });
   const validation = finish(runDir, {});
-  run.phases.repro = { status: 'EXECUTED_PASS', at: nowIso(), results: results.map((r) => ({ finding: r.finding_id, status: r.status, fix_verified: r.fix ? r.fix.verified : null })) };
-  writeJsonAtomic(path.join(runDir, 'run.json'), run);
-  const report = writeReport(runDir, validation, run.identity);
+  // finish wrote run.json with the new validation binding: update that copy.
+  const after = readJson(path.join(runDir, 'run.json'));
+  after.phases.repro = { status: 'EXECUTED_PASS', at: nowIso(), results: results.map((r) => ({ finding: r.finding_id, status: r.status, fix_verified: r.fix ? r.fix.verified : null })) };
+  writeJsonAtomic(path.join(runDir, 'run.json'), after);
+  const report = writeReport(runDir, validation, after.identity);
   return { runDir, validation, report, results };
 }
 

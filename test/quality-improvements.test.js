@@ -18,7 +18,7 @@ const { parsePatch } = require('../src/lib/patch');
 const { analyzeImpact, renderImpact } = require('../src/lib/impact');
 const { assignImpacts } = require('../src/lib/impact-checks');
 const { selectChecks } = require('../src/lib/viewpoint-checks');
-const { validatePacket, canonicalizeCandidate, salvageCandidate, splitLines } = require('../src/lib/validate');
+const { validatePacket, canonicalizeCandidate, salvageCandidate, salvagePacket, splitLines } = require('../src/lib/validate');
 const { computeOutcome } = require('../src/lib/outcome');
 const { buildUnits, smallPrUnits, isSmallPr } = require('../src/lib/plan');
 const { effortFor } = require('../src/lib/effort');
@@ -153,6 +153,26 @@ test('packets: an unfound verification quote is dropped, a finding evidence quot
   const a = packet([finding({ authority: { kind: 'inferred', id: 'engineering-judgement', source: { ...bad } } })]);
   canonicalizeCandidate(a, sources);
   has(check(a), /findings\[0\]\.authority\.source: quote not found/);
+});
+
+// Incident (the dominant `arw retro` rejection): one coverage quote that does
+// not match discarded the whole packet, including its findings. On the last
+// attempt the row is kept as `unverified` (so the file is a real gap) and the
+// findings survive; finding evidence stays strict.
+test('packets: an unverifiable coverage quote is salvaged as unverified, the findings stay', () => {
+  const bad = { kind: 'code', path: ORDER, start_line: 3, end_line: 3, quote: 'this line is not in the file' };
+  const p = packet([finding()], { coverage: [{ id: `file:${ORDER}`, disposition: 'reviewed', evidence: [bad], note: 'looked' }] });
+  has(check(p), /quote not found/);
+  const changes = salvagePacket(p, sources);
+  assert.equal(p.coverage[0].disposition, 'unverified');
+  assert.deepEqual(p.coverage[0].evidence, []);
+  assert.match(p.coverage[0].note, /runtime: the cited evidence could not be verified/);
+  assert.ok(changes.some((c) => /coverage\[0\]\.evidence\[0\]: dropped/.test(c)), changes.join('\n'));
+  assert.deepEqual(check(p), []);
+  // The finding's own evidence is never salvaged away.
+  const q = packet([finding({ evidence: [bad] })], { coverage: [{ id: `file:${ORDER}`, disposition: 'unverified', evidence: [], note: 'n' }] });
+  assert.deepEqual(salvagePacket(q, sources), []);
+  has(check(q), /findings\[0\]\.evidence\[0\]: quote not found/);
 });
 
 // Incident (v4: ruoyi-vue-pro #1286, P0): a code_change fix described the

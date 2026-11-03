@@ -335,6 +335,56 @@ function salvageCandidate(candidate) {
   return changes;
 }
 
+// Last-attempt salvage for the dominant repair failure: an evidence quote the
+// runtime could not verify in a coverage row or a verdict. The row is
+// downgraded honestly (unverified / cannot_determine, with the reason in the
+// note) so the packet's findings survive and the loss is reported as a gap;
+// finding evidence, authority and fixes stay strictly checked.
+function salvagePacket(candidate, sources) {
+  const changes = [];
+  if (!candidate || typeof candidate !== 'object') return changes;
+  const unverifiable = (ev) => !ev || typeof ev !== 'object' || validateEvidence(ev, sources, '').length > 0;
+  const dropBad = (list, at) => {
+    if (!Array.isArray(list)) return list;
+    const keep = list.filter((ev, j) => {
+      const ok = !unverifiable(ev);
+      if (!ok) changes.push(`${at}[${j}]: dropped evidence the validator could not verify`);
+      return ok;
+    });
+    return keep;
+  };
+  const addNote = (row, why) => {
+    const text = String(row.note || '').trim();
+    if (text.includes('runtime: the cited evidence could not be verified')) return;
+    row.note = [text, `runtime: the cited evidence could not be verified; ${why}`].filter(Boolean).join(' ');
+  };
+  (candidate.coverage || []).forEach((row, i) => {
+    if (!row || !Array.isArray(row.evidence)) return;
+    const before = row.evidence.length;
+    row.evidence = dropBad(row.evidence, `$.coverage[${i}].evidence`);
+    if (row.evidence.length === before) return;
+    if (row.disposition === 'reviewed' && !row.evidence.length) {
+      row.disposition = 'unverified';
+      changes.push(`$.coverage[${i}].disposition: reviewed -> unverified`);
+    }
+    addNote(row, row.disposition === 'unverified' ? 'the file is reported as not reviewed' : 'the row keeps its disposition');
+  });
+  const salvageVerdict = (v, at) => {
+    if (!v || !Array.isArray(v.evidence)) return;
+    const before = v.evidence.length;
+    v.evidence = dropBad(v.evidence, `${at}.evidence`);
+    if (v.evidence.length === before) return;
+    if (v.verdict === 'pass' && !v.evidence.some((ev) => ev.kind === 'code')) {
+      v.verdict = 'cannot_determine';
+      changes.push(`${at}.verdict: pass -> cannot_determine`);
+    }
+    addNote(v, v.verdict === 'cannot_determine' ? 'the verdict is reported as cannot_determine' : 'the verdict keeps its value');
+  };
+  (candidate.item_verdicts || []).forEach((v, i) => salvageVerdict(v, `$.item_verdicts[${i}]`));
+  (candidate.viewpoint_verdicts || []).forEach((v, i) => salvageVerdict(v, `$.viewpoint_verdicts[${i}]`));
+  return changes;
+}
+
 // Item id -> kind, from the frozen "review-items" input.
 function itemKinds(sources) {
   const lines = sources && sources.input ? sources.input('review-items') : null;
@@ -640,6 +690,7 @@ module.exports = {
   locateQuote,
   canonicalizeCandidate,
   salvageCandidate,
+  salvagePacket,
   validateEvidence,
   validatePacket,
   validateRebuttal,

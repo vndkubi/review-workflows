@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { ROOT, sha256File, sha256Value, writeJsonAtomic, readJsonIfExists, nowIso, ensureDir } = require('./util');
+const { validationDigest, packetHashes } = require('./artifacts');
 
 const RUNS = process.env.ARW_RUNS_DIR ? path.resolve(process.env.ARW_RUNS_DIR) : path.join(ROOT, 'runs');
 
@@ -46,10 +47,18 @@ function gateBinding(runDir, gate) {
   if (!pointer) throw new Error('no frozen review context to bind the gate to');
   const validation = readJsonIfExists(path.join(runDir, 'review', 'revisions', pointer.context_id, 'validation.json'));
   if (!validation) throw new Error('the review has not been validated yet');
-  // Bound to what the person saw: the context and the finding outcomes.
-  // Re-validating without changes keeps the gate; any changed outcome voids it.
+  // Bound to what the person saw: the context, the validation outcome and
+  // the hashes of the accepted packets (not only their ids). Re-validating
+  // without changes keeps the gate; editing validation.json or a packet, or
+  // changing an outcome, voids it.
   const outcome = validation.findings.map((f) => [f.id, f.severity, f.state]).sort();
-  return { context_digest: pointer.context_digest, recommendation: validation.recommendation, findings_sha256: sha256Value(outcome) };
+  return {
+    context_digest: pointer.context_digest,
+    recommendation: validation.recommendation,
+    findings_sha256: sha256Value(outcome),
+    validation_sha256: validationDigest(validation),
+    packets: packetHashes(runDir, pointer.context_id, validation.jobs || []),
+  };
 }
 
 function recordGate(runDir, gate, decision, { by = os.userInfo().username, note = '' } = {}) {

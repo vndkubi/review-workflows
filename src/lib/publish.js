@@ -12,6 +12,7 @@ const { packetRel } = require('./driver');
 const { diffBlock } = require('./report');
 const { SEVERITY_RANK } = require('./cluster');
 const { effectiveAliases } = require('./outcome');
+const { verifyArtifacts } = require('./artifacts');
 const memory = require('./memory');
 const { bodyHash } = require('./feedback');
 
@@ -48,6 +49,9 @@ function buildReview(runDir, { minSeverity = 'P3' } = {}) {
   const validation = readJson(path.join(dir, 'validation.json'));
   if (validation.context_digest !== context.context_digest) throw new Error('validation.json is for another context; re-run validate');
   const run = readJson(path.join(runDir, 'run.json'));
+  // The draft quotes packet text: refuse a packet or validation edited after
+  // the runtime checked it (the header says the quotes were machine-verified).
+  verifyArtifacts(runDir, validation, run);
   const files = new Map(parsePatch(fs.readFileSync(path.join(dir, 'review.patch'), 'utf8')).map((f) => [f.path, commentableLines(f)]));
   const synthesis = validation.synthesis.valid ? readJson(path.join(dir, 'synthesis.json')) : null;
   const aliased = new Set(effectiveAliases(synthesis, validation.findings).map((a) => a.id));

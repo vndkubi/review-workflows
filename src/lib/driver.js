@@ -9,13 +9,14 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { sha256, sha256Value, writeJsonAtomic, readJson, readJsonIfExists, parseModelJson, envInt, nowIso, runPool, ensureDir } = require('./util');
 const { loadContext, verifyContext, revisionDir, reviewDir, readInput } = require('./freeze');
-const { makeSources, canonicalizeCandidate, salvageCandidate, validatePacket, validateRebuttal, validateSynthesis, validatePlain } = require('./validate');
+const { makeSources, canonicalizeCandidate, salvageCandidate, salvagePacket, validatePacket, validateRebuttal, validateSynthesis, validatePlain } = require('./validate');
 const { findingClusters } = require('./cluster');
 const { computeOutcome, BLOCKING } = require('./outcome');
 const { effortFor } = require('./effort');
 const prompts = require('./prompts');
 const { loadReproRecords } = require('./repro');
 const { outputSchema, stripNulls } = require('./schema');
+const { validationDigest } = require('./artifacts');
 
 const STATUS = {
   NOT_RUN: 'NOT_RUN',
@@ -330,6 +331,16 @@ async function runModelJob(env, spec) {
         changes.push(...salvaged);
         errors = spec.validate(candidate);
       }
+      // A wrong quote in a coverage row or a verdict carries no finding: keep
+      // the packet and report the row as unverified instead of losing all of
+      // its findings (the dominant failure in `arw retro`).
+      if (errors.length && spec.salvage) {
+        const kept = spec.salvage(candidate);
+        if (kept.length) {
+          changes.push(...kept);
+          errors = spec.validate(candidate);
+        }
+      }
     }
     if (changes.length) fs.writeFileSync(path.join(attemptDir, 'canonicalized.txt'), `${changes.join('\n')}\n`);
     receipt.validation_errors = errors.length;
@@ -463,6 +474,7 @@ async function runBatch({ runDir, executor, workers = envInt('ARW_WORKERS', 4), 
       fill: fillKnown({ schema_version: '1.0', context_digest: context.context_digest, unit_id: unit.id, role, dependency_refs: depRefs }),
       buildPrompt: (repair) => prompts.packetPrompt(runDir, context, { unit, role, dependencyRefs: depRefs, packetPaths: depPaths, repair }),
       validate: (candidate) => validatePacket(candidate, { sources: env.sources, unit, role, requirements: grading.requirements, items: grading.items, expectedDependencyRefs: depRefs }),
+      salvage: (candidate) => salvagePacket(candidate, env.sources),
     });
 
     // W1: independent first passes; viewpoints first (they cover everything).
@@ -632,6 +644,13 @@ function finish(runDir, optOuts = {}) {
   usage.plan = sumUsage(readJsonIfExists(path.join(runDir, 'plan-work', 'receipts.json'), {}));
   const gate = readJsonIfExists(path.join(runDir, 'gates', 'REVIEW.json'));
   const status = drift.length ? 'INVALIDATED' : outcome.complete && (!synth.present || synth.valid) ? 'EXECUTED_PASS' : 'EXECUTED_FAIL';
+  // The packets this decision was made on, hashed now: publishing, reporting
+  // and the REVIEW gate check them, so an edit after validation is visible.
+  const artifacts = {
+    packets: state.packets
+      .map((p) => ({ unit_id: p.unit_id, role: p.role, path: p.ref.path, sha256: p.ref.sha256 }))
+      .sort((a, b) => `${a.unit_id}/${a.role}`.localeCompare(`${b.unit_id}/${b.role}`)),
+  };
   const validation = {
     schema_version: '1.0',
     context_id: context.context_id,
@@ -642,6 +661,7 @@ function finish(runDir, optOuts = {}) {
     complete: outcome.complete,
     recommendation: outcome.recommendation,
     gaps: outcome.gaps,
+    artifacts,
     items: outcome.items,
     checks: outcome.checks,
     impacts: outcome.impacts,
@@ -674,7 +694,21 @@ function finish(runDir, optOuts = {}) {
     unit.status = statuses.every((s) => s === STATUS.PASS) ? STATUS.PASS : statuses.find((s) => s !== STATUS.PASS) || STATUS.NOT_RUN;
   }
   run.review.context_id = context.context_id;
+  // Stored outside validation.json (a file cannot contain its own hash): a
+  // later edit of validation.json is caught by publish and the report.
+  run.validation_sha256 = validationDigest(validation);
   writeJsonAtomic(runFile, run);
+  // Report the gate as it is now, not as it was when the run started: a gate
+  // recorded before this validation (or one whose packets changed) is not
+  // "bound to this context".
+  try {
+    const current = require('./runs').gateState(runDir, 'REVIEW');
+    validation.human_gate.recorded = current.decision;
+    validation.human_gate.bound_to_current_context = current.valid;
+    writeJsonAtomic(path.join(dir, 'validation.json'), validation);
+  } catch {
+    /* a run without a gate keeps the NOT_RECORDED fields it has */
+  }
   return validation;
 }
 

@@ -548,6 +548,35 @@ test('ticket pipeline -> PR review, end to end', async (t) => {
     assert.equal(gateState(runDir, 'REVIEW').valid, true);
   });
 
+  // Incident (this review): validation was a one-time event. A packet or
+  // validation.json edited afterwards was read by the report and the publish
+  // draft while the gate still said "approved" and the header said the quotes
+  // were machine-verified.
+  await t.test('editing an accepted packet or validation after the gate voids it and blocks publish', () => {
+    const ctx = loadContext(runDir);
+    const dir = revisionDir(runDir, ctx.context_id);
+    const packetFile = path.join(dir, 'packets', 'business', 'B1.json');
+    assert.ok(fs.existsSync(packetFile), 'B1/business packet');
+    const original = fs.readFileSync(packetFile, 'utf8');
+    const packet = JSON.parse(original);
+    packet.findings[0].title = `${packet.findings[0].title} (edited after the gate)`;
+    fs.writeFileSync(packetFile, JSON.stringify(packet, null, 2));
+    assert.equal(gateState(runDir, 'REVIEW').valid, false);
+    assert.throws(() => buildReview(runDir, { minSeverity: 'P3' }), /changed after validation/);
+    fs.writeFileSync(packetFile, original);
+    assert.equal(gateState(runDir, 'REVIEW').valid, true);
+
+    const validationFile = path.join(dir, 'validation.json');
+    const originalValidation = fs.readFileSync(validationFile, 'utf8');
+    const validation = JSON.parse(originalValidation);
+    validation.findings[0].title = `${validation.findings[0].title} (edited after the gate)`;
+    fs.writeFileSync(validationFile, JSON.stringify(validation, null, 2));
+    assert.equal(gateState(runDir, 'REVIEW').valid, false);
+    assert.throws(() => buildReview(runDir, { minSeverity: 'P3' }), /changed after it was written/);
+    fs.writeFileSync(validationFile, originalValidation);
+    assert.equal(gateState(runDir, 'REVIEW').valid, true);
+  });
+
   await t.test('incremental: after a push, only units whose files changed are reviewed again', async () => {
     const before = loadContext(runDir);
     write(repo.dir, FEES, `${sh(repo.dir, ['show', `HEAD:${FEES}`])}\n# rounding is handled by the invoice service\n`);
