@@ -64,6 +64,20 @@ test('the driver log of a run can be read from the dashboard, the tail of it', (
   assert.equal(log.truncated, true);
 });
 
+test('a job that exits 3 (AWAITING_INTENT) is awaiting, not failed', () => {
+  const { JobQueue } = require('../src/web/jobs');
+  const queue = new JobQueue();
+  const job = { id: 'awaiting-1', status: 'running', args: ['review'] };
+  queue.jobs.push(job);
+  queue.finish(job, 3);
+  assert.equal(job.status, 'awaiting');
+  assert.equal(job.exit_code, 3);
+  const failed = { id: 'failed-1', status: 'running', args: ['review'] };
+  queue.jobs.push(failed);
+  queue.finish(failed, 1);
+  assert.equal(failed.status, 'failed');
+});
+
 test('a dashboard job that fails leaves its stack trace in the job log', async () => {
   const { JobQueue } = require('../src/web/jobs');
   const queue = new JobQueue();

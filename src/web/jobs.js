@@ -111,7 +111,9 @@ class JobQueue {
 
   finish(job, code) {
     if (job.status !== 'running') return;
-    const status = job.cancel_requested ? 'cancelled' : code === 0 ? 'succeeded' : 'failed';
+    // Exit 3: the review stopped at AWAITING_INTENT; a person confirms the
+    // intent at its SPEC gate. That is a wait, not a failure.
+    const status = job.cancel_requested ? 'cancelled' : code === 0 ? 'succeeded' : code === 3 ? 'awaiting' : 'failed';
     Object.assign(job, { status, exit_code: code, finished_at: nowIso() });
     this.save();
     this.pump();
