@@ -7,6 +7,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 
@@ -74,9 +75,13 @@ function tracked() {
   return new Set(git(['ls-files', '-z']).split('\0').filter(Boolean));
 }
 
+// Only the repository's own .gitignore counts: a path this machine's global
+// excludes file hides is still unignored on CI and in every other clone.
+const NO_GLOBAL_EXCLUDES = path.join(os.tmpdir(), 'arw-no-global-excludes');
+
 function ignored(rel) {
   try {
-    execFileSync('git', ['check-ignore', '-q', '--no-index', rel], { cwd: ROOT, stdio: 'ignore' });
+    execFileSync('git', ['-c', `core.excludesFile=${NO_GLOBAL_EXCLUDES}`, 'check-ignore', '-q', '--no-index', rel], { cwd: ROOT, stdio: 'ignore' });
     return true;
   } catch {
     return false;

@@ -13,3 +13,5 @@ config/mcp.json
 config/projects/
 # eval cases point at private clones and runs hold their code
 evals/
+# personal Claude Code settings (the frozen-edit guard hook lives here)
+.claude/settings.local.json

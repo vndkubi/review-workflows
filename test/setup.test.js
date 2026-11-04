@@ -153,7 +153,11 @@ test('review defaults come from settings; flags given on the command line still 
 
 test('arw setup: --check reports and changes nothing; --preset applies one', async () => {
   await withFiles((dir) => {
-    const env = { ...process.env, ARW_ENV_FILE: path.join(dir, '.env'), ARW_REPOS_FILE: path.join(dir, 'repos.json') };
+    // A stand-in codex that is installed and signed in: CI runners have no codex,
+    // and a missing required tool makes setup exit 1 (checked below).
+    const codex = path.join(dir, 'codex-ok.js');
+    fs.writeFileSync(codex, "console.log(process.argv[2] === 'login' ? 'Logged in' : 'codex-cli 0.0.0');\n");
+    const env = { ...process.env, CODEX_BIN: codex, ARW_ENV_FILE: path.join(dir, '.env'), ARW_REPOS_FILE: path.join(dir, 'repos.json') };
     const check = spawnSync(process.execPath, [path.join(ROOT, 'src', 'cli', 'arw.js'), 'setup', '--check'], { encoding: 'utf8', env, timeout: 120000 });
     assert.match(check.stdout, /Presets/);
     assert.match(check.stdout, /fast .*Fast/);
@@ -163,5 +167,12 @@ test('arw setup: --check reports and changes nothing; --preset applies one', asy
     assert.equal(apply.status, 0, apply.stdout + apply.stderr);
     assert.match(fs.readFileSync(path.join(dir, '.env'), 'utf8'), /ARW_PRESET=fast/);
     assert.ok(fs.existsSync(path.join(dir, 'repos.json')));
+    // Without codex the preset is still applied, but setup reports it and exits 1.
+    const missing = path.join(dir, 'codex-missing.js');
+    fs.writeFileSync(missing, 'process.exit(1);\n');
+    const noCodex = spawnSync(process.execPath, [path.join(ROOT, 'src', 'cli', 'arw.js'), 'setup', '--preset', 'thorough', '--force'], { encoding: 'utf8', env: { ...env, CODEX_BIN: missing }, timeout: 120000 });
+    assert.equal(noCodex.status, 1, noCodex.stdout + noCodex.stderr);
+    assert.match(noCodex.stdout, /MISS codex CLI/);
+    assert.match(fs.readFileSync(path.join(dir, '.env'), 'utf8'), /ARW_PRESET=thorough/);
   });
 });
