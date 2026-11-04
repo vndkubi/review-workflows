@@ -36,6 +36,9 @@ jobs:
           python -m pip install --disable-pip-version-check ruff
           ruff --version
           docker info
+          docker pull maven:3.9-eclipse-temurin-8
+          docker pull maven:3.9-eclipse-temurin-11
+          docker pull maven:3.9-eclipse-temurin-17
       - name: Run the full suite with Docker and ruff
         env:
           ARW_DOCKER_TESTS: '1'
