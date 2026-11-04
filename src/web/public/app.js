@@ -76,9 +76,11 @@ function fmtMs(ms) {
   return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
 }
 
-function statusBadge(status, tone = null) {
-  const cls = tone || (/PASS|READY|CONFIRMED|succeeded|approved|no_blocking/.test(status) ? 'ok' : /FAIL|BLOCKED|INVALID|EXCEEDED|failed|rejected|changes_requested/.test(status) ? 'bad' : 'warn');
-  return h('span', { class: `badge ${cls}` }, status || '–');
+// pending: work is still unverified, so a green badge turns yellow. A red one
+// stays red: unverified work never makes a failure look milder.
+function statusBadge(status, pending = false) {
+  const cls = /PASS|READY|CONFIRMED|succeeded|approved|no_blocking/.test(status) ? 'ok' : /FAIL|BLOCKED|INVALID|EXCEEDED|failed|rejected|changes_requested/.test(status) ? 'bad' : 'warn';
+  return h('span', { class: `badge ${pending && cls === 'ok' ? 'warn' : cls}` }, status || '–');
 }
 
 function verificationCountsOf(source) {
@@ -278,9 +280,9 @@ function prTable(prs) {
       return h('tr', {},
         h('td', {}, h('a', { href: `#/pr/${p.id}` }, `${p.repo}#${p.pr}`), activeJobFor('pr', p.id) ? h('span', { class: 'pulse' }) : null),
         h('td', {}, p.title || ''),
-        h('td', {}, statusBadge(p.status, pending ? 'warn' : null)),
+        h('td', {}, statusBadge(p.status, pending)),
         h('td', {}, verificationBadge(p)),
-        h('td', {}, p.recommendation ? statusBadge(p.recommendation, pending ? 'warn' : null) : '–'),
+        h('td', {}, p.recommendation ? statusBadge(p.recommendation, pending) : '–'),
         h('td', {}, sevCounts(p.counts) || '–'),
         h('td', {}, p.confirmed ? h('span', { class: `badge ${pending ? 'warn' : 'ok'}` }, `${p.confirmed} CONFIRMED`) : '–'),
         h('td', {}, p.usage ? fmtNum(p.usage.calls) : '–'),
@@ -425,7 +427,7 @@ function prSummary(d) {
   const pending = verificationIssues(verification) > 0;
   return h('div', {},
     h('div', { class: 'row my10' },
-      statusBadge(v.status, pending ? 'warn' : null), statusBadge(v.recommendation, pending ? 'warn' : null),
+      statusBadge(v.status, pending), statusBadge(v.recommendation, pending),
       h('span', { class: `badge ${pending ? 'warn' : v.complete ? 'ok' : 'warn'}` }, v.complete ? (pending ? 'execution complete' : 'complete') : 'incomplete'),
       verificationBadge(verification),
       h('span', { class: 'muted small' }, `context ${v.context_id} · validated ${fmtTime(v.validated_at)}`)),

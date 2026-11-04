@@ -121,6 +121,14 @@ test('a row with unverified work warns and never gets a green badge', () => {
   assert.equal(elements(table).filter((el) => /badge ok/.test(el.className)).length, 0, 'no green badge while verification is pending');
 });
 
+test('pending verification turns only a green badge yellow; a failed run stays red', () => {
+  const app = makeContext();
+  const table = app.__prTable([{ ...row, status: 'INVALIDATED', recommendation: 'changes_requested', gaps: 3 }]);
+  const classes = elements(table).filter((el) => /badge/.test(el.className)).map((el) => [el.className, el.textContent]);
+  assert.ok(classes.some(([cls, text]) => cls === 'badge bad' && text === 'INVALIDATED'), 'INVALIDATED keeps its red badge');
+  assert.ok(classes.some(([cls, text]) => cls === 'badge bad' && text === 'changes_requested'), 'changes_requested keeps its red badge');
+});
+
 test('h() renders model text as text, not markup', () => {
   const app = makeContext();
   const table = app.__prTable([row]);
