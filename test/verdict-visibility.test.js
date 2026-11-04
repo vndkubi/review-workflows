@@ -14,7 +14,7 @@ const { sha256Value } = require('../src/lib/util');
 const { revisionDir, reviewDir } = require('../src/lib/freeze');
 const { writeJsonAtomic } = require('../src/lib/util');
 
-function fixture() {
+function fixture({ p4 = false } = {}) {
   const runDir = tmpDir('arw-verdict-');
   const contextId = '0123456789abcdef';
   const head = 'a'.repeat(40);
@@ -55,10 +55,18 @@ function fixture() {
     authority: { kind: 'curated_viewpoint', id: 'CK-BZ-1' },
     trigger: { given: 'the boundary', when: 'a test runs', then: 'it fails first' },
   };
+  const low = {
+    id: 'T1-technical-F3', severity: 'P4', title: 'A low-severity style defect',
+    asis: 'style', tobe: 'clean', impact: 'readability', confidence: 'LIKELY', category: 'defect',
+    evidence: [{ kind: 'code', path: 'shop.py', start_line: 1, end_line: 1, quote: 'x = 1' }],
+    fix: { kind: 'not_code', reason: 'style' },
+    authority: { kind: 'inferred', id: 'engineering-judgement' },
+    trigger: { given: 'style', when: 'read', then: 'nit' },
+  };
   const packet = {
     schema_version: '1.0', context_digest: contextDigest, unit_id: 'B1', role: 'business',
     summary: 'fixture', dependency_refs: [], coverage: [], item_verdicts: [],
-    findings: [withdrawn, suggestion], recommendation: 'findings',
+    findings: [withdrawn, suggestion, ...(p4 ? [low] : [])], recommendation: 'findings',
   };
   fs.mkdirSync(path.join(dir, 'packets', 'business'), { recursive: true });
   writeJsonAtomic(path.join(dir, 'packets', 'business', 'B1.json'), packet);
@@ -77,6 +85,7 @@ function fixture() {
     findings: [
       { ...withdrawn, state: 'withdrawn', label: 'SUSPECTED', evidence_level: 'L1', votes: 1, canonical: true, suggestion: false, rebuttal_from: 'B1-business-F1' },
       { ...suggestion, state: 'not_challenged', label: 'SUSPECTED', evidence_level: 'L1', votes: 1, canonical: true, suggestion: true },
+      ...(p4 ? [{ ...low, state: 'not_challenged', label: 'SUSPECTED', evidence_level: 'L1', votes: 1, canonical: true, suggestion: false }] : []),
     ],
     jobs, gaps: [], items: [], checks: [], impacts: [], warnings: [], size: null, opt_outs: [], carried_over: null,
     synthesis: { present: true, valid: true, errors: [] },
@@ -119,6 +128,15 @@ test('a test_gap is listed under Suggestions and the publish header counts what 
 
   const file = writeReport(runDir, validation, identity);
   assert.match(fs.readFileSync(file, 'utf8'), /## Withdrawn \/ not proven/);
+});
+
+test('a below-minimum P4 defect is counted as not posted inline', () => {
+  const { runDir } = fixture({ p4: true });
+  const review = buildReview(runDir);
+  const header = review.body.split('##')[0];
+  assert.match(header, /3 not posted inline/);
+  assert.match(header, /1 below the minimum severity/);
+  assert.ok(!review.body.includes('A low-severity style defect'), 'the below-min defect is not posted');
 });
 
 test('a withdrawn suggestion is counted once, under Withdrawn', () => {

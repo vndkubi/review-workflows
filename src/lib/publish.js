@@ -87,7 +87,14 @@ function buildReview(runDir, { minSeverity = 'P3' } = {}) {
     if (ev && line) comments.push({ path: ev.path, line, side: 'RIGHT', body, finding_id: f.id });
     else summaryOnly.push({ body, finding_id: f.id });
   }
-  const notInline = summaryOnly.length + withdrawn.length + suggestions.length + omitted.length;
+  // Every finding outside the inline comments is counted, including defects
+  // below minSeverity and findings with no packet body. The header must not
+  // silently omit a class of finding just because it was never eligible for
+  // an inline comment.
+  const posted = new Set([...comments, ...summaryOnly].map((c) => c.finding_id));
+  const omittedIds = new Set(omitted.map((o) => o.finding_id));
+  const belowMin = all.filter((m) => !posted.has(m.id) && !withdrawn.includes(m) && !suggestions.includes(m) && !omittedIds.has(m.id)).length;
+  const notInline = all.filter((m) => !posted.has(m.id)).length;
   const header = [
     `Automated review draft for \`${run.identity.head_sha.slice(0, 12)}\` — ${comments.length} finding(s) inline; ${notInline} not posted inline; runtime recommendation **${validation.recommendation}**${validation.complete ? '' : ' (review incomplete)'}.`,
     'Findings are SUSPECTED (static evidence, quotes machine-verified) unless marked otherwise. A person reviewed and submitted this draft.',
@@ -95,7 +102,7 @@ function buildReview(runDir, { minSeverity = 'P3' } = {}) {
   if (validation.warnings && validation.warnings.length) {
     header.push('', `**Instruction-like text aimed at automated reviewers** was found in this PR (${validation.warnings.length}); it was treated as data:`, ...validation.warnings.map((w) => `- \`${w.where}\` ${w.text}`));
   }
-  header.push('', `Not posted inline: ${summaryOnly.length} in the body because no changed line; ${withdrawn.length} withdrawn / not proven; ${suggestions.length} suggestions (not in the verdict); ${omitted.length} omitted after a person rejected them or similar.`);
+  header.push('', `Not posted inline: ${summaryOnly.length} in the body because no changed line; ${withdrawn.length} withdrawn / not proven; ${suggestions.length} suggestions (not in the verdict); ${belowMin} below the minimum severity; ${omitted.length} omitted after a person rejected them or similar.`);
   if (withdrawn.length) {
     header.push('', '## Withdrawn / not proven', '');
     for (const meta of withdrawn) {
