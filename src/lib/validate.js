@@ -186,6 +186,18 @@ function locateQuote(lines, quote) {
   return { hits, height };
 }
 
+// Start lines of `quote` that lie wholly inside lines from..to (1-based).
+function locateWithin(lines, quote, from, to) {
+  const q = String(quote).replace(/\r\n/g, '\n');
+  const height = q.split('\n').length;
+  const last = Math.min(to, lines.length);
+  const hits = [];
+  for (let i = Math.max(1, from); i + height - 1 <= last; i += 1) {
+    if (regionMatches(lines.slice(i - 1, i - 1 + height).join('\n'), q)) hits.push(i);
+  }
+  return { hits, height };
+}
+
 function linesFor(ev, sources) {
   if (ev.kind === 'code') return sources.code(ev.path, ev.revision);
   if (ev.kind === 'input') return sources.input(ev.path);
@@ -239,11 +251,20 @@ function canonicalizeCandidate(candidate, sources) {
     const lines = linesFor(ev, sources);
     if (!lines) return;
     const match = quoteMatchesAt(lines, ev.start_line, ev.end_line, ev.quote);
-    // A quote found only by extending past the cited end line is at the
-    // wrong place even though the validator would accept it today. Locate
-    // the exact bytes instead, so the report and the review point at the
-    // real line. A wholly missing range follows the same path.
-    if (match.ok && !String(match.how || '').includes('end_slack')) return;
+    // A quote found only by extending past the cited end line: the cited
+    // window (start .. end + END_SLACK) names the place. One occurrence in it
+    // gets its real lines; more than one is left for the validator to reject.
+    // Occurrences outside the window do not matter: the citation excludes them.
+    if (match.ok && String(match.how || '').includes('end_slack')) {
+      const { hits, height } = locateWithin(lines, ev.quote, ev.start_line, ev.end_line + END_SLACK);
+      if (hits.length === 1 && (hits[0] !== ev.start_line || hits[0] + height - 1 !== ev.end_line)) {
+        changes.push(`${at}: re-anchored ${ev.start_line}-${ev.end_line} -> ${hits[0]}-${hits[0] + height - 1} (canonicalized)`);
+        ev.start_line = hits[0];
+        ev.end_line = hits[0] + height - 1;
+      }
+      return;
+    }
+    if (match.ok) return;
     const { hits, height } = locateQuote(lines, ev.quote);
     // Code must be unambiguous; a frozen input is the same evidence wherever
     // the text repeats, so its first occurrence is as good as any.
@@ -433,9 +454,9 @@ function validateEvidence(ev, sources, at) {
   if (!match.ok) errors.push(`${at}: ${match.error} of ${ev.kind} "${ev.path}" — re-read the lines and copy the quote verbatim, or fix the range`);
   else if (String(match.how || '').includes('end_slack')) {
     // The text exists, but only because the end line was stretched. If it
-    // occurs more than once, the cited line is not a location: reject and
-    // repair rather than silently pick one.
-    const { hits } = locateQuote(lines, ev.quote);
+    // occurs more than once inside that stretched window, the citation does
+    // not name one place: reject and repair rather than silently pick one.
+    const { hits } = locateWithin(lines, ev.quote, ev.start_line, ev.end_line + END_SLACK);
     if (hits.length > 1) errors.push(`${at}: quote is ambiguous in ${ev.kind} "${ev.path}" (it occurs more than once); cite lines that identify one occurrence`);
   }
   return errors;

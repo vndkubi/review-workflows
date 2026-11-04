@@ -47,11 +47,20 @@ test('an exact direct quote with wrong or missing lines is accepted at the found
   }
 });
 
-test('a duplicate code quote stays rejected, even when it is near the cited line', () => {
+test('a repeated code quote with one copy inside the cited window is anchored to that copy', () => {
+  // Window 1..6 (end + END_SLACK) holds the copy at 5; the one at 7 is outside it.
   const packet = candidate(ev({ start_line: 1, end_line: 1, quote: DUP }));
+  canonicalizeCandidate(packet, sources);
+  assert.equal(packet.evidence[0].start_line, 5);
+  assert.equal(packet.evidence[0].end_line, 5);
+  assert.deepEqual(validateEvidence(packet.evidence[0], sources, '$.evidence[0]'), []);
+});
+
+test('a repeated code quote with no usable range stays rejected', () => {
+  const packet = candidate(ev({ start_line: null, end_line: null, quote: DUP }));
   const changes = canonicalizeCandidate(packet, sources);
   assert.deepEqual(changes, [], 'an ambiguous quote is not re-anchored');
-  assert.match(validateEvidence(packet.evidence[0], sources, '$.evidence[0]').join('\n'), /ambiguous|more than once/);
+  assert.ok(validateEvidence(packet.evidence[0], sources, '$.evidence[0]').length);
 });
 
 test('a quote that is not in the file stays rejected', () => {
@@ -66,4 +75,27 @@ test('whitespace-only differences keep the validator behaviour they have today',
   const changes = canonicalizeCandidate(packet, sources);
   assert.deepEqual(changes, [], 'no repair and no canonicalization note for a whitespace match');
   assert.deepEqual(validateEvidence(packet.evidence[0], sources, '$.evidence[0]'), []);
+});
+
+test('a quote that starts at the cited line but runs past the cited end gets its end line, even if it repeats elsewhere', () => {
+  // Incident (review of f19a1a7): the same two lines exist in f() and g(); the
+  // model cited the start of g()'s copy with one line too few. That location is
+  // exact, so it is corrected, not sent back for repair.
+  const file = ['class A {', '  int f(int x) {', '    if (x > 0) {', '      return compute(x);', '    }', '  }', '  int g(int x) {', '    if (x > 0) {', '      return compute(x);', '    }', '  }', '}'];
+  const src = { ...sources, code: () => file };
+  const quote = '    if (x > 0) {\n      return compute(x);';
+  const packet = candidate({ kind: 'code', path: 'src/a.js', start_line: 8, end_line: 8, quote });
+  const changes = canonicalizeCandidate(packet, src);
+  assert.equal(packet.evidence[0].start_line, 8);
+  assert.equal(packet.evidence[0].end_line, 9);
+  assert.ok(changes.some((c) => /canonicalized/.test(c)), changes.join('\n'));
+  assert.deepEqual(validateEvidence(packet.evidence[0], src, '$.evidence[0]'), []);
+});
+
+test('a duplicate inside the cited window stays ambiguous and is rejected', () => {
+  // Window 4..9 (end + END_SLACK) holds both copies, at 5 and 7.
+  const packet = candidate(ev({ start_line: 4, end_line: 4, quote: DUP }));
+  const changes = canonicalizeCandidate(packet, sources);
+  assert.deepEqual(changes, []);
+  assert.match(validateEvidence(packet.evidence[0], sources, '$.evidence[0]').join('\n'), /ambiguous|more than once/);
 });
