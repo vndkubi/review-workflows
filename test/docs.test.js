@@ -15,8 +15,9 @@ const CLI = path.join(ROOT, 'src', 'cli', 'arw.js');
 test('README does not claim dashboard requirement editing, which has no route', () => {
   assert.doesNotMatch(README, /edit requirement items/i);
   assert.match(README, /approve or reject the spec/i);
-  // The server's only ticket write routes are create, advance and gate.
-  assert.doesNotMatch(SERVER, /'PUT',\s*\/\^\\\/api\\\/tickets\\\/[^/]+\\\/requirements/);
+  // No PUT route targets ticket requirements.
+  const puts = SERVER.split('\n').filter((line) => /'PUT'/.test(line));
+  assert.ok(!puts.some((line) => /requirements/.test(line)), puts.join('\n'));
 });
 
 test('Quickstart is near the top, has at most five commands, and each command exists in --help', () => {

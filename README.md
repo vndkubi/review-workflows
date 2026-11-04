@@ -30,8 +30,8 @@ node src/cli/arw.js review --repo owner/name --pr 123
 node src/cli/arw.js ui                             # open the dashboard; the review prints report.md
 ```
 
-The review prints the exact `runs/prs/<owner>__<name>__<pr>/report.md`; the dashboard is another way to
-read the same run. The `fast` preset is the safe first review: one reviewer, no reproduction, at most
+The review prints the revision report path; the same `report.md` is also written at
+`runs/prs/<owner>__<name>__<pr>/report.md`, and the dashboard is another way to read the run. The `fast` preset is the safe first review: one reviewer, no reproduction, at most
 20 calls.
 
 ## From spec text to review items
