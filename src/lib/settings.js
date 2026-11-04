@@ -28,6 +28,7 @@ const ENV_SETTINGS = [
   ['CODEX_WINDOWS_SANDBOX', 'executor', 'enum', 'unelevated', 'Windows sandbox for workers (codex >= 0.162).', ['unelevated', 'elevated']],
   ['ARW_EXECUTOR', 'executor', 'enum', 'codex', 'CLI that runs the model jobs. copilot = GitHub Copilot CLI: no structured output (the repair loop keeps JSON valid), repo instructions and hooks never loaded; the CODEX_* model and effort settings still apply.', ['codex', 'copilot']],
   ['COPILOT_SANDBOX', 'executor', 'bool', '0', 'Copilot only. 1 = the experimental OS sandbox makes the checkout read-only (proven by a write canary at preflight). 0 = read tools and an allowlist of read commands; a job that changes the checkout fails.'],
+  ['ARW_WORKER_ENV', 'executor', 'string', '', 'Comma-separated environment variables model workers also receive. Workers read untrusted PR code: they get system, locale, proxy, toolchain and provider-key variables only (plus env_key names from the copied codex config and COPILOT_GITHUB_TOKEN for copilot), never Jira, GitHub or Confluence credentials. Name a credential here only if you accept that.'],
   ['COPILOT_BIN', 'executor', 'string', '', 'Copilot only. The copilot JS entry or binary. Empty = the npm install.'],
   ['CODEX_TIMEOUT_MS', 'executor', 'number', '1800000', 'Timeout per model call (ms).', null, [60000, 7200000]],
   ['ARW_WORKERS', 'review', 'number', '4', 'Parallel review workers.', null, [1, 8]],
@@ -142,6 +143,7 @@ function validateValue(s, value) {
     if (s.range && (n < s.range[0] || n > s.range[1])) return `${s.key}: must be between ${s.range[0]} and ${s.range[1]}`;
   }
   if (s.type === 'url' && !/^https?:\/\/[^\s]+$/.test(value)) return `${s.key}: must be an http(s) URL`;
+  if (s.key === 'ARW_WORKER_ENV' && !/^[A-Za-z_][A-Za-z0-9_]*(\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*$/.test(value)) return `${s.key}: variable names separated by commas`;
   if (['CODEX_MODEL', 'CODEX_JUDGE_MODEL', 'CODEX_PROFILE'].includes(s.key) && !/^[A-Za-z0-9._:\-/]+$/.test(value)) return `${s.key}: letters, digits and . _ : - / only`;
   return null;
 }

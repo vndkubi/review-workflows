@@ -82,7 +82,11 @@ record together; the hashes protect against accidents and partial edits, not aga
 
 **Isolation.** `ARW_REPRO=on` and `ARW_SANDBOX=off` are the defaults, but PR code does not run on the host
 without explicit consent: with no sandbox (or a docker fallback) and no `ARW_ALLOW_HOST_CODE=1`, repro is
-ENVIRONMENT_BLOCKED and names the setting; no host command is started. Set `ARW_ALLOW_HOST_CODE=1` only for
+ENVIRONMENT_BLOCKED and impacted tests are reported as not run, both naming the setting; no host command is
+started. Model workers never run PR code, but they read it: they inherit only system, locale, proxy, toolchain
+and provider-key variables (plus the `env_key` names in the copied codex config, and `COPILOT_GITHUB_TOKEN` for
+copilot), never the Jira, GitHub or Confluence credentials; `ARW_WORKER_ENV` names any further variable you choose
+to pass. Set `ARW_ALLOW_HOST_CODE=1` only for
 repositories you trust, or use `ARW_SANDBOX=docker`, which runs repro and impacted tests in a throwaway
 container instead: only the worktree is mounted, no network (`ARW_SANDBOX_NETWORK`), memory/CPU/process limits,
 killed on timeout. Images per toolchain (`ARW_SANDBOX_IMAGE_MAVEN` / `_GRADLE` / `_PYTEST`); `ARW_SANDBOX_M2`

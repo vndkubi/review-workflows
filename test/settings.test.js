@@ -32,6 +32,7 @@ test('.env edits keep comments and order, apply to this process, and validate', 
   bad({ JIRA_URL: 'ftp://x' }, /http\(s\) URL/);
   bad({ CODEX_MODEL: 'x\nCODEX_USE_USER_CONFIG=1' }, /single line/);
   bad({ PATH: '/tmp' }, /not a known setting/);
+  bad({ ARW_WORKER_ENV: 'JAVA_HOME; rm -rf' }, /variable names separated by commas/);
   assert.match(fs.readFileSync(process.env.ARW_ENV_FILE, 'utf8'), /ARW_WORKERS=6/, 'a rejected save writes nothing');
 });
 

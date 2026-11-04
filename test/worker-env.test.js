@@ -131,3 +131,54 @@ test('copilot gets PATH and its home, never Jira/GitHub/Confluence secrets', asy
   assert.equal(env.COPILOT_HOME, path.join(dir, 'copilot-home'));
   assert.ok(env.PATH || env.Path);
 });
+
+test('copilot keeps COPILOT_GITHUB_TOKEN, its documented sign-in; codex does not get it', () => {
+  const source = { PATH: '/bin', COPILOT_GITHUB_TOKEN: 'copilot-sign-in', GITHUB_TOKEN: 'github', GH_TOKEN: 'gh' };
+  const copilot = workerEnv({ home: '/private/copilot', homeKey: 'COPILOT_HOME', source });
+  assert.equal(copilot.COPILOT_GITHUB_TOKEN, 'copilot-sign-in');
+  assert.equal(copilot.GITHUB_TOKEN, undefined);
+  assert.equal(copilot.GH_TOKEN, undefined);
+  const codex = workerEnv({ home: '/private/codex', homeKey: 'CODEX_HOME', source });
+  assert.equal(codex.COPILOT_GITHUB_TOKEN, undefined);
+});
+
+test('toolchain and Windows/Unix session variables reach the worker shell', () => {
+  const env = workerEnv({
+    source: {
+      JAVA_HOME: 'C:\jdk', MAVEN_HOME: 'C:\mvn', M2_HOME: 'C:\mvn', GRADLE_USER_HOME: 'C:\g', VIRTUAL_ENV: '/venv',
+      USERNAME: 'person', USERDOMAIN: 'box', ProgramFiles: 'C:\Program Files', ProgramData: 'C:\ProgramData',
+      PSModulePath: 'C:\ps', NUMBER_OF_PROCESSORS: '8', USER: 'person', SHELL: '/bin/bash', TERM: 'xterm',
+      JIRA_PAT: 'jira',
+    },
+  });
+  for (const key of ['JAVA_HOME', 'MAVEN_HOME', 'M2_HOME', 'GRADLE_USER_HOME', 'VIRTUAL_ENV', 'USERNAME', 'USERDOMAIN', 'ProgramFiles', 'ProgramData', 'PSModulePath', 'NUMBER_OF_PROCESSORS', 'USER', 'SHELL', 'TERM']) assert.ok(key in env, key);
+  assert.equal(env.JIRA_PAT, undefined);
+});
+
+test('a BYOK provider key named by env_key in the copied codex config reaches codex', async () => {
+  const { runCodex } = require('../src/lib/codex');
+  const dir = tmpDir('arw-worker-env-byok-');
+  const user = path.join(dir, 'user-codex');
+  fs.mkdirSync(user, { recursive: true });
+  fs.writeFileSync(path.join(user, 'config.toml'), '[model_providers.deepseek]\nname = "DeepSeek"\nbase_url = "https://api.example"\nenv_key = "DEEPSEEK_API_KEY"\n');
+  const envFile = path.join(dir, 'env.json');
+  const vars = {
+    ...SECRETS,
+    CODEX_BIN: fakeCodex(dir, envFile),
+    CODEX_ARW_HOME: path.join(dir, 'codex-home'),
+    CODEX_HOME: user,
+    CODEX_USE_USER_CONFIG: '1',
+    DEEPSEEK_API_KEY: 'byok-key',
+  };
+  const res = await withEnv(vars, () => runCodex({ prompt: 'p', cwd: dir, attemptDir: path.join(dir, 'attempt'), timeoutMs: 30000 }));
+  assert.ok(res.ok, res.error_message);
+  const env = JSON.parse(fs.readFileSync(envFile, 'utf8'));
+  assert.equal(env.DEEPSEEK_API_KEY, 'byok-key');
+  for (const key of Object.keys(SECRETS)) assert.equal(env[key], undefined, `${key} reached codex`);
+});
+
+test('ARW_WORKER_ENV names extra variables a person chose to pass', () => {
+  const env = workerEnv({ source: { CORP_CA_BUNDLE: '/ca.pem', OTHER: 'x', ARW_WORKER_ENV: 'CORP_CA_BUNDLE, MISSING' } });
+  assert.equal(env.CORP_CA_BUNDLE, '/ca.pem');
+  assert.equal(env.OTHER, undefined);
+});
