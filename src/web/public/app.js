@@ -97,6 +97,7 @@ function verificationIssues(source) {
 }
 
 function verificationBadge(source) {
+  if (source && source.validated === false) return h('span', { class: 'badge warn', title: 'This run has no validation result yet' }, 'not validated');
   const c = verificationCountsOf(source);
   if (!verificationIssues(c)) return h('span', { class: 'badge ok' }, 'verified');
   return h('span', {
@@ -276,7 +277,7 @@ function prTable(prs) {
   return h('table', {},
     h('thead', {}, h('tr', {}, ['PR', 'Title', 'Status', 'Verification', 'Recommendation', 'Open', 'Confirmed', 'Calls', 'Tokens in / out', 'Updated'].map((c) => h('th', {}, c)))),
     h('tbody', {}, prs.map((p) => {
-      const pending = verificationIssues(p) > 0;
+      const pending = p.validated === false || verificationIssues(p) > 0;
       return h('tr', {},
         h('td', {}, h('a', { href: `#/pr/${p.id}` }, `${p.repo}#${p.pr}`), activeJobFor('pr', p.id) ? h('span', { class: 'pulse' }) : null),
         h('td', {}, p.title || ''),

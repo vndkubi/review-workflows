@@ -129,6 +129,13 @@ test('pending verification turns only a green badge yellow; a failed run stays r
   assert.ok(classes.some(([cls, text]) => cls === 'badge bad' && text === 'changes_requested'), 'changes_requested keeps its red badge');
 });
 
+test('an unvalidated row is not shown as verified', () => {
+  const app = makeContext();
+  const table = app.__prTable([{ ...row, validated: false, unverified: 0, cannot_determine: 0, gaps: 0 }]);
+  assert.match(table.textContent, /not validated/);
+  assert.equal(elements(table).filter((el) => /badge ok/.test(el.className)).length, 0);
+});
+
 test('h() renders model text as text, not markup', () => {
   const app = makeContext();
   const table = app.__prTable([row]);

@@ -94,6 +94,7 @@ function listRuns() {
         title: run.identity.title,
         ticket: run.identity.ticket || null,
         status: v ? v.status : (run.phases && run.phases.batch && run.phases.batch.status) || 'NOT_RUN',
+        validated: Boolean(v),
         recommendation: v ? v.recommendation : null,
         complete: v ? v.complete : null,
         counts: v ? countBySeverity(v.findings) : null,
