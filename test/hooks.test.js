@@ -13,28 +13,35 @@ const ROOT = path.join(__dirname, '..');
 const GUARD = path.join(ROOT, 'scripts', 'hooks', 'guard-frozen-edit.js');
 const PRE_COMMIT = path.join(ROOT, 'scripts', 'hooks', 'pre-commit.js');
 
-function guard(script, cwd, filePath) {
+function guard(script, cwd, filePath, env = {}) {
   return spawnSync(process.execPath, [script], {
     cwd,
     encoding: 'utf8',
     input: JSON.stringify({ cwd, tool_input: { file_path: filePath } }),
     timeout: 30000,
+    env: { ...process.env, ...env },
   });
 }
 
 test('guard-frozen-edit blocks a frozen edit only while this checkout runs a review', async () => {
-  // Run the same script from a temporary root: other tests in this suite may
-  // legitimately leave an arw.js review running, and the real checkout's
-  // process list would then (correctly) block the allow case.
+  // Run the same script from a temporary root. The allow case reads a stand-in
+  // process list: a real review on this machine (`node src/cli/arw.js review`,
+  // a relative path that counts for every checkout) would otherwise block it.
   const root = tmpDir('arw-hook-root-');
   fs.mkdirSync(path.join(root, 'scripts', 'hooks'), { recursive: true });
   const script = path.join(root, 'scripts', 'hooks', 'guard-frozen-edit.js');
   fs.copyFileSync(GUARD, script);
   const arw = path.join(root, 'src', 'cli', 'arw.js');
+  const list = path.join(root, 'processes.txt');
 
-  const allowed = guard(script, root, 'src/lib/x.js');
+  fs.writeFileSync(list, `"${process.execPath}" ${path.join(tmpDir('arw-other-'), 'src', 'cli', 'arw.js')} review --repo o/n --pr 1\n`);
+  const allowed = guard(script, root, 'src/lib/x.js', { ARW_GUARD_PROCESSES: list });
   assert.equal(allowed.status, 0, allowed.stderr);
   assert.equal(allowed.stderr, '');
+
+  fs.writeFileSync(list, `"${process.execPath}" src/cli/arw.js review --repo o/n --pr 1\n`);
+  const relative = guard(script, root, 'src/lib/x.js', { ARW_GUARD_PROCESSES: list });
+  assert.equal(relative.status, 2, 'a relative arw.js path cannot be placed, so it counts');
 
   const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10000)', arw, 'review'], {
     stdio: 'ignore',

@@ -22,8 +22,11 @@ function readStdin() {
   }
 }
 
+// ARW_GUARD_PROCESSES: a file of command lines that stands in for the process
+// list, so a test does not depend on what else this machine is running.
 function commandLines() {
   try {
+    if (process.env.ARW_GUARD_PROCESSES) return require('node:fs').readFileSync(process.env.ARW_GUARD_PROCESSES, 'utf8').split(/\r?\n/);
     if (process.platform === 'win32') {
       return execFileSync('powershell', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | ForEach-Object { $_.CommandLine }"], { encoding: 'utf8', timeout: 15000, windowsHide: true }).split(/\r?\n/);
     }
