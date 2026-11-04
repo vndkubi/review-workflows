@@ -91,24 +91,24 @@ function blockedHostRunner() {
   return Promise.resolve({ exit_code: null, spawn_error: HOST_CODE_BLOCKED, elapsed_ms: 0 });
 }
 
-function hostRunner() {
-  return hostCodeAllowed() ? shellRunner : blockedHostRunner;
+function hostRunner(requireHostConsent = true) {
+  return !requireHostConsent || hostCodeAllowed() ? shellRunner : blockedHostRunner;
 }
 
-function defaultRunner(runDir = null, log = () => {}, { fallback = true } = {}) {
+function defaultRunner(runDir = null, log = () => {}, { fallback = true, requireHostConsent = true } = {}) {
   const sandbox = require('./sandbox');
   const choice = fallback ? require('./host-env').runnerChoice({ mode: sandbox.mode(), daemonError: sandbox.mode() === 'host' ? null : sandbox.daemonError() }) : null;
   if (choice === 'host' && sandbox.mode() !== 'host') {
     log(hostCodeAllowed()
       ? `repro: the ${sandbox.mode()} sandbox is unavailable (${sandbox.daemonError()}); running on the host (ARW_SANDBOX_FALLBACK=off to refuse)`
       : `repro: the ${sandbox.mode()} sandbox is unavailable (${sandbox.daemonError()}); host execution is disabled (set ARW_ALLOW_HOST_CODE=1 to allow it)`);
-    return hostRunner();
+    return hostRunner(requireHostConsent);
   }
   if (sandbox.mode() === 'bootstrap') {
     const b = require('./bootstrap');
     return b.environmentRunner(runDir ? b.loadReviewEnvironment(runDir) : null);
   }
-  return sandbox.enabled() ? sandbox.dockerRunner : hostRunner();
+  return sandbox.enabled() ? sandbox.dockerRunner : hostRunner(requireHostConsent);
 }
 
 // What may be put into a shell command line from a test: a path or a
@@ -617,6 +617,11 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
   const hostEnv = require('./host-env');
   const hostReady = new Map();
   const context = loadContext(runDir);
+  // Check drift before deciding whether the host is allowed. A stale context
+  // must be refused even when host consent is absent; otherwise a blocked
+  // run would look like an environment result for an invalid frozen run.
+  const drift = verifyContext(runDir, context);
+  if (drift.length) throw new Error(`context no longer holds: ${drift.join('; ')}`);
   const rdir = revisionDir(runDir, context.context_id);
   const validation = readJson(path.join(rdir, 'validation.json'));
   const findingsById = new Map();
@@ -642,8 +647,6 @@ async function runRepro({ runDir, executor, models = {}, runner = null, log = ()
     }
     return results;
   }
-  const drift = verifyContext(runDir, context);
-  if (drift.length) throw new Error(`context no longer holds: ${drift.join('; ')}`);
   const existing = loadReproRecords(runDir, context).records;
   const reviewItems = JSON.parse(readInput(runDir, context, 'review-items') || '[]');
   const timeoutMs = envInt('REPRO_TIMEOUT_MS', 15 * 60 * 1000);

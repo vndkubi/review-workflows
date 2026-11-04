@@ -92,25 +92,27 @@ test('no docker, default fallback without host consent: the host is refused', ()
 });
 
 test('host repro without consent is ENVIRONMENT_BLOCKED and names ARW_ALLOW_HOST_CODE', async () => {
-  const { sha256Value } = require('../src/lib/util');
   const { runRepro, shellRunner } = require('../src/lib/repro');
-  const { revisionDir, reviewDir } = require('../src/lib/freeze');
+  const { freezeContext, revisionDir } = require('../src/lib/freeze');
+  const repo = makeRepo();
   const dir = tmpDir('arw-boundary-host-consent-');
-  const contextId = '0123456789abcdef';
-  const body = { schema_version: '1.0', project: null, source: {}, plan_sha256: 'p', tool_sha256: 't', execution: {}, inputs: [] };
-  const digest = sha256Value(body);
-  const rev = revisionDir(dir, contextId);
-  fs.mkdirSync(path.join(rev, 'packets', 'business'), { recursive: true });
-  fs.mkdirSync(reviewDir(dir), { recursive: true });
-  fs.writeFileSync(path.join(reviewDir(dir), 'context.json'), JSON.stringify({ context_id: contextId, context_digest: digest }));
-  fs.writeFileSync(path.join(rev, 'context.json'), JSON.stringify({ ...body, context_id: contextId, context_digest: digest, frozen_at: '2026-11-04T00:00:00.000Z' }));
+  const review = { units: [{ id: 'B1', kind: 'business', desc: 'business', covers: ['file:billing/fees.py'], roles: ['business'], items: [] }] };
+  const patch = 'diff --git a/billing/fees.py b/billing/fees.py\n--- a/billing/fees.py\n+++ b/billing/fees.py\n@@ -1,1 +1,2 @@\n a\n+b\n';
+  const context = freezeContext({
+    runDir: dir, checkout: repo.dir, base: repo.base, head: repo.head,
+    changed: [{ status: 'M', path: 'billing/fees.py' }], reviewable: ['billing/fees.py'],
+    patch, review, inputs: [],
+  });
+  const rev = revisionDir(dir, context.context_id);
   const finding = {
     id: 'B1-business-F1', severity: 'P2', title: 'a boundary', state: 'not_challenged',
     suggestion: false, canonical: true, cluster_id: null,
   };
+  fs.mkdirSync(path.join(rev, 'packets', 'business'), { recursive: true });
   fs.writeFileSync(path.join(rev, 'packets', 'business', 'B1.json'), JSON.stringify({ findings: [{ id: finding.id, severity: 'P2', title: finding.title, evidence: [] }] }));
+  fs.writeFileSync(path.join(dir, 'run.json'), JSON.stringify({ identity: { repo: 'acme/shop', pr: 9, head_sha: repo.head, base_sha: repo.base, title: 'fixture' }, review, phases: {} }));
   fs.writeFileSync(path.join(rev, 'validation.json'), JSON.stringify({
-    context_id: contextId, context_digest: digest,
+    context_id: context.context_id, context_digest: context.context_digest,
     findings: [finding],
     jobs: [{ unit_id: 'B1', role: 'business', status: 'EXECUTED_PASS' }],
   }));
@@ -129,6 +131,12 @@ test('host repro without consent is ENVIRONMENT_BLOCKED and names ARW_ALLOW_HOST
   assert.equal(results[0].status, 'ENVIRONMENT_BLOCKED');
   assert.match(results[0].reason, /ARW_ALLOW_HOST_CODE/);
   assert.ok(!fs.existsSync(path.join(dir, 'repro-wt')), 'no worktree was made');
+
+  const runFile = path.join(dir, 'run.json');
+  const run = JSON.parse(fs.readFileSync(runFile, 'utf8'));
+  run.review.units.push({ id: 'B2', kind: 'business', desc: 'changed plan', covers: ['file:billing/fees.py'], roles: ['business'], items: [] });
+  fs.writeFileSync(runFile, JSON.stringify(run));
+  await assert.rejects(() => runRepro({ runDir: dir, runner: shellRunner, prompts: {}, runModelJob: () => { throw new Error('no model'); }, makeSources: () => ({}) }), /context no longer holds/);
 });
 
 test('impacted-test results record where they ran', async () => {
