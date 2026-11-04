@@ -52,3 +52,23 @@ test('a review that stops at AWAITING_INTENT exits 3', () => {
   assert.equal(res.status, 3, res.stdout + res.stderr);
   assert.match(res.stdout, /AWAITING_INTENT/);
 });
+
+test('several PRs: a failure is never hidden behind another PR that awaits its intent', () => {
+  const preload = path.join(tmpDir('arw-cli-preload-'), 'fake-review.js');
+  fs.writeFileSync(preload, [
+    "'use strict';",
+    "const Module = require('node:module');",
+    'const load = Module._load;',
+    "Module._load = function (request, parent, isMain) {",
+    "  if (request === '../lib/pr-review' && parent && /arw\.js$/.test(parent.filename)) return {",
+    "    reviewPr: async ({ pr }) => { if (Number(pr) === 2) throw new Error('boom'); return { awaiting: 'intent', ticket: 'ACME-1', validation: null }; },",
+    "    revalidate: () => { throw new Error('not used'); },",
+    '  };',
+    '  return load.apply(this, arguments);',
+    '};',
+  ].join('\n'));
+  for (const list of ['2,1', '1,2']) {
+    const res = spawnSync(process.execPath, ['--require', preload, CLI, 'review', '--repo', 'acme/shop', '--pr', list], { encoding: 'utf8', timeout: 30000, env: ENV });
+    assert.equal(res.status, 2, `--pr ${list}: ${res.stdout}${res.stderr}`);
+  }
+});

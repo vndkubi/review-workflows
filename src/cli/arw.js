@@ -154,17 +154,23 @@ async function cmdReview(argv) {
   // --pr 12,15,20 reviews them one after another; one failing does not stop the rest.
   const prs = local ? [Number(args.pr)] : github.parsePrList(args.pr);
   if (prs.length > 1 && args.ticket) throw new Error('--ticket names the ticket of one PR; leave it out when reviewing several PRs');
+  // Exit codes are not ordered by number: 3 (AWAITING_INTENT) is only a wait,
+  // so a failure (1) or an error/drift (2) of another PR outranks it.
+  const RANK = { 0: 0, 3: 1, 1: 2, 2: 3 };
   let worst = 0;
+  const note = (code) => {
+    if ((RANK[code] ?? 3) > RANK[worst]) worst = code;
+  };
   for (const [i, pr] of prs.entries()) {
     if (prs.length > 1) console.log(`
 == ${args.repo}#${pr} (${i + 1}/${prs.length})`);
     try {
-      worst = Math.max(worst, await reviewOne(args, local, pr));
+      note(await reviewOne(args, local, pr));
     } catch (err) {
       if (prs.length === 1) throw err;
       console.error(`error: ${args.repo}#${pr}: ${err.message}`);
       if (process.env.ARW_DEBUG) console.error(err.stack);
-      worst = 2;
+      note(2);
     }
   }
   return worst;
