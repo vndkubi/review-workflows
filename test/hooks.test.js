@@ -79,3 +79,24 @@ test('pre-commit refuses a staged private path', () => {
   assert.equal(env.status, 1, env.stderr);
   assert.match(env.stderr, /\.env: secrets/);
 });
+
+test('the test runner drops the GIT_* variables a git hook exports, so fixtures never touch this repository', () => {
+  // Incident: the pre-push hook ran `node scripts/test.js` from a linked
+  // worktree with GIT_DIR exported; every fixture `git init` / `git config`
+  // then wrote to this repository's config (core.bare=true) and 107 tests failed.
+  const dir = tmpDir('arw-runner-env-');
+  const out = path.join(dir, 'env.json');
+  const probe = path.join(dir, 'probe.test.js');
+  fs.writeFileSync(probe, `require('node:fs').writeFileSync(${JSON.stringify(out)}, JSON.stringify(Object.keys(process.env).filter((k) => /^GIT_/.test(k))));\n`);
+  // A nested node --test that inherits NODE_TEST_CONTEXT reports to its parent
+  // instead of running the file.
+  const { NODE_TEST_CONTEXT, ...outer } = process.env;
+  const res = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'test.js'), probe], {
+    encoding: 'utf8',
+    timeout: 60000,
+    env: { ...outer, GIT_DIR: path.join(dir, 'not-a-repo'), GIT_WORK_TREE: dir, GIT_INDEX_FILE: path.join(dir, 'index'), GIT_PREFIX: '' },
+  });
+  assert.equal(res.status, 0, res.stdout + res.stderr);
+  const left = JSON.parse(fs.readFileSync(out, 'utf8'));
+  for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_PREFIX']) assert.ok(!left.includes(key), `${key} reached the tests`);
+});
