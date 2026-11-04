@@ -62,7 +62,7 @@ function buildReview(runDir, { minSeverity = 'P3' } = {}) {
   }
   const all = validation.findings.filter((m) => !aliased.has(m.id) && m.canonical !== false);
   const withdrawn = all.filter((m) => m.state === 'withdrawn');
-  const suggestions = all.filter((m) => m.suggestion);
+  const suggestions = all.filter((m) => m.suggestion && m.state !== 'withdrawn');
   const metas = all
     .filter((m) => m.state !== 'withdrawn' && !m.suggestion && SEVERITY_RANK[m.severity] <= SEVERITY_RANK[minSeverity])
     .sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || a.id.localeCompare(b.id));

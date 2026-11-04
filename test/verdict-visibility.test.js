@@ -120,3 +120,20 @@ test('a test_gap is listed under Suggestions and the publish header counts what 
   const file = writeReport(runDir, validation, identity);
   assert.match(fs.readFileSync(file, 'utf8'), /## Withdrawn \/ not proven/);
 });
+
+test('a withdrawn suggestion is counted once, under Withdrawn', () => {
+  const { runDir, validation } = fixture();
+  validation.findings[1].state = 'withdrawn';
+  const dir = revisionDir(runDir, validation.context_id);
+  writeJsonAtomic(path.join(dir, 'validation.json'), validation);
+  const run = JSON.parse(fs.readFileSync(path.join(runDir, 'run.json'), 'utf8'));
+  writeJsonAtomic(path.join(runDir, 'run.json'), { ...run, validation_sha256: validationDigest(validation) });
+
+  const review = buildReview(runDir);
+  const header = review.body.split('##')[0];
+  assert.match(header, /2 not posted inline/);
+  assert.match(header, /2 withdrawn \/ not proven; 0 suggestions/);
+  assert.equal(review.suggestions.length, 0);
+  const report = renderReport(runDir, validation, run.identity);
+  assert.equal(report.split('T1-technical-F2').length - 1, 1, 'listed once in the report');
+});

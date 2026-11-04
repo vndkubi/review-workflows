@@ -202,7 +202,7 @@ function renderReport(runDir, validation, identity) {
     if (aliased.has(meta.id)) continue;
     const f = findings.get(meta.id);
     if (!f) continue;
-    if (meta.suggestion) {
+    if (meta.suggestion && meta.state !== 'withdrawn') {
       suggestions.push(`- \`${meta.id}\` [${meta.severity}] (${f.category}) ${f.title}`);
       continue;
     }
