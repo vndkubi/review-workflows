@@ -35,8 +35,17 @@ function quoteStats({ dir, base, head }, findings) {
       const start = Number(ev.start_line);
       const end = Number(ev.end_line);
       const src = lines(ev.revision === 'base' ? base : head, ev.path);
-      if (!src || !Number.isInteger(start) || !Number.isInteger(end) || !quoteMatchesAt(src, start, end, ev.quote).ok) {
-        if (!src || !Number.isInteger(start) || !Number.isInteger(end)) unchecked += 1;
+      const missingRange = ev.start_line == null || ev.end_line == null || !Number.isInteger(start) || !Number.isInteger(end);
+      if (!src || missingRange) {
+        unchecked += 1;
+        continue;
+      }
+      const match = quoteMatchesAt(src, start, end, ev.quote);
+      if (!match.ok) {
+        // A line the file does not reach is a location we could not check,
+        // not a fabricated quote. A quote at readable lines that does not
+        // match is fabricated.
+        if (/past the end|invalid line range|range .* exceeds|start_line|end_line/i.test(match.error || '')) unchecked += 1;
         else fabricated += 1;
       }
     }

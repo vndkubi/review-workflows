@@ -405,8 +405,9 @@ function renderScorecard(card) {
   lines.push('', '## Decision', '', ...decision);
   if (card.case_spread && card.case_spread.length) {
     const spread = (x) => (x.mean == null ? '–' : `${pct(x.mean)} ± ${pct(x.sd)}`);
+    const countSpread = (x) => (x.mean == null ? '–' : `${x.mean} ± ${x.sd}`);
     lines.push('', '## Per-case spread', '', '| Case | Runs | Recall mean ± sd | Precision mean ± sd | Found mean ± sd |', '|---|---|---|---|---|',
-      ...card.case_spread.map((s) => `| ${s.id} | ${s.n} | ${spread(s.recall)} | ${spread(s.precision)} | ${spread(s.found)} |`));
+      ...card.case_spread.map((s) => `| ${s.id} | ${s.n} | ${spread(s.recall)} | ${spread(s.precision)} | ${countSpread(s.found)} |`));
   }
   if ((card.gaps || []).length) lines.push('', '## Gaps (NO_RESULT, not counted as misses)', '', ...card.gaps.map((g) => `- ${g.id}${g.repeat > 1 ? ` (repeat ${g.repeat})` : ''}: ${g.reason}`));
   const failed = card.cases.filter((s) => s.error);

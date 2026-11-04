@@ -12,6 +12,7 @@ process.env.ARW_EVAL_DIR = tmpDir('arw-honesty-eval-');
 process.env.ARW_ENV_FILE = path.join(tmpDir('arw-honesty-env-'), '.env');
 const evals = require('../src/lib/eval');
 const measure = require('../src/lib/eval-measure');
+const git = require('../src/lib/git');
 
 const LABEL = { id: 'N1', path: 'a.py', keywords: ['style'], why: 'not a defect' };
 const FINDING = {
@@ -66,6 +67,16 @@ test('raw review has no validator, but scoring marks quotes it could not check',
     evidence: [{ kind: 'code', path: 'missing.py', start_line: 1, end_line: 1, quote: 'x' }],
   }]);
   assert.deepEqual(q, { quotes: 1, fabricated: 0, unchecked: 1, rate: null });
+
+  const root = path.join(__dirname, '..');
+  const head = git.git(root, ['rev-parse', 'HEAD']).trim();
+  const base = git.git(root, ['rev-parse', 'HEAD~1']).trim();
+  const ev = (over) => ({ evidence: [{ kind: 'code', path: 'README.md', start_line: 1, end_line: 1, quote: 'agent-review-workflows', ...over }] });
+  assert.equal(measure.quoteStats({ dir: root, base, head }, [ev({ start_line: null, end_line: null })]).unchecked, 1);
+  assert.equal(measure.quoteStats({ dir: root, base, head }, [ev({ start_line: 999999, end_line: 999999 })]).unchecked, 1);
+  const mismatch = measure.quoteStats({ dir: root, base, head }, [ev({ quote: 'definitely-not-in-readme' })]);
+  assert.equal(mismatch.fabricated, 1);
+  assert.equal(mismatch.unchecked, 0);
 });
 
 test('compare across tool hashes returns rows plus tool_changed with --allow-tool-diff', () => {
@@ -114,4 +125,7 @@ test('the decision report shows repeat count and per-case spread', () => {
   assert.match(md, /repeat 2/);
   assert.match(md, /## Per-case spread/);
   assert.match(md, /75% ± 35\.4%/);
+  assert.match(md, /Found mean ± sd/);
+  assert.match(md, /\| 1\.5 ± 0\.7071 \|/);
+  assert.doesNotMatch(md, /150%/);
 });
