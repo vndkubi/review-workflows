@@ -101,7 +101,7 @@ function reviewSteps({ run, driverLog = '', active = false, jobStatus = null, ha
   fromPhase('freeze', phases.freeze, phases.freeze && phases.freeze.context_id ? `context ${String(phases.freeze.context_id).slice(0, 8)}` : '');
 
   // Waves: a wave is done once the next one (or the end of the batch) shows.
-  const unitJobs = jobs.filter((j) => !/^(rebuttal-|synthesis|repro-)/.test(j.label));
+  const unitJobs = jobs.filter((j) => !/^(rebuttal-|synthesis|repro-|refactor$)/.test(j.label));
   const counts = (list) => {
     const n = (s) => list.filter((j) => j.state === s).length;
     return [n('accepted') && `${n('accepted')} accepted`, n('running') && `${n('running')} running`, n('rejected') && `${n('rejected')} being repaired`, n('failed') && `${n('failed')} failed`].filter(Boolean).join(' · ');
@@ -129,6 +129,14 @@ function reviewSteps({ run, driverLog = '', active = false, jobStatus = null, ha
   if (hasReport) set('report', 'done');
 
   const steps = [...out.values()];
+  // The refactor lane is opt-in (ARW_REFACTOR): its step shows only for a run
+  // that has it. A simplifier that failed is a warning; the review stands.
+  if (phases.refactor) {
+    const r = phases.refactor;
+    const done = PASS.test(r.status);
+    const detail = done ? `${r.verified || 0} verified · ${r.unverified || 0} unverified · ${r.broken || 0} broken · ${r.dropped || 0} dropped` : r.status === 'SKIPPED' ? r.reason || '' : `no valid suggestions: ${r.reason || r.status}`;
+    steps.splice(steps.findIndex((s) => s.id === 'report'), 0, { id: 'refactor', label: 'Refactor', state: done ? 'done' : r.status === 'SKIPPED' ? 'skipped' : 'warn', detail });
+  }
   // A job that ended without finishing: the step it was in failed.
   if (!active && jobStatus === 'failed') {
     const current = steps.find((s) => s.state === 'running');

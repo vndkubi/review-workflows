@@ -275,7 +275,7 @@ function createServer({ port, token = crypto.randomBytes(24).toString('hex'), qu
     ['GET', /^\/api\/prs\/([^/]+)\/publish-preview$/, (m, q) => {
       const { dir } = data.prDirFromId(m[1]);
       const review = buildReview(dir, { minSeverity: severity(q.get('min')) });
-      return { body: review.body, comments: review.comments, summary_only: review.summaryOnly, omitted: review.omitted };
+      return { body: review.body, comments: review.comments, summary_only: review.summaryOnly, omitted: review.omitted, refactor_comments: review.refactorComments };
     }],
     ['POST', /^\/api\/prs\/([^/]+)\/findings\/([A-Za-z0-9._-]+)\/reject$/, (m, q, body) => {
       const { dir } = data.prDirFromId(m[1]);

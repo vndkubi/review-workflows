@@ -230,8 +230,9 @@ function cmdPublish(argv) {
   const { record, review } = publish(runDir, { minSeverity: args.minSeverity || 'P3', dryRun: args.dryRun, createPendingReview: github.createPendingReview });
   if (args.dryRun) {
     console.log(review.body);
-    for (const c of review.comments) console.log(`\n--- ${c.path}:${c.line}\n${c.body}`);
+    for (const c of [...review.comments, ...review.refactorComments]) console.log(`\n--- ${c.path}:${c.start_line ? `${c.start_line}-` : ''}${c.line}\n${c.body}`);
   }
+  if (record.refactor.length) console.log(`\n${record.refactor.filter((x) => x.inline).length} refactor suggestion(s) inline (verified by tests) + ${record.refactor.filter((x) => !x.inline).length} listed in the body; none is part of the verdict`);
   if (record.omitted.length) console.log(`\n${record.omitted.length} finding(s) left out: rejected before (${record.omitted.map((o) => `${o.finding_id} ~ ${o.entry_id}`).join(', ')}); see arw memory`);
   console.log(`\n${record.inline.length} inline + ${record.summary_only.length} summary finding(s)${record.html_url ? ` · pending review: ${record.html_url} — open it, edit, then submit with your verdict` : ''}`);
   return 0;
@@ -254,6 +255,7 @@ function cmdFeedback(argv) {
     const t = f.thread;
     if (t && (t.replies || t.resolved)) console.log(`            thread: ${t.replies} repl${t.replies === 1 ? 'y' : 'ies'}${t.signal ? ` (${t.signal})` : ''}${t.resolved ? ' · resolved' : ''}${t.last_reply ? ` · last by ${t.last_reply.user}: ${t.last_reply.text.replace(/\s+/g, ' ').slice(0, 100)}` : ''}`);
   }
+  for (const x of record.refactor || []) console.log(`  ${x.verdict.padEnd(9)} ${x.id}  [refactor] ${x.title}`);
   const c = record.counts;
   console.log(`kept ${c.kept} · edited ${c.edited} · dropped ${c.dropped}${c.pending ? ` · pending ${c.pending} (submit the review on GitHub first)` : ''}${remembered.length ? ` · ${remembered.length} dropped finding(s) remembered` : ''}`);
   return 0;

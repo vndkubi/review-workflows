@@ -7,6 +7,7 @@ const { readJsonIfExists } = require('../lib/util');
 const { RUNS, ticketDir, prDir, gateState, GATES } = require('../lib/runs');
 const { revisionDir } = require('../lib/freeze');
 const { packetRel } = require('../lib/driver');
+const { loadRefactor } = require('../lib/refactor');
 const git = require('../lib/git');
 const memory = require('../lib/memory');
 const { isAsked } = require('../lib/impact-checks');
@@ -342,6 +343,10 @@ function prDetail(id) {
     return { ...meta, duplicate_of: aliasOf.get(meta.id) || null, detail, rebuttal, rejected, publish_action: detail ? memory.publishAction(detail, rejected) : null };
   });
   out.feedback = readJsonIfExists(path.join(dir, 'feedback.json'));
+  // Refactor suggestions (ARW_REFACTOR): validated and triaged again on read;
+  // null when the lane did not run for this context.
+  const frozen = readJsonIfExists(path.join(rdir, 'context.json'));
+  out.refactor = frozen ? loadRefactor(dir, frozen) : null;
   const { findings, clusters, checks, impacts, ...rest } = validation;
   out.validation = { ...rest, counts: countBySeverity(validation.findings, new Set(aliasOf.keys())) };
   out.overview = synthesis ? { flows: synthesis.overview, unverified: synthesis.unverified } : null;

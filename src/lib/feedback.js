@@ -153,7 +153,12 @@ function readBack(runDir, { api, graphql = null }) {
     if (f.thread && f.thread.signal) counts[f.thread.signal] += 1;
     if (f.thread && f.thread.resolved) counts.resolved += 1;
   }
-  const record = { at: nowIso(), review_id: published.review_id, context_id: published.context_id, state: review.state, submitted_at: review.submitted_at || null, findings, counts };
+  // Refactor suggestions were published apart from the findings and are read
+  // back apart: they are not defects, and dropping one rejects no finding.
+  const refactor = (published.refactor || []).map((p) => ({ id: p.id, verdict: verdictOf(p.id, p), title: p.title || null, inline: Boolean(p.inline) }));
+  const refactorCounts = { kept: 0, edited: 0, dropped: 0, pending: 0, dismissed: 0 };
+  for (const x of refactor) refactorCounts[x.verdict] += 1;
+  const record = { at: nowIso(), review_id: published.review_id, context_id: published.context_id, state: review.state, submitted_at: review.submitted_at || null, findings, counts, ...(refactor.length ? { refactor, refactor_counts: refactorCounts } : {}) };
   writeJsonAtomic(path.join(runDir, 'feedback.json'), record);
   const remembered = [];
   const remember = (f, reason, source) => {
@@ -172,9 +177,10 @@ function readBack(runDir, { api, graphql = null }) {
 function acceptanceStats() {
   const base = path.join(RUNS, 'prs');
   const total = { kept: 0, edited: 0, dropped: 0 };
+  const refactor = { kept: 0, edited: 0, dropped: 0 };
   const groups = { severity: {}, label: {}, role: {} };
   const runs = [];
-  if (!fs.existsSync(base)) return { total: { ...total, rate: null }, groups, runs };
+  if (!fs.existsSync(base)) return { total: { ...total, rate: null }, groups, refactor: { ...refactor, rate: null }, runs };
   const add = (bucket, key, verdict) => {
     bucket[key] = bucket[key] || { kept: 0, edited: 0, dropped: 0 };
     bucket[key][verdict] += 1;
@@ -193,11 +199,13 @@ function acceptanceStats() {
       add(groups.label, meta.label || '?', f.verdict);
       add(groups.role, (/-(business|technical)-/.exec(f.id) || [null, '?'])[1], f.verdict);
     }
+    for (const x of fb.refactor || []) if (x.verdict in refactor) refactor[x.verdict] += 1;
     runs.push({ id, at: fb.at, state: fb.state, counts: fb.counts });
   }
   const rate = (c) => (c.kept + c.edited + c.dropped ? Math.round(((c.kept + c.edited) / (c.kept + c.edited + c.dropped)) * 1000) / 10 : null);
   for (const g of Object.values(groups)) for (const c of Object.values(g)) c.rate = rate(c);
-  return { total: { ...total, rate: rate(total) }, groups, runs: runs.sort((a, b) => String(b.at).localeCompare(String(a.at))) };
+  // Refactor suggestions people decided on, never mixed into the findings' rate.
+  return { total: { ...total, rate: rate(total) }, groups, refactor: { ...refactor, rate: rate(refactor) }, runs: runs.sort((a, b) => String(b.at).localeCompare(String(a.at))) };
 }
 
 module.exports = { rejectFinding, runRejections, readBack, acceptanceStats, bodyHash, normalizedBody, markersIn, currentFindings };

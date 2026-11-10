@@ -15,6 +15,7 @@ const { effectiveAliases } = require('./outcome');
 const { verifyArtifacts } = require('./artifacts');
 const memory = require('./memory');
 const { bodyHash } = require('./feedback');
+const { loadRefactor } = require('./refactor');
 
 function marker(findingId, contextId) {
   return `<!-- arw:finding=${findingId} context=${contextId} -->`;
@@ -42,6 +43,36 @@ function commentBody(f, meta, contextId, rejected) {
   return lines.join('\n');
 }
 
+// GitHub takes a multi-line comment only when every line of it is in one hunk
+// of the diff (added or context lines on the right side).
+function inOneHunk(parsedFile, span) {
+  if (!parsedFile) return false;
+  return parsedFile.hunks.some((hunk) => {
+    const right = new Set(hunk.lines.filter((l) => l.type !== '-').map((l) => l.new_line));
+    for (let n = span.start; n <= span.end; n += 1) if (!right.has(n)) return false;
+    return true;
+  });
+}
+
+// A VERIFIED refactor suggestion as a GitHub suggestion: the block replaces
+// exactly the commented lines, so the author can commit it from the page.
+function refactorBody(s, contextId) {
+  const m = s.metrics;
+  const ticks = s.replacement.includes('```') ? '````' : '```';
+  return [
+    `**Refactor suggestion** (not in the verdict) · ${s.kind} · ${s.title}`,
+    '',
+    s.reason,
+    '',
+    `Verified: ${s.verification.reason} · code lines ${m.before.lines} → ${m.after.lines} · nesting ${m.before.nesting} → ${m.after.nesting} · branches ${m.before.branches} → ${m.after.branches}. Passing tests show that these tests still pass, not that nothing else changed.`,
+    '',
+    // An empty block removes the commented lines (dead code).
+    `${ticks}suggestion\n${s.replacement ? `${s.replacement}\n` : ''}${ticks}`,
+    '',
+    marker(s.id, contextId),
+  ].join('\n');
+}
+
 // Returns { comments, summaryOnly, body } without calling GitHub.
 function buildReview(runDir, { minSeverity = 'P3' } = {}) {
   const context = loadContext(runDir);
@@ -52,7 +83,8 @@ function buildReview(runDir, { minSeverity = 'P3' } = {}) {
   // The draft quotes packet text: refuse a packet or validation edited after
   // the runtime checked it (the header says the quotes were machine-verified).
   verifyArtifacts(runDir, validation, run);
-  const files = new Map(parsePatch(fs.readFileSync(path.join(dir, 'review.patch'), 'utf8')).map((f) => [f.path, commentableLines(f)]));
+  const parsed = parsePatch(fs.readFileSync(path.join(dir, 'review.patch'), 'utf8'));
+  const files = new Map(parsed.map((f) => [f.path, commentableLines(f)]));
   const synthesis = validation.synthesis.valid ? readJson(path.join(dir, 'synthesis.json')) : null;
   const aliased = new Set(effectiveAliases(synthesis, validation.findings).map((a) => a.id));
   const byId = new Map();
@@ -120,10 +152,30 @@ function buildReview(runDir, { minSeverity = 'P3' } = {}) {
       header.push(`- \`${f.id}\` [${meta.severity}] (${f.category}) ${f.title}`);
     }
   }
+  // Refactor suggestions (ARW_REFACTOR): only what tests verified goes inline,
+  // as a suggestion block; unverified ones are listed; broken ones stay home.
+  const refactor = loadRefactor(runDir, context);
+  const refactorComments = [];
+  const refactorListed = [];
+  for (const s of refactor ? refactor.suggestions : []) {
+    if (s.status === 'BROKEN') continue;
+    if (s.status === 'VERIFIED' && inOneHunk(parsed.find((f) => f.path === s.span.path), s.span)) {
+      refactorComments.push({ path: s.span.path, ...(s.span.end > s.span.start ? { start_line: s.span.start, start_side: 'RIGHT' } : {}), line: s.span.end, side: 'RIGHT', body: refactorBody(s, context.context_id), finding_id: s.id, title: s.title });
+    } else {
+      refactorListed.push(s);
+    }
+  }
+  if (refactorComments.length || refactorListed.length) {
+    header.push('', '## Refactor suggestions (not in the verdict)', '', `${refactorComments.length} inline as a GitHub suggestion (the tests that cover the file passed before and after applying it); ${refactorListed.length} listed here.`);
+    for (const s of refactorListed) {
+      const why = s.status === 'VERIFIED' ? 'its lines are not in one hunk of the diff, so it cannot be a GitHub suggestion' : s.verification.reason;
+      header.push(`- \`${s.id}\` [${s.kind}] ${s.title} — \`${s.span.path}:${s.span.start}-${s.span.end}\` · ${s.status} (${why}) ${marker(s.id, context.context_id)}`);
+    }
+  }
   if (omitted.length) header.push('', `${omitted.length} finding(s) were left out because a person rejected them or similar ones before.`);
   if (validation.gaps.length) header.push('', '**Not verified:**', ...validation.gaps.map((g) => `- ${g}`));
   if (summaryOnly.length) header.push('', '---', '', ...summaryOnly.map((s) => s.body).join('\n\n---\n\n').split('\n'));
-  return { context, run, comments, summaryOnly, omitted, withdrawn, suggestions, body: header.join('\n') };
+  return { context, run, comments, summaryOnly, omitted, withdrawn, suggestions, refactorComments, refactorListed, body: header.join('\n') };
 }
 
 function publish(runDir, { minSeverity, dryRun, createPendingReview }) {
@@ -137,7 +189,12 @@ function publish(runDir, { minSeverity, dryRun, createPendingReview }) {
     inline: review.comments.map((c) => ({ finding_id: c.finding_id, path: c.path, line: c.line })),
     summary_only: review.summaryOnly.map((s) => s.finding_id),
     omitted: review.omitted.map((o) => ({ finding_id: o.finding_id, entry_id: o.rejected.entry_id })),
-    bodies: Object.fromEntries([...review.comments, ...review.summaryOnly].map((c) => [c.finding_id, bodyHash(c.body)])),
+    // Kept apart from the findings: not defects, and counted on their own.
+    refactor: [
+      ...review.refactorComments.map((c) => ({ id: c.finding_id, inline: true, path: c.path, line: c.line, title: c.title })),
+      ...review.refactorListed.map((s) => ({ id: s.id, inline: false, path: s.span.path, line: s.span.end, title: s.title })),
+    ],
+    bodies: Object.fromEntries([...review.comments, ...review.summaryOnly, ...review.refactorComments].map((c) => [c.finding_id, bodyHash(c.body)])),
     dry_run: Boolean(dryRun),
   };
   if (!dryRun) {
@@ -146,7 +203,7 @@ function publish(runDir, { minSeverity, dryRun, createPendingReview }) {
       pr: review.run.identity.pr,
       commitId: review.run.identity.head_sha,
       body: review.body,
-      comments: review.comments.map(({ finding_id, ...c }) => c),
+      comments: [...review.comments, ...review.refactorComments].map(({ finding_id, title, ...c }) => c),
     });
     record.review_id = res.id;
     record.html_url = res.html_url;
@@ -155,4 +212,4 @@ function publish(runDir, { minSeverity, dryRun, createPendingReview }) {
   return { record, review };
 }
 
-module.exports = { buildReview, publish, marker };
+module.exports = { buildReview, publish, marker, inOneHunk };

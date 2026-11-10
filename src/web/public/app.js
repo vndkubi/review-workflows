@@ -358,7 +358,7 @@ async function renderPr(id) {
   // Findings of accepted packets show while the run goes on.
   if (!v && current === 'Findings') return add(body, preliminaryView(d, id, Boolean(job)));
   if (!v) return add(body, h('p', { class: 'muted' }, 'Results appear here once the run is validated.'));
-  if (current === 'Findings') add(body, findingsView(d));
+  if (current === 'Findings') add(body, findingsView(d), refactorView(d));
   else if (current === 'Overview') add(body, overviewView(d));
   else if (current === 'Items') add(body, itemsView(d));
   else if (current === 'Viewpoints') add(body, viewpointsView(d));
@@ -548,6 +548,53 @@ function findingsView(d) {
     .sort((a, b) => (a.state === 'withdrawn') - (b.state === 'withdrawn') || rank[a.severity] - rank[b.severity] || b.votes - a.votes);
   const dupesOf = (id) => d.findings.filter((x) => x.duplicate_of === id || (x.cluster_id && x.cluster_id === (d.findings.find((y) => y.id === id) || {}).cluster_id && x.id !== id));
   return [filterBar, list.length ? list.map((x) => findingCard(d, x, dupesOf(x.id))) : h('p', { class: 'muted' }, 'No findings match the filters.')];
+}
+
+// Refactor suggestions (ARW_REFACTOR): beside the findings, never among them.
+// VERIFIED = the tests that cover the file passed before and after applying
+// it; BROKEN = a passing test fails with it; UNVERIFIED = nothing could show.
+const REFACTOR_DROPPED = [['not_simpler', 'not measurably simpler'], ['overlaps_finding', 'on lines an open defect finding quotes'], ['out_of_scope', 'on lines this PR did not add'], ['overlaps_suggestion', 'overlapping an earlier suggestion'], ['invalid', 'no longer locatable']];
+
+function refactorView(d) {
+  const r = d.refactor;
+  if (!r) return null;
+  const dropped = REFACTOR_DROPPED.filter(([k]) => r.dropped[k]).map(([k, text]) => `${r.dropped[k]} ${text}`);
+  const notes = [
+    r.status === 'SKIPPED' ? `Skipped: ${r.reason}` : null,
+    r.status !== 'EXECUTED_PASS' && r.status !== 'SKIPPED' ? `The simplifier gave no valid answer (${r.status}${r.reason ? `: ${r.reason}` : ''}).` : null,
+    r.errors.length ? `The stored suggestions no longer pass validation (${r.errors.length} error(s); first: ${r.errors[0]}): none is shown.` : null,
+    dropped.length ? `Dropped by the runtime: ${dropped.join(', ')}.` : null,
+    r.invalid ? `${r.invalid} invalid suggestion(s) dropped after the last repair attempt.` : null,
+  ].filter(Boolean);
+  const fb = (id) => ((d.feedback && d.feedback.refactor) || []).find((x) => x.id === id);
+  const card = (s) => {
+    const m = s.metrics;
+    const cls = s.status === 'VERIFIED' ? 'ok' : s.status === 'BROKEN' ? 'bad' : 'warn';
+    const seen = fb(s.id);
+    return h('details', { class: `finding${s.status === 'BROKEN' ? ' withdrawn' : ''}` },
+      h('summary', {},
+        h('span', { class: 'badge' }, s.kind),
+        h('span', { class: 'title' }, s.title),
+        h('span', { class: `badge ${cls}`, title: s.verification && s.verification.reason ? s.verification.reason : '' }, s.status),
+        h('span', { class: 'badge' }, `lines ${m.before.lines} → ${m.after.lines}`),
+        seen && seen.verdict !== 'pending' ? h('span', { class: `badge ${seen.verdict === 'dropped' ? 'warn' : 'ok'}` }, `GitHub: ${seen.verdict}`) : null,
+        h('span', { class: 'muted small mono' }, s.id)),
+      h('div', { class: 'body' },
+        h('p', {}, h('span', { class: 'label' }, 'Where '), h('code', {}, `${s.span.path}:${s.span.start}-${s.span.end}`), ` · nesting ${m.before.nesting} → ${m.after.nesting} · branches ${m.before.branches} → ${m.after.branches}`),
+        h('p', {}, h('span', { class: 'label' }, 'Why '), s.reason),
+        h('p', {}, h('span', { class: 'label' }, `${s.status} `), (s.verification && s.verification.reason) || ''),
+        s.verification && s.verification.tests && s.verification.tests.length
+          ? h('ul', { class: 'small' }, s.verification.tests.map((t) => h('li', {}, h('code', {}, t.path), ` — head: ${t.baseline}${t.after ? `, with the suggestion: ${t.after}` : ''}`)))
+          : null,
+        s.reuse ? h('p', { class: 'small' }, h('span', { class: 'label' }, 'Reuses '), h('code', {}, `${s.reuse.path}:${s.reuse.start_line}`)) : null,
+        diffView(s.fix.asis, s.replacement)));
+  };
+  return [
+    ...section('Refactor suggestions (not in the verdict)',
+      h('p', { class: 'muted small' }, 'Simpler code for lines this PR added. Kept only when the replacement measures simpler, then run on the tests that cover the file. They never change the recommendation or the gate.'),
+      notes.map((n) => h('p', { class: 'small' }, n)),
+      r.suggestions.length ? r.suggestions.map(card) : notes.length ? null : h('p', { class: 'muted' }, 'No suggestion to show.')),
+  ];
 }
 
 const STATE_TEXT = { preliminary: 'preliminary — not validated yet', stands: 'defense failed — stands', withdrawn: 'withdrawn by red-team', unresolved: 'red-team undecided', unverified: 'no valid rebuttal', not_challenged: 'not challenged (P3/P4)' };
@@ -868,6 +915,8 @@ async function openPublish(d) {
           r.omitted.map((o) => h('div', { class: 'small' }, h('span', { class: 'mono' }, o.finding_id), ` [${o.severity}] ${o.title} — ${o.rejected.reason}`))) : null,
         h('h3', {}, 'Review body'), h('pre', { class: 'log' }, r.body),
         ...r.comments.map((c) => [h('h3', { class: 'mono' }, `${c.path}:${c.line}`), h('pre', { class: 'log' }, c.body)]),
+        (r.refactor_comments || []).length ? h('p', {}, `${r.refactor_comments.length} refactor suggestion(s) verified by tests go inline as GitHub suggestions; they are not findings.`) : null,
+        ...(r.refactor_comments || []).map((c) => [h('h3', { class: 'mono' }, `${c.path}:${c.start_line ? `${c.start_line}-` : ''}${c.line}`), h('pre', { class: 'log' }, c.body)]),
       );
     } catch (err) {
       put(preview, h('div', { class: 'notice bad' }, err.message));
@@ -1324,7 +1373,7 @@ async function prProgressView(id) {
   ];
 }
 
-const PHASE_ORDER = ['prepare', 'ticket', 'plan', 'freeze', 'batch', 'repro'];
+const PHASE_ORDER = ['prepare', 'ticket', 'plan', 'freeze', 'batch', 'repro', 'refactor'];
 
 function timelineChips(phases) {
   return h('span', { class: 'row' }, PHASE_ORDER.filter((n) => phases[n]).map((n) => h('span', { class: `badge ${/PASS|READY/.test(phases[n].status) ? 'ok' : /FAIL|BLOCK|INVALID/.test(phases[n].status) ? 'bad' : 'warn'}` }, `${n}: ${phases[n].status}`)));

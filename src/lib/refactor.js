@@ -227,15 +227,22 @@ function applyAt(wt, span, tobe) {
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
   const lines = text.split(/\r?\n/);
   if (span.end > lines.length) return { applied: false, reason: `${span.path} has no line ${span.end}` };
+  lines.splice(span.start - 1, span.end - span.start + 1, ...replacementLines(lines, span, tobe));
+  confine.rewriteFile(wt, file, lines.join(eol));
+  return { applied: true };
+}
+
+// The lines that take the place of span.start..span.end: `tobe` moved to the
+// indentation of the block it replaces (its least indented line to the
+// block's). What is run and what is published are these same lines.
+function replacementLines(lines, span, tobe) {
   const indentOf = (l) => l.match(/^\s*/)[0];
   const shortest = (rows) => rows.filter((l) => l.trim()).map(indentOf).sort((a, b) => a.length - b.length)[0] || '';
   const body = String(tobe).replace(/\r\n/g, '\n').replace(/\n+$/, '');
   const rows = body.trim() ? body.split('\n') : [];
   const base = shortest(lines.slice(span.start - 1, span.end));
   const cut = shortest(rows).length;
-  lines.splice(span.start - 1, span.end - span.start + 1, ...rows.map((l) => (l.trim() ? base + l.slice(cut) : '')));
-  confine.rewriteFile(wt, file, lines.join(eol));
-  return { applied: true };
+  return rows.map((l) => (l.trim() ? base + l.slice(cut) : ''));
 }
 
 // Runs the tests that cover each candidate's file on the head as it is and
@@ -532,9 +539,9 @@ function loadRefactor(runDir, context) {
     // A verdict counts only for the place it was run on.
     const was = stored.records ? stored.records.get(rec.id) : null;
     const same = was && was.verification && JSON.stringify(was.span) === JSON.stringify(rec.span) && ['VERIFIED', 'BROKEN', 'UNVERIFIED'].includes(was.status);
-    out.suggestions.push({ ...byId.get(rec.id), span: rec.span, metrics: rec.metrics, status: same ? was.status : 'UNVERIFIED', verification: same ? was.verification : { reason: stored.reason || 'no test was run for it', tests: [] } });
+    out.suggestions.push({ ...byId.get(rec.id), span: rec.span, metrics: rec.metrics, replacement: replacementLines(sources.code(rec.span.path) || [], rec.span, byId.get(rec.id).fix.tobe).join('\n'), status: same ? was.status : 'UNVERIFIED', verification: same ? was.verification : { reason: stored.reason || 'no test was run for it', tests: [] } });
   }
   return out;
 }
 
-module.exports = { enabled, measure, isSimpler, languageOf, locateAsis, spanOf, validateSuggestions, refactorScope, ranges, triage, applyAt, verifySuggestions, runRefactor, loadRefactor };
+module.exports = { enabled, measure, isSimpler, languageOf, locateAsis, spanOf, validateSuggestions, refactorScope, ranges, triage, applyAt, replacementLines, verifySuggestions, runRefactor, loadRefactor };

@@ -448,7 +448,12 @@ it applied, so the suggestion is named but not offered; `UNVERIFIED` = no coveri
 red, or nowhere to run. This executes PR code where `ARW_SANDBOX` says, never on the host by fallback, and on a
 host only with `ARW_ALLOW_HOST_CODE=1`; `ARW_REFACTOR_VERIFY=off` skips it. The report section "Refactor
 suggestions (not in the verdict)" shows each suggestion with its numbers and label and counts what was dropped.
-Stored under `revisions/<context>/refactor/` (logs of every run included, hash-bound).
+Stored under `revisions/<context>/refactor/` (logs of every run included, hash-bound). `arw publish` posts only
+a `VERIFIED` suggestion inline, as a GitHub ```` ```suggestion ```` block on exactly the lines it replaces (when
+they sit in one hunk of the diff), so the author can commit it from the page; `UNVERIFIED` ones are listed in
+the review body and `BROKEN` ones are not published. `arw feedback` reads back what the reviewer did with each
+(kept, edited, dropped) and counts it apart from the findings; a dropped suggestion is never remembered as a
+rejected finding. The dashboard shows them under the findings and as a Refactor step.
 
 **Large PRs.** The whole-diff viewpoints (V0 technical, V1 business) answer one coverage row per file, so on
 more than `ARW_VIEWPOINT_FILES` (25) files they are split into parts of neighbouring files (`V0_1`, `V0_2`, …).
