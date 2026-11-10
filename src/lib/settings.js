@@ -23,6 +23,7 @@ const ENV_SETTINGS = [
   ['ARW_HUNT_LENSES', 'review', 'string', '1', 'Free reviews of the whole PR: a number (1-4) or lenses by name (general, business, adversarial, maintainer). More lenses stand in for effort a provider will not raise.'],
   ['ARW_HUNT_MODELS', 'review', 'string', '', 'Comma-separated models given to the free reviews in turn (for example two self-hosted models). Empty = CODEX_HUNT_MODEL.'],
   ['ARW_REFACTOR', 'review', 'enum', 'off', 'Refactor suggestions: after the review, a simplifier proposes simpler code for the lines the PR added. The runtime keeps a proposal only when its replacement measures simpler; none of it reaches the verdict. One more model job per review.', ['off', 'on']],
+  ['ARW_REFACTOR_VERIFY', 'review', 'enum', 'on', 'Run the tests that cover a refactor suggestion\'s file on the head and again with the suggestion applied (executes PR code where ARW_SANDBOX says; on the host only with ARW_ALLOW_HOST_CODE=1). off = every kept suggestion stays UNVERIFIED.', ['on', 'off']],
   ['CODEX_OUTPUT_SCHEMA', 'executor', 'bool', '1', 'Enforce JSON output with --output-schema (falls back automatically if output degenerates).'],
   ['CODEX_USE_USER_CONFIG', 'executor', 'bool', '0', 'Load ~/.codex/*.toml (plugins, MCP servers, profiles) into the workers\' private CODEX_HOME. Off = lean workers. Never the global AGENTS.md or skills.'],
   ['CODEX_PROFILE', 'executor', 'string', '', 'codex profile (-p); only with user config.'],

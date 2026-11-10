@@ -137,7 +137,8 @@ test('on: the suggestions are checked, triaged and reported, and the review deci
   assert.deepEqual(stored.suggestions.map((s) => s.id), ['RF1', 'RF2', 'RF3'], 'ids are filled by the runtime');
   assert.equal(stored.context_digest, on.context.context_digest);
   const records = readJson(path.join(on.dir, 'refactor', 'verification.json')).records;
-  assert.deepEqual(records.map((x) => [x.id, x.status, x.reason || null]), [['RF1', 'CANDIDATE', null], ['RF2', 'DROPPED', 'overlaps_finding'], ['RF3', 'DROPPED', 'out_of_scope']]);
+  assert.deepEqual(records.map((x) => [x.id, x.status, x.reason || null]), [['RF1', 'UNVERIFIED', null], ['RF2', 'DROPPED', 'overlaps_finding'], ['RF3', 'DROPPED', 'out_of_scope']]);
+  assert.equal(records[0].verification.reason, 'no test covers billing/calc.py', 'kept, but this repository has no test for it');
   assert.deepEqual([on.run.phases.refactor.status, on.run.phases.refactor.kept, on.run.phases.refactor.dropped], ['EXECUTED_PASS', 1, 2]);
 
   assert.match(on.report, /## Refactor suggestions \(not in the verdict\)/);

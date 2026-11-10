@@ -208,4 +208,4 @@ function renderImpacted(r) {
   return `${lines.join('\n')}\n`;
 }
 
-module.exports = { runImpactedTests, renderImpacted, planRuns, parseCases, verdict, enabled };
+module.exports = { runImpactedTests, renderImpacted, planRuns, runGroup, prepareWorktree, parseCases, verdict, enabled };

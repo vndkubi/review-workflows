@@ -116,20 +116,22 @@ function renderRefactor(runDir, validation) {
   const r = context ? loadRefactor(runDir, context) : null;
   if (!r) return [];
   const out = ['## Refactor suggestions (not in the verdict)', ''];
-  out.push('Simpler code for lines this PR added. The runtime keeps a suggestion only when its replacement measures simpler (code lines, nesting, branches); none of this changes the recommendation.', '');
+  out.push('Simpler code for lines this PR added. The runtime keeps a suggestion only when its replacement measures simpler (code lines, nesting, branches), then runs the tests that cover the file before and after applying it: VERIFIED = they passed both times (the tests named, nothing more); UNVERIFIED = nothing could show it. None of this changes the recommendation.', '');
   const calls = (readJsonIfExists(path.join(dir, 'receipts.json'), {}) || {})['refactor/suggestions.json'] || [];
   const sum = (k) => calls.reduce((n, c) => n + ((c.usage && c.usage[k]) || 0), 0);
   if (calls.length) out.push(`- simplifier: ${calls.length} call(s), tokens in ${sum('input_tokens')} / out ${sum('output_tokens')} (not counted in the review calls above)`);
   if (r.status === 'SKIPPED') out.push(`- skipped: ${r.reason}`);
   else if (r.status !== 'EXECUTED_PASS') out.push(`- The simplifier gave no valid answer (${r.status}${r.reason ? `: ${String(r.reason).slice(0, 200)}` : ''}).`);
   else if (r.errors.length) out.push(`- The stored suggestions no longer pass validation (${r.errors.length} error(s); first: ${r.errors[0].slice(0, 200)}): none is shown.`);
-  else if (!r.suggestions.length) out.push('- no suggestion to show.');
+  else if (!r.suggestions.some((x) => x.status !== 'BROKEN')) out.push('- no suggestion to show.');
   const dropped = DROPPED_TEXT.filter(([k]) => r.dropped[k]).map(([k, text]) => `${r.dropped[k]} ${text}`);
   const total = Object.values(r.dropped).reduce((a, b) => a + b, 0);
   if (total) out.push(`- ${total} dropped by the runtime: ${dropped.join(', ')}`);
   if (r.invalid) out.push(`- ${r.invalid} invalid suggestion(s) dropped after the last repair attempt`);
+  // Named, not offered: applying it turned a passing test red.
+  for (const s of r.suggestions.filter((x) => x.status === 'BROKEN')) out.push(`- \`${s.id}\` [${s.kind}] ${s.title} — rejected: ${s.verification.reason}`);
   out.push('');
-  for (const s of r.suggestions) {
+  for (const s of r.suggestions.filter((x) => x.status !== 'BROKEN')) {
     const m = s.metrics;
     out.push(`### \`${s.id}\` [${s.kind}] ${s.title}`, '');
     out.push(`\`${s.span.path}:${s.span.start}-${s.span.end}\` · code lines ${m.before.lines} → ${m.after.lines} · nesting ${m.before.nesting} → ${m.after.nesting} · branches ${m.before.branches} → ${m.after.branches} · **${s.status}**${s.verification && s.verification.reason ? ` (${s.verification.reason})` : ''}`, '');

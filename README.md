@@ -440,9 +440,15 @@ report defects only; this lane is separate and never reaches the recommendation,
 proposal is validated like any model output (quotes against the frozen head, replaced lines that are whole and
 occur once), then the runtime drops, without a repair call, what replaces lines the PR did not add, lines an
 open defect finding quotes, or a replacement that does not measure simpler (code lines, nesting depth, branch
-count). What is kept appears under "Refactor suggestions (not in the verdict)" in the report with its numbers,
-labelled `UNVERIFIED` until tests have run on it; what is dropped is counted there. Stored under
-`revisions/<context>/refactor/`.
+count). What is kept is then run: the tests that cover the file (the frozen test impact; Java and Python) run in
+their own worktree on the head as it is, then with all kept suggestions applied, and one suggestion at a time
+only when that second run is not green. `VERIFIED` = its tests passed before and after (the report names them;
+green tests are not proof that nothing else changed); `BROKEN` = a passing test fails or no longer builds with
+it applied, so the suggestion is named but not offered; `UNVERIFIED` = no covering test, a head that is already
+red, or nowhere to run. This executes PR code where `ARW_SANDBOX` says, never on the host by fallback, and on a
+host only with `ARW_ALLOW_HOST_CODE=1`; `ARW_REFACTOR_VERIFY=off` skips it. The report section "Refactor
+suggestions (not in the verdict)" shows each suggestion with its numbers and label and counts what was dropped.
+Stored under `revisions/<context>/refactor/` (logs of every run included, hash-bound).
 
 **Large PRs.** The whole-diff viewpoints (V0 technical, V1 business) answer one coverage row per file, so on
 more than `ARW_VIEWPOINT_FILES` (25) files they are split into parts of neighbouring files (`V0_1`, `V0_2`, …).

@@ -8,7 +8,9 @@
 // that measures simpler. Nothing here is read by computeOutcome.
 const fs = require('node:fs');
 const path = require('node:path');
-const { readJsonIfExists, writeJsonAtomic, ensureDir, nowIso, sha256 } = require('./util');
+const { readJsonIfExists, writeJsonAtomic, ensureDir, nowIso, sha256, envInt } = require('./util');
+const git = require('./git');
+const confine = require('./confine');
 const { validateAgainst, outputSchema } = require('./schema');
 const { loadContext, verifyContext, revisionDir } = require('./freeze');
 const { parsePatch } = require('./patch');
@@ -213,6 +215,150 @@ function triage(candidate, { sources, scope }) {
   });
 }
 
+// ---------- verification by execution ----------
+// Replaces lines span.start..span.end of a file in a worktree with `tobe`,
+// re-indented to the block it replaces ("" removes the lines). The file is
+// PR code in a worktree PR code has run in: read and written through confine.
+function applyAt(wt, span, tobe) {
+  const file = path.join(wt, span.path);
+  if (!confine.isConfinedFile(wt, file)) return { applied: false, reason: `${span.path} is not a regular file inside the worktree` };
+  const text = confine.readConfined(wt, file);
+  if (text == null) return { applied: false, reason: `${span.path} cannot be read` };
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  if (span.end > lines.length) return { applied: false, reason: `${span.path} has no line ${span.end}` };
+  const indentOf = (l) => l.match(/^\s*/)[0];
+  const shortest = (rows) => rows.filter((l) => l.trim()).map(indentOf).sort((a, b) => a.length - b.length)[0] || '';
+  const body = String(tobe).replace(/\r\n/g, '\n').replace(/\n+$/, '');
+  const rows = body.trim() ? body.split('\n') : [];
+  const base = shortest(lines.slice(span.start - 1, span.end));
+  const cut = shortest(rows).length;
+  lines.splice(span.start - 1, span.end - span.start + 1, ...rows.map((l) => (l.trim() ? base + l.slice(cut) : '')));
+  confine.rewriteFile(wt, file, lines.join(eol));
+  return { applied: true };
+}
+
+// Runs the tests that cover each candidate's file on the head as it is and
+// with the candidates applied. Returns { verdicts: Map id -> { status, reason,
+// tests }, logs }. VERIFIED: its tests passed before and after. BROKEN: a test
+// that passed fails, or no longer builds, with it applied. UNVERIFIED: nothing
+// could show either. All candidates are applied together first (triage keeps
+// them apart); only when that run is not green is each suspect run alone.
+// PR code runs where the review's sandbox says, never on the host by fallback,
+// and on a host only with the consent repro asks for (ARW_ALLOW_HOST_CODE=1).
+async function verifySuggestions({ runDir, context, doc, records, runner = null, log = () => {} }) {
+  const verdicts = new Map();
+  const logs = [];
+  const candidates = records.filter((x) => x.status === 'CANDIDATE');
+  const unverified = (c, reason, tests = []) => verdicts.set(c.id, { status: 'UNVERIFIED', reason, tests });
+  if (!candidates.length) return { verdicts, logs };
+  if (process.env.ARW_REFACTOR_VERIFY === 'off') {
+    for (const c of candidates) unverified(c, 'verification is off (ARW_REFACTOR_VERIFY=off)');
+    return { verdicts, logs };
+  }
+  // Required here: impacted-tests and repro sit in the prompts/driver cycle.
+  const { planRuns, runGroup, prepareWorktree } = require('./impacted-tests');
+  const { defaultRunner } = require('./repro');
+  const { checkout, head_sha: head } = context.source;
+  // Which tests cover a file: the frozen test impact; a changed test covers itself.
+  const impact = (readJsonIfExists(path.join(runDir, 'static.json')) || {}).tests || { sources: [], tests_changed: [] };
+  const testsOf = (file) => {
+    const src = (impact.sources || []).find((s) => s.source === file);
+    return src ? src.tests.map((t) => t.path) : (impact.tests_changed || []).includes(file) ? [file] : [];
+  };
+  const groups = planRuns(checkout, [...new Set(candidates.flatMap((c) => testsOf(c.span.path)))]);
+  const runnable = new Set(groups.flatMap((g) => g.tests.map((t) => t.path)));
+  const want = new Map();
+  for (const c of candidates) {
+    const tests = testsOf(c.span.path).filter((t) => runnable.has(t));
+    if (tests.length) want.set(c.id, tests);
+    else unverified(c, `no test covers ${c.span.path}`);
+  }
+  const todo = candidates.filter((c) => want.has(c.id));
+  if (!todo.length) return { verdicts, logs };
+
+  const exec = runner || defaultRunner(runDir, () => {}, { fallback: false, requireHostConsent: true });
+  const logDir = ensureDir(path.join(revisionDir(runDir, context.context_id), 'refactor', 'logs'));
+  const timeoutMs = envInt('ARW_IMPACTED_TESTS_TIMEOUT_MS', 900000);
+  const wt = path.join(runDir, 'refactor-wt');
+  const byId = new Map(doc.suggestions.map((s) => [s.id, s]));
+  // One pass over the groups that hold `only` (all of them when null).
+  const run = async (label, only = null) => {
+    const byTest = {};
+    let problem = null;
+    for (const [i, group] of groups.entries()) {
+      const tests = only ? group.tests.filter((t) => only.has(t.path)) : group.tests;
+      if (!tests.length) continue;
+      const name = `${label}-${i + 1}`;
+      log(`refactor: ${group.toolchain}${group.module ? ` in ${group.module}` : ''} ${label} (${tests.length} test file(s))`);
+      const res = await runGroup({ wt, group: { ...group, tests }, rev: label, runner: exec, logDir, label: name, timeoutMs });
+      const file = path.join(logDir, `${name}.log`);
+      if (fs.existsSync(file)) logs.push({ label: name, path: `refactor/logs/${name}.log`, sha256: sha256(fs.readFileSync(file)) });
+      Object.assign(byTest, res.byTest);
+      problem = problem || res.spawn_error || (res.timed_out ? 'the test run timed out' : null);
+    }
+    return { byTest, problem };
+  };
+  const statusOf = (res, t) => (res.byTest[t] ? res.byTest[t].status : 'no_result');
+  const judge = (c, usable, after) => {
+    const tests = usable.map((t) => ({ path: t, baseline: 'pass', after: statusOf(after, t) }));
+    const bad = tests.filter((t) => t.after === 'fail' || t.after === 'command_failed');
+    const names = (list) => list.map((t) => t.path).join(', ');
+    if (bad.length) return { status: 'BROKEN', reason: `${names(bad)} ${bad.some((t) => t.after === 'command_failed') ? 'no longer builds or runs' : bad.length === 1 ? 'fails' : 'fail'} with it applied`, tests };
+    const open = tests.filter((t) => t.after !== 'pass');
+    if (open.length) return { status: 'UNVERIFIED', reason: after.problem ? `the tests could not run: ${after.problem}` : `no result with it applied (${open.map((t) => `${t.path}: ${t.after}`).join(', ')})`, tests };
+    return { status: 'VERIFIED', reason: `${names(tests)} ${tests.length === 1 ? 'passes' : 'pass'} before and after`, tests };
+  };
+  const reset = () => git.worktreeGit(checkout, wt, ['checkout', '--', '.'], { allowFail: true });
+  // Bottom-up inside a file, so the spans of the lines above stay true.
+  const apply = (list) => {
+    const failed = new Map();
+    for (const c of [...list].sort((a, b) => a.span.path.localeCompare(b.span.path) || b.span.start - a.span.start)) {
+      const res = applyAt(wt, c.span, byId.get(c.id).fix.tobe);
+      if (!res.applied) failed.set(c.id, res.reason);
+    }
+    return failed;
+  };
+  try {
+    prepareWorktree(checkout, wt, head);
+    const before = await run('baseline');
+    const usable = new Map();
+    for (const c of todo) {
+      const tests = want.get(c.id);
+      const green = tests.filter((t) => statusOf(before, t) === 'pass');
+      if (green.length) usable.set(c.id, green);
+      else unverified(c, before.problem ? `the tests could not run: ${before.problem}` : `its tests do not pass on the head as it is (${tests.map((t) => `${t}: ${statusOf(before, t)}`).join(', ')})`, tests.map((t) => ({ path: t, baseline: statusOf(before, t), after: null })));
+    }
+    let ready = todo.filter((c) => usable.has(c.id));
+    if (ready.length) {
+      const failed = apply(ready);
+      for (const c of ready) if (failed.has(c.id)) unverified(c, `could not be applied: ${failed.get(c.id)}`);
+      ready = ready.filter((c) => !failed.has(c.id));
+    }
+    if (ready.length) {
+      const together = await run('all', new Set(ready.flatMap((c) => usable.get(c.id))));
+      const first = ready.map((c) => [c, judge(c, usable.get(c.id), together)]);
+      const suspects = first.filter(([, v]) => v.status !== 'VERIFIED');
+      for (const [c, v] of first) if (v.status === 'VERIFIED' || ready.length === 1) verdicts.set(c.id, v);
+      // A candidate whose tests were not green with all applied is tried
+      // alone: the failure may belong to another suggestion on the same tests.
+      if (ready.length > 1) {
+        for (const [c] of suspects) {
+          reset();
+          const failed = apply([c]);
+          if (failed.has(c.id)) unverified(c, `could not be applied: ${failed.get(c.id)}`);
+          else verdicts.set(c.id, judge(c, usable.get(c.id), await run(c.id, new Set(usable.get(c.id)))));
+        }
+      }
+    }
+  } catch (err) {
+    for (const c of todo) if (!verdicts.has(c.id)) unverified(c, `verification stopped: ${String(err.message).split('\n')[0]}`);
+  } finally {
+    git.git(checkout, ['worktree', 'remove', '--force', wt], { allowFail: true });
+  }
+  return { verdicts, logs };
+}
+
 // ---------- the job ----------
 // The defect findings still open in this revision: valid packets only, minus
 // what the red team withdrew and the test/process remarks.
@@ -277,7 +423,7 @@ function salvageSuggestions(candidate, sources, lost) {
 // One simplifier job over the frozen context, then the triage. Returns the
 // phase record ({ status, ... }); it never throws for a job that failed, and
 // nothing it writes is read by the validation of the review.
-async function runRefactor({ runDir, executor, models = {}, log = () => {} }) {
+async function runRefactor({ runDir, executor, models = {}, runner = null, log = () => {} }) {
   // Required here, not at the top: driver and prompts sit in a require cycle.
   const { runModelJob, STATUS } = require('./driver');
   const prompts = require('./prompts');
@@ -329,11 +475,35 @@ async function runRefactor({ runDir, executor, models = {}, log = () => {} }) {
     }
     doc = res.value;
   }
-  const records = triage(doc, { sources, scope });
-  writeJsonAtomic(recordFile, { schema_version: '1.0', context_digest: context.context_digest, at: nowIso(), suggestions_sha256: sha256(fs.readFileSync(file)), invalid_dropped: lost, records });
-  const kept = records.filter((x) => x.status !== 'DROPPED').length;
-  log(`refactor: ${records.length} suggestion(s), ${kept} kept, ${records.length - kept} dropped by the runtime`);
-  return done(STATUS.PASS, { suggestions: records.length, kept, dropped: records.length - kept });
+  const triaged = triage(doc, { sources, scope });
+  const { verdicts, logs } = await verifySuggestions({ runDir, context, doc, records: triaged, runner, log });
+  const records = triaged.map((x) => (x.status === 'CANDIDATE' ? { ...x, status: verdicts.get(x.id).status, verification: { reason: verdicts.get(x.id).reason, tests: verdicts.get(x.id).tests } } : x));
+  writeJsonAtomic(recordFile, { schema_version: '1.0', context_digest: context.context_digest, at: nowIso(), suggestions_sha256: sha256(fs.readFileSync(file)), invalid_dropped: lost, records, logs });
+  const count = (status) => records.filter((x) => x.status === status).length;
+  const dropped = count('DROPPED');
+  log(`refactor: ${records.length} suggestion(s): ${count('VERIFIED')} verified, ${count('UNVERIFIED')} unverified, ${count('BROKEN')} broken, ${dropped} dropped by the runtime`);
+  // The hash goes to run.json: an edit of the record after the run is seen.
+  return done(STATUS.PASS, { suggestions: records.length, kept: records.length - dropped, dropped, verified: count('VERIFIED'), broken: count('BROKEN'), unverified: count('UNVERIFIED'), record_sha256: sha256(fs.readFileSync(recordFile)) });
+}
+
+// The stored verdicts, or the reason they prove nothing: the record must be
+// the one the run wrote (its hash is in run.json), made for these suggestions,
+// with every log as it was written.
+function storedVerdicts(runDir, dir) {
+  const file = path.join(dir, 'verification.json');
+  if (!fs.existsSync(file)) return { reason: 'no test was run for it' };
+  const phase = ((readJsonIfExists(path.join(runDir, 'run.json')) || {}).phases || {}).refactor || {};
+  const changed = { reason: 'the verification record changed after the run' };
+  if (!phase.record_sha256 || phase.record_sha256 !== sha256(fs.readFileSync(file))) return changed;
+  const rec = readJsonIfExists(file) || {};
+  const suggestions = path.join(dir, 'suggestions.json');
+  if (!fs.existsSync(suggestions) || rec.suggestions_sha256 !== sha256(fs.readFileSync(suggestions))) return changed;
+  const base = path.dirname(dir);
+  for (const l of rec.logs || []) {
+    const abs = path.resolve(base, l.path);
+    if (!abs.startsWith(path.resolve(dir) + path.sep) || !fs.existsSync(abs) || sha256(fs.readFileSync(abs)) !== l.sha256) return { reason: `the log of a test run changed after the run (${l.path})` };
+  }
+  return { records: new Map((rec.records || []).map((x) => [x.id, x])), invalid: (rec.invalid_dropped || []).length };
 }
 
 // What the report, the publisher and the dashboard show. Nothing is taken from
@@ -351,13 +521,20 @@ function loadRefactor(runDir, context) {
   const sources = makeSources(runDir, context);
   out.errors = validateSuggestions(doc, { sources });
   if (out.errors.length) return out;
-  out.invalid = (((readJsonIfExists(path.join(dir, 'verification.json')) || {}).invalid_dropped) || []).length;
+  const stored = storedVerdicts(runDir, dir);
+  out.invalid = stored.invalid || 0;
   const byId = new Map(doc.suggestions.map((s) => [s.id, s]));
   for (const rec of triage(doc, { sources, scope: scopeOf(runDir, context) })) {
-    if (rec.status === 'DROPPED') out.dropped[rec.reason] = (out.dropped[rec.reason] || 0) + 1;
-    else out.suggestions.push({ ...byId.get(rec.id), span: rec.span, metrics: rec.metrics, status: 'UNVERIFIED', verification: { reason: 'no test was run for it' } });
+    if (rec.status === 'DROPPED') {
+      out.dropped[rec.reason] = (out.dropped[rec.reason] || 0) + 1;
+      continue;
+    }
+    // A verdict counts only for the place it was run on.
+    const was = stored.records ? stored.records.get(rec.id) : null;
+    const same = was && was.verification && JSON.stringify(was.span) === JSON.stringify(rec.span) && ['VERIFIED', 'BROKEN', 'UNVERIFIED'].includes(was.status);
+    out.suggestions.push({ ...byId.get(rec.id), span: rec.span, metrics: rec.metrics, status: same ? was.status : 'UNVERIFIED', verification: same ? was.verification : { reason: stored.reason || 'no test was run for it', tests: [] } });
   }
   return out;
 }
 
-module.exports = { enabled, measure, isSimpler, languageOf, locateAsis, spanOf, validateSuggestions, refactorScope, ranges, triage, runRefactor, loadRefactor };
+module.exports = { enabled, measure, isSimpler, languageOf, locateAsis, spanOf, validateSuggestions, refactorScope, ranges, triage, applyAt, verifySuggestions, runRefactor, loadRefactor };

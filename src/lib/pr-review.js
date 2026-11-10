@@ -349,7 +349,7 @@ function freezePhase({ runDir, run, info, tickets, planned }) {
   return context;
 }
 
-async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight, models = {}, workers, singleRole, singleAgent = false, freeReview = false, skipSeams, skipRebuttals, skipSynthesis, refresh, noRepro, reproRunner, testCommand, log = () => {}, prepared, ciApi = null, impactedRunner }) {
+async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight, models = {}, workers, singleRole, singleAgent = false, freeReview = false, skipSeams, skipRebuttals, skipSynthesis, refresh, noRepro, reproRunner, refactorRunner, testCommand, log = () => {}, prepared, ciApi = null, impactedRunner }) {
   // The single-agent baseline has no seams, red team or synthesis by definition.
   if (singleAgent) [skipSeams, skipRebuttals, skipSynthesis] = [true, true, true];
   const { runDir, run, info } = prepare({ repo, pr, prepared });
@@ -462,7 +462,9 @@ async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight
   if (refactorEnabled() && validation.status !== 'INVALIDATED') {
     let record;
     try {
-      record = await runRefactor({ runDir, executor, models, log });
+      // The kept suggestions are run on the tests that cover them (PR code).
+      if (!refactorRunner) await ensureSandboxEnvironment({ runDir, identity: fresh.identity, log });
+      record = await runRefactor({ runDir, executor, models, runner: refactorRunner, log });
     } catch (err) {
       if (err instanceof ContextDrift) throw err;
       log(`refactor: stopped: ${err.message}`);
