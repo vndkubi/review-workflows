@@ -6,8 +6,18 @@
 // whole and occur once), then triaged without the model: only the PR's own
 // lines, never lines an open defect finding quotes, and only a replacement
 // that measures simpler. Nothing here is read by computeOutcome.
-const { validateAgainst } = require('./schema');
-const { validateEvidence, looksLikeCode, collapse, SUGGESTION, END_SLACK } = require('./validate');
+const fs = require('node:fs');
+const path = require('node:path');
+const { readJsonIfExists, writeJsonAtomic, ensureDir, nowIso, sha256 } = require('./util');
+const { validateAgainst, outputSchema } = require('./schema');
+const { loadContext, verifyContext, revisionDir } = require('./freeze');
+const { parsePatch } = require('./patch');
+const { validateEvidence, canonicalizeCandidate, makeSources, looksLikeCode, collapse, SUGGESTION, END_SLACK } = require('./validate');
+
+// Opt-in while it is being measured (ARW_REFACTOR=on).
+function enabled(env = process.env) {
+  return env.ARW_REFACTOR === 'on';
+}
 
 // ---------- measuring ----------
 // Crude on purpose: counted from the text, the same way for asis and tobe, so
@@ -203,4 +213,151 @@ function triage(candidate, { sources, scope }) {
   });
 }
 
-module.exports = { measure, isSimpler, languageOf, locateAsis, spanOf, validateSuggestions, refactorScope, ranges, triage };
+// ---------- the job ----------
+// The defect findings still open in this revision: valid packets only, minus
+// what the red team withdrew and the test/process remarks.
+function openFindings(dir) {
+  const validation = readJsonIfExists(path.join(dir, 'validation.json'));
+  if (!validation) return [];
+  const open = new Set(validation.findings.filter((m) => !m.suggestion && m.state !== 'withdrawn').map((m) => m.id));
+  const out = [];
+  for (const job of validation.jobs) {
+    if (job.status !== 'EXECUTED_PASS') continue;
+    const packet = readJsonIfExists(path.join(dir, 'packets', job.role, `${job.unit_id}.json`));
+    for (const f of (packet && packet.findings) || []) if (open.has(f.id)) out.push(f);
+  }
+  return out;
+}
+
+function scopeOf(runDir, context) {
+  const dir = revisionDir(runDir, context.context_id);
+  const file = path.join(dir, 'review.patch');
+  return refactorScope(parsePatch(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''), openFindings(dir), context.source.reviewable);
+}
+
+// Identity fields and ids the runtime knows are filled, not copied, and a
+// quote that occurs at one place is re-anchored, as for every other job.
+function fillSuggestions(context, sources) {
+  return (candidate) => {
+    const changes = [];
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return changes;
+    for (const [key, value] of Object.entries({ schema_version: '1.0', context_digest: context.context_digest, role: 'simplifier' })) {
+      if (candidate[key] !== value) changes.push(`$.${key}: filled by runtime`);
+      candidate[key] = value;
+    }
+    if (typeof candidate.notes !== 'string') candidate.notes = '';
+    (Array.isArray(candidate.suggestions) ? candidate.suggestions : []).forEach((s, i) => {
+      if (!s || typeof s !== 'object') return;
+      if (s.id !== `RF${i + 1}`) changes.push(`$.suggestions[${i}].id: filled by runtime`);
+      s.id = `RF${i + 1}`;
+      const at = (c) => c.replace(/^\$\.evidence/, `$.suggestions[${i}].evidence`);
+      changes.push(...canonicalizeCandidate({ evidence: s.evidence }, sources).map(at));
+      if (s.reuse && typeof s.reuse === 'object') changes.push(...canonicalizeCandidate({ evidence: [s.reuse] }, sources).map((c) => c.replace(/^\$\.evidence\[0\]/, `$.suggestions[${i}].reuse`)));
+    });
+    return changes;
+  };
+}
+
+// Last attempt still rejected: the suggestions that are valid on their own are
+// kept, the others are dropped and counted (`lost`), not silently lost.
+function salvageSuggestions(candidate, sources, lost) {
+  const changes = [];
+  if (!candidate || !Array.isArray(candidate.suggestions)) return changes;
+  candidate.suggestions = candidate.suggestions.filter((s, i) => {
+    const errors = validateSuggestions({ ...candidate, suggestions: [s] }, { sources });
+    if (!errors.length) return true;
+    const first = errors[0].replace('$.suggestions[0]', `$.suggestions[${i}]`);
+    changes.push(`${first} — suggestion dropped`);
+    lost.push({ id: s && s.id ? s.id : null, error: first.slice(0, 300) });
+    return false;
+  });
+  return changes;
+}
+
+// One simplifier job over the frozen context, then the triage. Returns the
+// phase record ({ status, ... }); it never throws for a job that failed, and
+// nothing it writes is read by the validation of the review.
+async function runRefactor({ runDir, executor, models = {}, log = () => {} }) {
+  // Required here, not at the top: driver and prompts sit in a require cycle.
+  const { runModelJob, STATUS } = require('./driver');
+  const prompts = require('./prompts');
+  const context = loadContext(runDir);
+  const drift = verifyContext(runDir, context);
+  if (drift.length) throw new Error(`context no longer holds: ${drift.join('; ')}`);
+  const dir = revisionDir(runDir, context.context_id);
+  const out = ensureDir(path.join(dir, 'refactor'));
+  const done = (status, extra = {}) => {
+    const rec = { status, at: nowIso(), ...extra };
+    writeJsonAtomic(path.join(out, 'status.json'), rec);
+    return rec;
+  };
+  const sources = makeSources(runDir, context);
+  const scope = scopeOf(runDir, context);
+  if (!scope.added.size) {
+    log('refactor: the PR adds no lines in reviewable files');
+    return done('SKIPPED', { reason: 'the PR adds no lines in reviewable files' });
+  }
+  const file = path.join(out, 'suggestions.json');
+  const recordFile = path.join(out, 'verification.json');
+  let doc = readJsonIfExists(file);
+  let lost = ((readJsonIfExists(recordFile) || {}).invalid_dropped) || [];
+  if (doc && validateSuggestions(doc, { sources }).length) doc = null;
+  if (doc) {
+    log('refactor: reusing the stored suggestions');
+  } else {
+    lost = [];
+    const receiptsFile = path.join(dir, 'receipts.json');
+    const receipts = readJsonIfExists(receiptsFile, {});
+    const env = { runDir, context, executor, log, receipts, flushReceipts: () => writeJsonAtomic(receiptsFile, receipts), sources };
+    const rows = (map) => [...map.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([p, set]) => [p, ranges(set)]);
+    // Only the reserved lines the simplifier could reach: files it has in scope.
+    const reserved = rows(new Map([...scope.defects].filter(([p]) => scope.added.has(p))));
+    const res = await runModelJob(env, {
+      label: 'refactor',
+      outRel: 'refactor/suggestions.json',
+      model: models.refactor || models.review,
+      effort: models.effort,
+      outputSchema: outputSchema('review', 'refactor'),
+      fill: fillSuggestions(context, sources),
+      buildPrompt: (repair) => prompts.refactorPrompt(runDir, context, { added: rows(scope.added), reserved, repair }),
+      validate: (candidate) => validateSuggestions(candidate, { sources }),
+      salvage: (candidate) => salvageSuggestions(candidate, sources, lost),
+    });
+    if (res.status !== STATUS.PASS) {
+      log(`refactor: no valid suggestions (${res.status}): ${(res.errors || [])[0] || ''}`);
+      return done(res.status, { reason: (res.errors || [])[0] || res.status });
+    }
+    doc = res.value;
+  }
+  const records = triage(doc, { sources, scope });
+  writeJsonAtomic(recordFile, { schema_version: '1.0', context_digest: context.context_digest, at: nowIso(), suggestions_sha256: sha256(fs.readFileSync(file)), invalid_dropped: lost, records });
+  const kept = records.filter((x) => x.status !== 'DROPPED').length;
+  log(`refactor: ${records.length} suggestion(s), ${kept} kept, ${records.length - kept} dropped by the runtime`);
+  return done(STATUS.PASS, { suggestions: records.length, kept, dropped: records.length - kept });
+}
+
+// What the report, the publisher and the dashboard show. Nothing is taken from
+// the stored record on trust: the document is validated and triaged again, so
+// an edit after the run, or a finding that changed since, is seen here.
+// null when the lane did not run for this context.
+function loadRefactor(runDir, context) {
+  const dir = path.join(revisionDir(runDir, context.context_id), 'refactor');
+  const status = readJsonIfExists(path.join(dir, 'status.json'));
+  if (!status) return null;
+  const out = { status: status.status, reason: status.reason || null, suggestions: [], dropped: {}, invalid: 0, errors: [] };
+  const file = path.join(dir, 'suggestions.json');
+  const doc = readJsonIfExists(file);
+  if (!doc) return out;
+  const sources = makeSources(runDir, context);
+  out.errors = validateSuggestions(doc, { sources });
+  if (out.errors.length) return out;
+  out.invalid = (((readJsonIfExists(path.join(dir, 'verification.json')) || {}).invalid_dropped) || []).length;
+  const byId = new Map(doc.suggestions.map((s) => [s.id, s]));
+  for (const rec of triage(doc, { sources, scope: scopeOf(runDir, context) })) {
+    if (rec.status === 'DROPPED') out.dropped[rec.reason] = (out.dropped[rec.reason] || 0) + 1;
+    else out.suggestions.push({ ...byId.get(rec.id), span: rec.span, metrics: rec.metrics, status: 'UNVERIFIED', verification: { reason: 'no test was run for it' } });
+  }
+  return out;
+}
+
+module.exports = { enabled, measure, isSimpler, languageOf, locateAsis, spanOf, validateSuggestions, refactorScope, ranges, triage, runRefactor, loadRefactor };

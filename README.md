@@ -433,6 +433,17 @@ with secrets removed from the environment; leave it off for repositories you do 
 `ARW_PYTHON`, or the first of `python`, `python3`, `py` that can import pytest (on some machines `python` is
 another tool's virtualenv).
 
+**Refactor suggestions (opt-in).** With `ARW_REFACTOR=on`, one more model job runs after everything the review
+decides: a simplifier (`agents/simplifier.md`) proposes simpler code for the lines the PR added — reuse of an
+existing helper, duplication, nested control flow, dead code, an indirection with a single use. Reviewers still
+report defects only; this lane is separate and never reaches the recommendation, the gate or the red team. A
+proposal is validated like any model output (quotes against the frozen head, replaced lines that are whole and
+occur once), then the runtime drops, without a repair call, what replaces lines the PR did not add, lines an
+open defect finding quotes, or a replacement that does not measure simpler (code lines, nesting depth, branch
+count). What is kept appears under "Refactor suggestions (not in the verdict)" in the report with its numbers,
+labelled `UNVERIFIED` until tests have run on it; what is dropped is counted there. Stored under
+`revisions/<context>/refactor/`.
+
 **Large PRs.** The whole-diff viewpoints (V0 technical, V1 business) answer one coverage row per file, so on
 more than `ARW_VIEWPOINT_FILES` (25) files they are split into parts of neighbouring files (`V0_1`, `V0_2`, …).
 Every unit gets a deterministic risk score (changed lines, boundary signals, money/auth/data paths up,

@@ -19,8 +19,9 @@ const { freezeContext, loadContext, verifyContext } = require('./freeze');
 const { loadProject } = require('./project-policy');
 const { runLooseJob } = require('./loose-job');
 const { redactSecrets, scanInjection, addedLines, textLines } = require('./guard');
-const { runBatch, finish, runModelJob } = require('./driver');
+const { runBatch, finish, runModelJob, ContextDrift } = require('./driver');
 const { runRepro } = require('./repro');
+const { runRefactor, enabled: refactorEnabled } = require('./refactor');
 const { carryOver } = require('./carry-over');
 const { collectStatic } = require('./static-evidence');
 const { prSize, fileRisks, scoreUnits, suggestSplit } = require('./pr-size');
@@ -455,6 +456,22 @@ async function reviewPr({ repo, pr, ticket, prIntent = true, executor, preflight
     fresh.phases.repro = { status: 'SKIPPED', at: nowIso(), reason: noRepro ? 'disabled (--no-repro)' : 'context invalidated' };
   }
   writeJsonAtomic(path.join(runDir, 'run.json'), fresh);
+  // Refactor suggestions (ARW_REFACTOR=on): after everything the review
+  // decides, and beside it. A simplifier that fails leaves the review as it
+  // is; only a drifted context aborts, as it does for every model job.
+  if (refactorEnabled() && validation.status !== 'INVALIDATED') {
+    let record;
+    try {
+      record = await runRefactor({ runDir, executor, models, log });
+    } catch (err) {
+      if (err instanceof ContextDrift) throw err;
+      log(`refactor: stopped: ${err.message}`);
+      record = { status: 'EXECUTED_FAIL', at: nowIso(), reason: String(err.message).split('\n')[0] };
+    }
+    fresh = readJson(path.join(runDir, 'run.json'));
+    fresh.phases.refactor = record;
+    writeJsonAtomic(path.join(runDir, 'run.json'), fresh);
+  }
   const report = writeReport(runDir, validation, fresh.identity);
   return { runDir, validation, report };
 }
