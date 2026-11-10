@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "arw/review.schema.json",
-  "title": "Review contracts: plan, packet, rebuttal, synthesis",
+  "title": "Review contracts: plan, packet, rebuttal, synthesis, refactor",
   "$defs": {
     "text": {
       "type": "string",
@@ -780,6 +780,96 @@
     "itemId": {
       "type": "string",
       "pattern": "^I[1-9][0-9]*$"
+    },
+    "refactorSuggestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "title",
+        "reason",
+        "evidence",
+        "fix"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^RF[1-9][0-9]*$"
+        },
+        "kind": {
+          "enum": [
+            "reuse",
+            "duplication",
+            "control_flow",
+            "dead_code",
+            "over_engineering"
+          ]
+        },
+        "title": {
+          "$ref": "#/$defs/text"
+        },
+        "reason": {
+          "$ref": "#/$defs/text"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        },
+        "fix": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "asis",
+            "tobe"
+          ],
+          "properties": {
+            "asis": {
+              "$ref": "#/$defs/text"
+            },
+            "tobe": {
+              "type": "string"
+            }
+          }
+        },
+        "reuse": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
+    },
+    "refactor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "context_digest",
+        "role",
+        "suggestions",
+        "notes"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "1.0"
+        },
+        "context_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "role": {
+          "const": "simplifier"
+        },
+        "suggestions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/refactorSuggestion"
+          }
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
     }
   }
 }

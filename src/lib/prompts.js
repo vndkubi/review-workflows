@@ -401,6 +401,32 @@ function synthesisPrompt(runDir, context, job) {
     .join('\n\n');
 }
 
+// Refactor suggestions for the lines the PR added. The scope and the lines to
+// leave alone are computed by the runtime (refactor.refactorScope) and given
+// as text; what comes back is validated, measured and then run.
+// job: { added: [[path, "12-18, 30"]], reserved: [[path, "14-15"]], repair }
+function refactorPrompt(runDir, context, job) {
+  const list = (rows) => rows.map(([file, lines]) => `- ${file}: ${lines}`).join('\n');
+  const lines = [
+    'JOB: refactor suggestions (simplifier).',
+    `SCOPE — lines this PR added at the reviewed head; replace only lines inside them:\n${list(job.added) || '- (none)'}`,
+    job.reserved.length ? `DO NOT TOUCH — a defect finding is open on these lines:\n${list(job.reserved)}` : '',
+    `SUGGESTIONS
+- "suggestions": [] when nothing in scope is clearly simpler. Never invent one to have an answer.
+- kind: one of the kinds in the role charter.
+- evidence: code evidence at the reviewed head that contains the lines you replace.
+- fix.asis: the whole source lines you replace, copied verbatim from that evidence: one contiguous block that occurs once in the file.
+- fix.tobe: complete replacement code for exactly those lines. "" only for kind "dead_code" (the lines are removed).
+- reuse: for kind "reuse", code evidence of the existing helper (its definition, outside the lines you replace) that fix.tobe calls; null for every other kind.
+- title: what becomes simpler, in a few words. reason: why the behaviour stays the same.
+- The runtime measures fix.asis against fix.tobe (code lines, nesting depth, branch count) and drops what is not simpler, then applies the rest and runs the tests that cover the file.
+- schema_version, context_digest, role and the suggestion ids are filled in by the runtime.`,
+  ];
+  return [globalRules(), runBlock(runDir, context), roleBlock(runDir, context, 'simplifier', 'refactor'), lines.filter(Boolean).join('\n\n'), repairBlock(job.repair)]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 // A reproduction test for one blocking finding. The harness writes, runs and
 // judges it; the model never claims a result.
 function reproPrompt(runDir, context, job) {
@@ -523,4 +549,4 @@ function specPrompt({ ticket, requirements, evidenceBlocks, feedback, repair }) 
     .join('\n\n');
 }
 
-module.exports = { packetPrompt, plainPrompt, rebuttalPrompt, synthesisPrompt, reproPrompt, planPrompt, requirementsPrompt, auditPrompt, analysisPrompt, specPrompt, wrapUntrusted, globalRules, numbered, codeAtHead, dependencyCheck };
+module.exports = { packetPrompt, plainPrompt, rebuttalPrompt, synthesisPrompt, refactorPrompt, reproPrompt, planPrompt, requirementsPrompt, auditPrompt, analysisPrompt, specPrompt, wrapUntrusted, globalRules, numbered, codeAtHead, dependencyCheck };

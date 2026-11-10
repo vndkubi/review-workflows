@@ -731,4 +731,5 @@ module.exports = {
   looksLikeCode,
   coverageIds,
   SUGGESTION,
+  END_SLACK,
 };
