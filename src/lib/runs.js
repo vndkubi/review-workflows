@@ -19,8 +19,10 @@ function prDir(repo, pr) {
 }
 
 // Worktrees the tool creates live here (ARW_WT_DIR overrides it, for tests).
+// Always absolute: git adds the worktree while running in the SOURCE
+// repository, so a relative path would land inside that repository.
 function worktreeRoot() {
-  return process.env.ARW_WT_DIR || path.join(ROOT, 'wt');
+  return process.env.ARW_WT_DIR ? path.resolve(process.env.ARW_WT_DIR) : path.join(ROOT, 'wt');
 }
 
 function worktreeDir(repo, pr) {
