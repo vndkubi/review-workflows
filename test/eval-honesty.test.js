@@ -62,6 +62,34 @@ test('a not_expected label gives precision a denominator; no labels means N/A', 
   assert.match(md, /precision not measurable: no not_expected labels/);
 });
 
+// Incident: `arw eval list` showed "precision 100%" for runs where one finding
+// was labelled and 14 were not; the headline hid that precision was unknown.
+test('unlabelled findings widen precision into a range instead of hiding behind 100%', () => {
+  const repo = tmpDir('arw-honesty-range-');
+  const other = (id) => ({ ...FINDING, id, title: `other ${id}`, evidence: [{ kind: 'code', path: 'b.py', start_line: 9, end_line: 9, quote: 'y' }] });
+  const s = evals.scoreCase({ id: 'r', repo, base: 'b', head: 'h', expected: [{ id: 'E1', path: 'a.py' }], not_expected: [{ id: 'N9', path: 'zzz.py' }] }, rawRun([FINDING, other('F2'), other('F3'), other('F4')]));
+  assert.equal(s.tp, 1);
+  assert.equal(s.fp, 0);
+  assert.equal(s.unlabelled, 3);
+  assert.equal(s.precision, 1, 'on the one labelled finding');
+  assert.deepEqual(s.precision_range, { lo: 0.25, hi: 1 }, 'unlabelled counted false, then true');
+  assert.equal(s.labelled_share, 0.25);
+  const t = evals.aggregate([s]);
+  assert.deepEqual(t.precision_range, { lo: 0.25, hi: 1 });
+  assert.equal(t.labelled_share, 0.25);
+  assert.equal(evals.precisionText(t), '100% of 1 labelled · range 25–100% (3 unlabelled)');
+  const md = evals.renderScorecard(evals.finalize({ id: 'r', repeat: 1, tool_sha256: 'c'.repeat(64), cases: [s] }));
+  assert.match(md, /range 25–100%/);
+  // Everything labelled: the range closes on the point value.
+  const none = evals.scoreCase({ id: 'n', repo, base: 'b', head: 'h', expected: [{ id: 'E1', path: 'a.py' }], not_expected: [{ id: 'N9', path: 'zzz.py' }] }, rawRun([FINDING]));
+  assert.deepEqual(none.precision_range, { lo: 1, hi: 1 });
+  assert.equal(evals.precisionText(evals.aggregate([none])), '100% of 1 labelled');
+  // No findings at all: nothing to measure.
+  const empty = evals.scoreCase({ id: 'e', repo, base: 'b', head: 'h', expected: [{ id: 'E1', path: 'a.py' }] }, rawRun([]));
+  assert.equal(empty.precision_range, null);
+  assert.equal(evals.precisionText(evals.aggregate([empty])), 'no findings');
+});
+
 test('raw review has no validator, but scoring marks quotes it could not check', () => {
   const q = measure.quoteStats({ dir: tmpDir('arw-honesty-quotes-'), base: 'b', head: 'h' }, [{
     evidence: [{ kind: 'code', path: 'missing.py', start_line: 1, end_line: 1, quote: 'x' }],

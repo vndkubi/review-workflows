@@ -1731,6 +1731,15 @@ function checklistProposals(mined) {
 
 // ---------- evals ----------
 const pctText = (x) => (x == null ? '–' : `${Math.round(x * 1000) / 10}%`);
+// What precision can still be while findings are unlabelled: all of them
+// false (low) or all true (high). Counted here so older scorecards show it.
+const precisionRange = (t) => {
+  const u = t.unlabelled || 0;
+  const n = (t.tp || 0) + (t.fp || 0) + u;
+  if (!u || !n) return '';
+  return `range ${pctText((t.tp || 0) / n).replace('%', '')}–${pctText(((t.tp || 0) + u) / n)}`;
+};
+const precisionCell = (t) => [pctText(t.precision), precisionRange(t) ? ` (${precisionRange(t)})` : ''].join('');
 
 async function renderEvals(runId) {
   if (runId && runId.startsWith('compare:')) return renderEvalCompare(...runId.slice(8).split('..'));
@@ -1760,7 +1769,7 @@ async function renderEvals(runId) {
       h('p', { class: 'small muted' }, 'Each case runs as a full review (real model calls, repro off unless the case enables it).')),
     ...section('Runs', e.runs.length ? [
       table(['Run', 'Config', 'Recall', 'Precision', 'TP / FP / unlabelled', 'Cases', 'Calls', 'Model', 'Started'], e.runs.map((r) => [
-        h('a', { href: `#/evals/${encodeURIComponent(r.id)}` }, r.id), r.config || '–', pctText(r.totals.recall), pctText(r.totals.precision),
+        h('a', { href: `#/evals/${encodeURIComponent(r.id)}` }, r.id), r.config || '–', pctText(r.totals.recall), precisionCell(r.totals),
         `${r.totals.tp} / ${r.totals.fp} / ${r.totals.unlabelled}`, `${r.totals.completed}/${r.totals.cases}`, fmtNum(r.totals.calls), r.model || 'default', fmtTime(r.started_at)])),
       e.runs.length > 1 ? h('div', { class: 'row mt8' }, pickA, ' → ', pickB, h('button', { class: 'btn', onclick: () => { location.hash = `#/evals/${encodeURIComponent(`compare:${pickA.value}..${pickB.value}`)}`; } }, 'Compare')) : null,
     ] : h('p', { class: 'muted small' }, 'No eval runs yet.')),
@@ -1785,10 +1794,10 @@ async function renderEvalRun(id) {
     h('a', { href: '#/evals' }, '← evals'),
     h('h1', {}, `Eval ${card.id}`),
     h('p', { class: 'small muted' }, `tool ${card.tool_sha256.slice(0, 12)} · arw ${String(card.arw_commit || '?').slice(0, 12)} · model ${card.model || 'default'} · ${card.executor} · ${fmtTime(card.started_at)}${card.rescored_at ? ` · re-scored ${fmtTime(card.rescored_at)}` : ''}`),
-    h('div', { class: 'stats' }, stat(pctText(t.recall), `recall (${t.found}/${t.expected})`), stat(pctText(t.precision), 'precision'), stat(t.tp, 'true'), stat(t.fp, 'false'), stat(t.unlabelled, 'unlabelled'), stat(t.calls, 'model calls')),
+    h('div', { class: 'stats' }, stat(pctText(t.recall), `recall (${t.found}/${t.expected})`), stat(pctText(t.precision), precisionRange(t) ? `precision · ${precisionRange(t)} with ${t.unlabelled} unlabelled` : 'precision'), stat(t.tp, 'true'), stat(t.fp, 'false'), stat(t.unlabelled, 'unlabelled'), stat(t.calls, 'model calls')),
     card.cases.map((s) => h('section', { class: 'panel' },
       h('h2', {}, s.id, ' ', statusBadge(s.status)),
-      h('p', { class: 'small' }, `recall ${pctText(s.recall)} · precision ${pctText(s.precision)} · ${s.cost ? s.cost.calls : 0} calls`, s.recommendation ? ` · ${s.recommendation}` : ''),
+      h('p', { class: 'small' }, `recall ${pctText(s.recall)} · precision ${precisionCell(s)} · ${s.cost ? s.cost.calls : 0} calls`, s.recommendation ? ` · ${s.recommendation}` : ''),
       s.error ? h('div', { class: 'notice bad small' }, `exit ${s.exit_code}: ${s.error}`) : null,
       (s.details.expected || []).length ? table(['Expected', 'Found by', 'Severity'], s.details.expected.map((e) => [
         h('strong', {}, e.id), e.found ? e.by.join(', ') : h('span', { class: 'badge bad' }, e.withdrawn_by && e.withdrawn_by.length ? `missed (withdrawn: ${e.withdrawn_by.join(', ')})` : 'missed'),

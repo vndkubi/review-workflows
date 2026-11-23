@@ -173,6 +173,15 @@ function ratio(a, b) {
   return b ? Math.round((a / b) * 1000) / 1000 : null;
 }
 
+// What precision can be, whatever the unlabelled findings turn out to be:
+// all false (lo) or all true (hi). With many unlabelled findings the point
+// value on the labelled few says little, so the range is shown beside it.
+function precisionBounds(tp, fp, unlabelled) {
+  const n = tp + fp + unlabelled;
+  if (!n) return { precision_range: null, labelled_share: null };
+  return { precision_range: { lo: ratio(tp, n), hi: ratio(tp + unlabelled, n) }, labelled_share: ratio(tp + fp, n) };
+}
+
 function scoreCase(c, runDir, prices = measure.loadPrices()) {
   const res = runDir && reviewFindings(runDir);
   const notExpected = (c.not_expected || []).length;
@@ -250,6 +259,7 @@ function scoreCase(c, runDir, prices = measure.loadPrices()) {
     // not measurable, not 100%.
     precision: notExpected ? ratio(tp, tp + fp) : null,
     precision_denominator: tp + fp,
+    ...precisionBounds(tp, fp, findings.length - tp - fp),
     redteam_withdrew_real: expected.filter((e) => !e.found && e.withdrawn_by.length).map((e) => e.id),
     // Shell commands the workers ran (reads, mostly): how deep they looked.
     reads: measure.readsOf(receipts),
@@ -306,6 +316,7 @@ function aggregate(scores) {
     // it as null (N/A), not as a perfect score.
     precision: notExpected ? ratio(tp, tp + fp) : null,
     precision_denominator: tp + fp,
+    ...precisionBounds(tp, fp, sum('unlabelled')),
     gaps: scores.filter((s) => s.status === 'NO_RESULT').length,
     calls: cost('calls'),
     input_tokens: cost('input_tokens'),
@@ -371,6 +382,19 @@ function pct(x) {
   return x == null ? '–' : `${Math.round(x * 1000) / 10}%`;
 }
 
+// One line for any totals or case score: the point value on labelled
+// findings, and the range the unlabelled ones leave open.
+function precisionText(t) {
+  const unlabelled = t.unlabelled || 0;
+  // Counted from tp/fp/unlabelled, so scorecards written before the range
+  // existed show it too.
+  const r = precisionBounds(t.tp || 0, t.fp || 0, unlabelled).precision_range;
+  if (!r) return 'no findings';
+  const point = t.precision == null ? 'not measurable (no not_expected labels)' : `${pct(t.precision)} of ${(t.tp || 0) + (t.fp || 0)} labelled`;
+  if (!unlabelled) return point;
+  return `${point} · range ${pct(r.lo).replace('%', '')}–${pct(r.hi)} (${unlabelled} unlabelled)`;
+}
+
 const secs = (q) => (q && q.p50 != null ? `${Math.round(q.p50 / 1000)}/${Math.round(q.p95 / 1000)}` : '–');
 
 function renderScorecard(card) {
@@ -379,7 +403,7 @@ function renderScorecard(card) {
     `# Eval ${card.id}`,
     '',
     `- started ${card.started_at}, finished ${card.finished_at || '(running)'} · tool \`${card.tool_sha256.slice(0, 12)}\` · arw commit \`${(card.arw_commit || '?').slice(0, 12)}\` · model ${card.model || 'default'} · config ${card.config || 'per-case flags'} · repeat ${card.repeat || 1}${(card.repeat || 1) === 1 ? ' (one run per case: spread not measured)' : ''}`,
-    `- **recall ${pct(t.recall)}** (${t.found}/${t.scored_expected == null ? t.expected : t.scored_expected} scored expected defects found${t.gaps ? `; ${t.expected - (t.scored_expected == null ? t.expected : t.scored_expected)} label(s) in ${t.gaps} NO_RESULT gap(s)` : ''}, ${t.severity_ok} at the expected severity) · ${t.not_expected ? `**precision ${pct(t.precision)}** on labelled findings (${t.tp} true, ${t.fp} known false; ${t.not_expected} not_expected label(s))` : `**precision not measurable: no not_expected labels** (${t.tp} true, ${t.fp} known false)`} · ${t.unlabelled} unlabelled`,
+    `- **recall ${pct(t.recall)}** (${t.found}/${t.scored_expected == null ? t.expected : t.scored_expected} scored expected defects found${t.gaps ? `; ${t.expected - (t.scored_expected == null ? t.expected : t.scored_expected)} label(s) in ${t.gaps} NO_RESULT gap(s)` : ''}, ${t.severity_ok} at the expected severity) · ${t.not_expected ? `**precision ${pct(t.precision)}** on labelled findings (${t.tp} true, ${t.fp} known false; ${t.not_expected} not_expected label(s))` : `**precision not measurable: no not_expected labels** (${t.tp} true, ${t.fp} known false)`} · ${t.unlabelled} unlabelled${t.unlabelled && t.precision_range ? ` · **precision range ${pct(t.precision_range.lo).replace('%', '')}–${pct(t.precision_range.hi)}** until they are labelled` : ''}`,
     `- ${t.completed}/${t.cases} case(s) complete · ${t.calls} model calls · tokens in ${t.input_tokens} (cached ${t.cached_input_tokens || 0}) / out ${t.output_tokens}`,
     `- reads: ${t.reads && t.reads.calls ? `${t.reads.commands} shell commands in ${t.reads.calls} counted call(s), ${t.reads.per_call} per call` : 'not counted (receipts without command counts)'}`,
     `- cost ${t.usd == null ? `USD unknown${t.unpriced && t.unpriced.length ? ` (no price for ${t.unpriced.join(', ')})` : ''}` : `$${t.usd} · $${t.usd_per_tp == null ? '–' : t.usd_per_tp} per true positive`}${card.prices && card.prices.date ? ` · prices of ${card.prices.date}` : ''}`,
@@ -871,4 +895,4 @@ function labelFinding({ runId, caseId, findingId, as, severity, linkTo, repeat =
   return label;
 }
 
-module.exports = { runMatrix, blindExport, blindImport, pairedStats, scoredNow, CONFIGS, evalDir, casesDir, writeCase, loadCases, validateCase, scoreCase, aggregate, finalize, renderScorecard, runEval, rescore, listRuns, loadRun, compare, caseFromRun, labelFinding, matches, assignProse, keywordsOf };
+module.exports = { runMatrix, blindExport, blindImport, pairedStats, scoredNow, CONFIGS, evalDir, casesDir, writeCase, loadCases, validateCase, scoreCase, aggregate, finalize, renderScorecard, precisionText, runEval, rescore, listRuns, loadRun, compare, caseFromRun, labelFinding, matches, assignProse, keywordsOf };

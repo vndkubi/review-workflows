@@ -382,11 +382,11 @@ async function cmdEval(argv) {
   if (sub === 'run') {
     const { outDir, card } = await evals.runEval({ only: args.case ? String(args.case).split(',') : undefined, label: args.label || args.config, config: args.config, repeat: args.repeat ? Number(args.repeat) : 1, log });
     const t = card.totals;
-    console.log(`recall ${pct(t.recall)} (${t.found}/${t.expected}) · precision ${pct(t.precision)} (${t.tp} TP, ${t.fp} FP) · ${t.unlabelled} unlabelled · ${t.calls} calls\nscorecard: ${path.join(outDir, 'scorecard.md')}`);
+    console.log(`recall ${pct(t.recall)} (${t.found}/${t.expected}) · precision ${evals.precisionText(t)} (${t.tp} TP, ${t.fp} FP) · ${t.calls} calls\nscorecard: ${path.join(outDir, 'scorecard.md')}`);
     return t.completed === t.cases ? 0 : 1;
   }
   if (sub === 'list') {
-    for (const r of evals.listRuns()) console.log(`${r.id.padEnd(40)} recall ${pct(r.totals.recall).padStart(6)} · precision ${pct(r.totals.precision).padStart(6)} · ${r.totals.unlabelled} unlabelled · ${r.totals.calls} calls · ${r.model || 'default'}`);
+    for (const r of evals.listRuns()) console.log(`${r.id.padEnd(40)} recall ${pct(r.totals.recall).padStart(6)} · precision ${evals.precisionText(r.totals)} · ${r.totals.calls} calls · ${r.model || 'default'}`);
     return 0;
   }
   if (sub === 'show') {
@@ -404,12 +404,12 @@ async function cmdEval(argv) {
   }
   if (sub === 'rescore') {
     const card = evals.rescore(String(args._[0] || ''));
-    console.log(`recall ${pct(card.totals.recall)} · precision ${pct(card.totals.precision)} · ${card.totals.unlabelled} unlabelled`);
+    console.log(`recall ${pct(card.totals.recall)} · precision ${evals.precisionText(card.totals)}`);
     return 0;
   }
   if (sub === 'compare') {
     const c = evals.compare(String(args._[0] || ''), String(args._[1] || ''), { allowToolDiff: Boolean(args.allowToolDiff) });
-    console.log(`${c.a.id} -> ${c.b.id}\nrecall ${pct(c.a.totals.recall)} -> ${pct(c.b.totals.recall)} · precision ${pct(c.a.totals.precision)} -> ${pct(c.b.totals.precision)} · calls ${c.a.totals.calls} -> ${c.b.totals.calls}`);
+    console.log(`${c.a.id} -> ${c.b.id}\nrecall ${pct(c.a.totals.recall)} -> ${pct(c.b.totals.recall)} · precision ${evals.precisionText(c.a.totals)} -> ${evals.precisionText(c.b.totals)} · calls ${c.a.totals.calls} -> ${c.b.totals.calls}`);
     const st = c.stats;
     const ci = (d, f = pct) => (d && d.est != null ? `${f(d.est)} [${f(d.lo)}, ${f(d.hi)}]` : '-');
     if (st.tool_mismatch) console.log(`no paired statistics: ${st.tool_mismatch}`);
@@ -426,7 +426,7 @@ async function cmdEval(argv) {
     const cells = JSON.parse(fs.readFileSync(path.resolve(String(args.file)), 'utf8'));
     const budget = { usd: args.budgetUsd ? Number(args.budgetUsd) : null, calls: args.budgetCalls ? Number(args.budgetCalls) : null, hours: args.budgetHours ? Number(args.budgetHours) : null };
     const res = await evals.runMatrix({ cells, label: args.label || 'matrix', budget, repeat: args.repeat ? Number(args.repeat) : 1, only: args.case ? String(args.case).split(',') : undefined, log });
-    for (const c of res.cells) console.log(`${c.name.padEnd(28)} ${c.card.id} · recall ${pct(c.card.totals.recall)} · precision ${pct(c.card.totals.precision)} · ${c.card.totals.calls} calls · ${c.card.totals.usd == null ? 'USD ?' : `${c.card.totals.usd}`}`);
+    for (const c of res.cells) console.log(`${c.name.padEnd(28)} ${c.card.id} · recall ${pct(c.card.totals.recall)} · precision ${evals.precisionText(c.card.totals)} · ${c.card.totals.calls} calls · ${c.card.totals.usd == null ? 'USD ?' : `${c.card.totals.usd}`}`);
     if (res.stopped) console.log(`stopped: ${res.stopped}`);
     return res.stopped ? 2 : 0;
   }
