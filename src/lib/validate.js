@@ -8,7 +8,7 @@ const { sha256, sha256Value } = require('./util');
 const { validateAgainst } = require('./schema');
 const git = require('./git');
 const { readInput, revisionDir } = require('./freeze');
-const { checkRole } = require('./viewpoint-checks');
+const { checkRole, guaranteeOf } = require('./viewpoint-checks');
 const { resolveAnchor, hunkAnchors } = require('./anchors');
 
 // Finding categories that are advice, not defects (see canonicalizeCandidate).
@@ -564,6 +564,19 @@ function validatePacket(packet, env) {
       if (!checks.includes(v.viewpoint)) errors.push(`${at}.viewpoint: ${v.viewpoint} is not a viewpoint assigned to unit ${unit.id} (${checks.join(', ') || 'none'})`);
       const under = packet.findings.filter((f) => f.authority.kind === 'curated_viewpoint' && f.authority.id === v.viewpoint);
       if (v.verdict === 'pass' && !v.evidence.some((ev) => ev.kind === 'code')) errors.push(`${at}: "pass" needs code evidence; without it use "cannot_determine"`);
+      // The changed lines that raised the viewpoint: an answer that clears
+      // it quotes each, and a "pass" that needs a guarantee shows it too.
+      const sites = (unit.check_sites || {})[v.viewpoint] || [];
+      if (sites.length && (v.verdict === 'pass' || v.verdict === 'not_applicable')) {
+        const atHead = v.evidence.filter((ev) => ev.kind === 'code' && !ev.repo && ev.revision !== 'base');
+        const covers = (ev, s) => ev.path === s.path && ev.start_line <= s.line && s.line <= ev.end_line;
+        const missing = sites.filter((s) => !atHead.some((ev) => covers(ev, s)));
+        if (missing.length) errors.push(`${at}: "${v.verdict}" for ${v.viewpoint} must quote each changed line it was asked about; not quoted: ${missing.map((s) => `${s.path}:${s.line}`).join(', ')}. Quote them (a hunk anchor is enough), or answer "fail" or "cannot_determine"`);
+        const guarantee = guaranteeOf(v.viewpoint);
+        if (v.verdict === 'pass' && guarantee && !v.evidence.some((ev) => ev.kind === 'code' && !sites.some((s) => covers(ev, s)))) {
+          errors.push(`${at}: "pass" for ${v.viewpoint} also needs the code that guarantees it (${guarantee}), quoted apart from the lines it was asked about; if you cannot find it, answer "fail" or "cannot_determine"`);
+        }
+      }
       if (v.verdict === 'fail' && !under.length) errors.push(`${at}: "fail" for ${v.viewpoint} needs a finding whose authority is curated_viewpoint ${v.viewpoint}`);
       if (v.verdict !== 'fail' && under.length) errors.push(`${at}: ${under.map((f) => f.id).join(', ')} violates ${v.viewpoint}, but its verdict is "${v.verdict}"; use "fail"`);
       v.evidence.forEach((ev, j) => errors.push(...validateEvidence(ev, sources, `${at}.evidence[${j}]`)));

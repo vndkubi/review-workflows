@@ -31,10 +31,16 @@ const KEYS = /\[\s*['"][\w.:-]+['"]\s*\]|\.get\(\s*['"][\w.:-]+['"]|\bvalidated_
 const ORDER = /\bzip\(|\.values\(\)|\.keys\(\)|\.items\(\)|\b(Hash|Concurrent)(Map|Set)\b|\bset\(|\bfrozenset\(|\.parallel(Stream)?\(|Collectors\.(toMap|toSet|groupingBy)|get_multi|in_bulk|bulk_get|findAllById|\.findAll\(|ORDER BY|order_by\(|\basyncio\.gather\b|Promise\.all\b|invokeAll\(/i;
 const FLAG = /\bfeatures?\.(has|includes|enabled|is_enabled)\b|isFeatureEnabled|is_feature_enabled|FeatureFlag|\bFeature\.\w|feature_flag|\bflags?\.\w+|\bFEATURE_\w+|@ConditionalOnProperty|@Profile\(|LaunchDarkly|Unleash|options\.get\(\s*['"]/;
 const REGEX = /Pattern\.compile\(|\.(matches|replaceAll|replaceFirst|split)\(\s*"|\bre\.(compile|match|search|fullmatch|sub|subn|split|findall|finditer)\(|new RegExp\(|\/[^/\s][^/]*\/[gimsuy]*\.(test|exec)\(|\.(match|matchAll|replace|replaceAll|search|split)\(\s*\/[^/]/;
+// The lookup half of MAY_BE_MISSING: the call whose result may be absent.
+const LOOKUP = /\b[A-Z][\w$]*(<[^;=]*>)?\s+[\w$]+\s*=\s*[\w$.]*(get|find|lookup|resolve|load|fetch|search|first)\w*\(|\.(get|getOrDefault|first|firstOrNull|find\w*|lookup)\(|\.objects\.(get|filter)\(|\.(first|one_or_none|scalar)\(\)/;
 const TEST_VALUE = /\bassert|\bexpect\(|\bshould\b|assertEquals|assertThat|"\w+"\s*:\s*[-\w."']+|\b\w+\s*=\s*[-\d.]+\b/;
 
 // Each rule: id, and when it applies to one changed file. `lines` and `all`
-// are matched against the file's added and removed lines.
+// are matched against the file's added and removed lines. `site`: the added
+// lines matching it are the ones the viewpoint is asked about, and "pass" or
+// "not_applicable" must quote each (incident: CK-OR-1 passed six times on
+// martian-sentry-5 without ever quoting the zip that raised it).
+// `guarantee`: what "pass" must also quote, beyond those lines.
 const RULES = [
   { id: 'CK-TX-1', source: true, lines: [TX, WRITE] },
   { id: 'CK-TX-2', source: true, lines: [TX, WRITE] },
@@ -51,12 +57,12 @@ const RULES = [
   { id: 'CK-BZ-2', source: true, lines: [MONEY] },
   { id: 'CK-BZ-3', source: true, lines: [TIME] },
   { id: 'CK-BZ-4', source: true, lines: [ENTRY] },
-  { id: 'CK-NL-1', source: true, lines: [MAY_BE_MISSING] },
+  { id: 'CK-NL-1', source: true, lines: [MAY_BE_MISSING], site: LOOKUP, guarantee: 'the null or empty check, or the contract that the value is always present' },
   { id: 'CK-CP-5', source: true, lines: [CONTRACT, ENTRY] },
-  { id: 'CK-DK-1', source: true, lines: [KEYS] },
-  { id: 'CK-OR-1', source: true, lines: [ORDER] },
+  { id: 'CK-DK-1', source: true, lines: [KEYS], site: KEYS, guarantee: 'the other side of the key: where it is written, or where it is read' },
+  { id: 'CK-OR-1', source: true, lines: [ORDER], site: ORDER, guarantee: 'where the order is defined: the sort, the ordered collection, or the documented contract of the call' },
   { id: 'CK-FL-1', source: true, lines: [FLAG] },
-  { id: 'CK-PF-1', source: true, lines: [REGEX] },
+  { id: 'CK-PF-1', source: true, lines: [REGEX], site: REGEX },
   { id: 'CK-CP-1', paths: /\.(proto|avsc|graphql|wsdl|xsd)$|openapi|swagger/i, removed: [/\bpublic\s|@\w+Mapping|@JsonProperty|@Column|@Table|\bdef\s+\w+\s*\(/] },
   { id: 'CK-CP-2', paths: /(^|\/)(migrations?|flyway|liquibase|changelog|alembic)\/|\.sql$/i, lines: [/\b(ALTER|DROP)\s+TABLE\b|\bADD\s+COLUMN\b|\bRENAME\b/i] },
   { id: 'CK-CP-3', paths: /\.(properties|ya?ml|ini|cfg|toml|env)$/, lines: [/@Value\(|@ConfigurationProperties|getProperty\(|os\.environ|\bgetenv\(/] },
@@ -145,8 +151,41 @@ function assignChecks(units, parsed, checklistText, projectRules = []) {
   for (const u of units) {
     const files = ANSWERING_KINDS.has(u.kind) ? u.covers.filter((c) => c.startsWith('file:')).map((c) => byPath.get(c.slice(5))).filter(Boolean) : [];
     u.checks = files.length ? selectChecks(files, checklistText, { projectRules }) : [];
+    const sites = {};
+    for (const id of u.checks) {
+      const rule = RULES.find((x) => x.id === id && x.site);
+      const found = rule ? files.filter((f) => !f.binary && applies(rule, f)).flatMap((f) => sitesOf(rule, f)) : [];
+      if (found.length) sites[id] = found;
+    }
+    if (Object.keys(sites).length) u.check_sites = sites;
   }
   return units;
+}
+
+// The added lines (at head) that a site rule names in one file.
+function sitesOf(rule, file) {
+  const out = [];
+  for (const h of file.hunks || []) {
+    for (const l of h.lines) if (l.type === '+' && rule.site.test(l.text)) out.push({ path: file.path, line: l.new_line, text: l.text.trim().slice(0, 160) });
+  }
+  return out;
+}
+
+const guaranteeOf = (id) => (RULES.find((x) => x.id === id) || {}).guarantee || null;
+
+// For the worker prompt: the lines each viewpoint was raised by, and what
+// "pass" must show.
+function renderSites(unit) {
+  const sites = unit.check_sites || {};
+  const ids = Object.keys(sites);
+  if (!ids.length) return '';
+  const out = ['LINES EACH VIEWPOINT IS ASKED ABOUT (the runtime matched them in the change): "pass" or "not_applicable" must quote every one of them (a hunk anchor such as H3:47 is enough). One you did not check makes the answer "cannot_determine" or "fail".'];
+  for (const id of ids) {
+    out.push(`- ${id} was asked because of: ${sites[id].map((s) => `${s.path}:${s.line} \`${s.text}\``).join('; ')}`);
+    const g = guaranteeOf(id);
+    if (g) out.push(`  "pass" for ${id} also quotes ${g}, at lines other than these. If you cannot find it, the answer is not "pass".`);
+  }
+  return out.join('\n');
 }
 
 // The technical reviewer answers the matrix; a unit without one (business
@@ -155,4 +194,4 @@ function checkRole(unit) {
   return unit.roles.includes('technical') ? 'technical' : unit.roles[0];
 }
 
-module.exports = { RULES, TEST, checklistIds, selectChecks, assignChecks, checkRole };
+module.exports = { RULES, TEST, checklistIds, selectChecks, assignChecks, checkRole, renderSites, guaranteeOf };

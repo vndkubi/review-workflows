@@ -14,7 +14,7 @@ function schemaFor(name, def) {
   return `${JSON.stringify(outputSchema(name, def))}\nEvery property above is required: write null for any field that does not apply (never leave a key out).`;
 }
 const { readInput, revisionDir } = require('./freeze');
-const { checkRole } = require('./viewpoint-checks');
+const { checkRole, renderSites } = require('./viewpoint-checks');
 const { hunkAnchors, renderAnchors } = require('./anchors');
 const { coverageIds } = require('./validate');
 const { LENSES } = require('./plan');
@@ -302,6 +302,8 @@ The lines above are the reviewed head, numbered with their real line numbers (ne
 - "fail": it does not — record a finding with authority {"kind":"curated_viewpoint","id":<that id>}.
 - "not_applicable": the change does not reach what the viewpoint is about; say why in note.
 - "cannot_determine": the answer depends on code you cannot see; say what is missing.`);
+    const sites = renderSites(unit);
+    if (sites) lines.push(sites);
   } else {
     lines.push('viewpoint_verdicts: [] (no viewpoint checks for this unit and role).');
   }
