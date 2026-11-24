@@ -294,6 +294,9 @@ The lines above are the reviewed head, numbered with their real line numbers (ne
   } else {
     lines.push('item_verdicts: [] (this unit covers no review items).');
   }
+  // Hunk anchors of the frozen patch: the sites below and DIFF ANCHORS cite them.
+  const patchFile = path.join(revisionDir(runDir, context.context_id), 'review.patch');
+  const anchors = fs.existsSync(patchFile) ? hunkAnchors(fs.readFileSync(patchFile, 'utf8')) : [];
   const checks = unit.checks || [];
   if (checks.length && job.role === checkRole(unit)) {
     const where = checks.some((id) => id.startsWith('PRJ-')) ? 'text in input "policy-policies-checklist"; PRJ-* in input "policy-project-checklist"' : 'text in input "policy-policies-checklist"';
@@ -302,7 +305,7 @@ The lines above are the reviewed head, numbered with their real line numbers (ne
 - "fail": it does not — record a finding with authority {"kind":"curated_viewpoint","id":<that id>}.
 - "not_applicable": the change does not reach what the viewpoint is about; say why in note.
 - "cannot_determine": the answer depends on code you cannot see; say what is missing.`);
-    const sites = renderSites(unit);
+    const sites = renderSites(unit, anchors);
     if (sites) lines.push(sites);
   } else {
     lines.push('viewpoint_verdicts: [] (no viewpoint checks for this unit and role).');
@@ -337,8 +340,7 @@ ${callers.map((c) => `- ${impactLine(c)}`).join('\n')}
   } else {
     lines.push('impact_verdicts: [] (no impact checks for this unit and role).');
   }
-  const patchFile = path.join(revisionDir(runDir, context.context_id), 'review.patch');
-  const anchorText = fs.existsSync(patchFile) ? renderAnchors(hunkAnchors(fs.readFileSync(patchFile, 'utf8')), unit.covers.filter((c) => c.startsWith('file:')).map((c) => c.slice(5))) : '';
+  const anchorText = anchors.length ? renderAnchors(anchors, unit.covers.filter((c) => c.startsWith('file:')).map((c) => c.slice(5))) : '';
   if (anchorText) lines.push(`DIFF ANCHORS (hunks of this unit's files at the reviewed head):\n${anchorText}`);
   lines.push(`COVERAGE IDS: ${JSON.stringify(coverageIds(unit))}`);
   lines.push(`FINDING IDS: ${unit.id}-${job.role}-F1, ${unit.id}-${job.role}-F2, ...`);

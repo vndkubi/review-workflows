@@ -14,7 +14,9 @@ const { tmpDir, sh, write } = require('./helpers');
 const git = require('../src/lib/git');
 const { parsePatch } = require('../src/lib/patch');
 const { assignChecks, renderSites } = require('../src/lib/viewpoint-checks');
-const { makeSources, validatePacket } = require('../src/lib/validate');
+const { makeSources, validatePacket, canonicalizeCandidate } = require('../src/lib/validate');
+const { hunkAnchors } = require('../src/lib/anchors');
+const { revisionDir } = require('../src/lib/freeze');
 
 const P = 'src/replays/summarize.py';
 const BASE = `def summarize(error_ids, nodestore):
@@ -82,9 +84,49 @@ test('"pass" on order also shows what guarantees it', () => {
   assert.deepEqual(check('cannot_determine', []), [], 'an honest gap needs no quote');
 });
 
-test('the prompt names the lines each viewpoint was asked about', () => {
-  const text = renderSites(unit());
-  assert.match(text, /CK-OR-1 was asked because of: src\/replays\/summarize\.py:4 `for error_id, event in zip\(error_ids, events\.values\(\)\):`/);
+test('the prompt names the lines each viewpoint was asked about, with the anchor that cites each', () => {
+  const anchors = hunkAnchors(git.diffPatch(r.dir, r.base, r.head));
+  const text = renderSites(unit(), anchors);
+  assert.match(text, /CK-OR-1 was asked because of: H1:4 \(src\/replays\/summarize\.py:4 `for error_id, event in zip\(error_ids, events\.values\(\)\):`\)/);
+  assert.doesNotMatch(text, /hunk anchor such as H3:47 is enough/, 'a bare hunk id is not enough, and the prompt does not say it is');
+  assert.match(text, /a bare hunk id such as H3 stands for its first changed line only/);
   const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'lib', 'prompts.js'), 'utf8');
-  assert.match(src, /renderSites\(unit\)/, 'the worker prompt includes them');
+  assert.match(src, /renderSites\(unit, anchors\)/, 'the worker prompt includes them, with anchors');
+});
+
+// Incident: 20261124-160414Z-proof-luna-multi. Four units failed outright
+// (appsmith r1 B1, sentry-5 r1 B8, sentry-5 r2 B1 and B9), each rejected four
+// times by the rule above. The prompt showed sites as path:line and the
+// rejection said "a hunk anchor is enough"; Luna cited the bare hunk id
+// (H39 for delete.py lines 84-94, site at 89), which resolves to the hunk's
+// first changed line only (87), or lines next to the site (H46:67 and H46:69
+// for a site at 68). Each site now comes with its own anchor, and the
+// rejection names it.
+function anchored(verdictEvidence) {
+  const DIGEST = 'd'.repeat(64);
+  const runDir = tmpDir('arw-proof-anchor-');
+  const fs = require('node:fs');
+  const dir = revisionDir(runDir, 'ctx');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(require('node:path').join(dir, 'review.patch'), git.diffPatch(r.dir, r.base, r.head));
+  const sources = makeSources(runDir, { context_id: 'ctx', source: { checkout: r.dir, base_sha: r.base, head_sha: r.head }, inputs: [] });
+  sources.context = { context_digest: DIGEST };
+  const u = unit();
+  const packet = { schema_version: '1.0', context_digest: DIGEST, unit_id: 'T1', role: 'technical', summary: 's', dependency_refs: [],
+    coverage: [{ id: `file:${P}`, disposition: 'reviewed', evidence: [{ kind: 'code', anchor: 'H1' }], note: 'n' }],
+    item_verdicts: [], findings: [], impact_verdicts: [], recommendation: 'no_findings',
+    viewpoint_verdicts: u.checks.map((id) => (id === 'CK-OR-1' ? { viewpoint: id, verdict: 'pass', evidence: verdictEvidence, note: 'n' } : { viewpoint: id, verdict: 'cannot_determine', evidence: [], note: 'n' })) };
+  canonicalizeCandidate(packet, sources);
+  return validatePacket(packet, { sources, unit: u, role: 'technical', items: [], expectedDependencyRefs: [] });
+}
+
+test('a rejection names the anchor of each unquoted site, not "a hunk anchor is enough"', () => {
+  const bare = anchored([{ kind: 'code', anchor: 'H1' }, code(2, GET)]);
+  const msg = bare.find((e) => /must quote each changed line/.test(e));
+  assert.ok(msg, bare.join('\n'));
+  assert.match(msg, /not quoted: H1:4 \(src\/replays\/summarize\.py:4\)/);
+  assert.doesNotMatch(msg, /a hunk anchor is enough/);
+  const near = anchored([{ kind: 'code', anchor: 'H1:3' }, { kind: 'code', anchor: 'H1:5' }, code(2, GET)]);
+  assert.ok(near.some((e) => /not quoted: H1:4/.test(e)), 'the lines next to a site do not quote it');
+  assert.deepEqual(anchored([{ kind: 'code', anchor: 'H1:4' }, code(2, GET)]), [], 'the anchor given for the site is accepted');
 });

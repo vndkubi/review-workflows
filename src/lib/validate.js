@@ -8,7 +8,7 @@ const { sha256, sha256Value } = require('./util');
 const { validateAgainst } = require('./schema');
 const git = require('./git');
 const { readInput, revisionDir } = require('./freeze');
-const { checkRole, guaranteeOf } = require('./viewpoint-checks');
+const { checkRole, guaranteeOf, siteRef } = require('./viewpoint-checks');
 const { resolveAnchor, hunkAnchors } = require('./anchors');
 
 // Finding categories that are advice, not defects (see canonicalizeCandidate).
@@ -589,7 +589,8 @@ function validatePacket(packet, env) {
         const atHead = v.evidence.filter((ev) => ev.kind === 'code' && !ev.repo && ev.revision !== 'base');
         const covers = (ev, s) => ev.path === s.path && ev.start_line <= s.line && s.line <= ev.end_line;
         const missing = sites.filter((s) => !atHead.some((ev) => covers(ev, s)));
-        if (missing.length) errors.push(`${at}: "${v.verdict}" for ${v.viewpoint} must quote each changed line it was asked about; not quoted: ${missing.map((s) => `${s.path}:${s.line}`).join(', ')}. Quote them (a hunk anchor is enough), or answer "fail" or "cannot_determine"`);
+        const anchors = sources && sources.anchors ? sources.anchors() : [];
+        if (missing.length) errors.push(`${at}: "${v.verdict}" for ${v.viewpoint} must quote each changed line it was asked about; not quoted: ${missing.map((s) => siteRef(anchors, s)).join(', ')}. Cite each with exactly that anchor (a bare hunk id such as H3 quotes only its first changed line), or answer "fail" or "cannot_determine"`);
         const guarantee = guaranteeOf(v.viewpoint);
         if (v.verdict === 'pass' && guarantee && !v.evidence.some((ev) => ev.kind === 'code' && !sites.some((s) => covers(ev, s)))) {
           errors.push(`${at}: "pass" for ${v.viewpoint} also needs the code that guarantees it (${guarantee}), quoted apart from the lines it was asked about; if you cannot find it, answer "fail" or "cannot_determine"`);

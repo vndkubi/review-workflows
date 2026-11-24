@@ -173,15 +173,32 @@ function sitesOf(rule, file) {
 
 const guaranteeOf = (id) => (RULES.find((x) => x.id === id) || {}).guarantee || null;
 
+// The anchor that cites exactly one site line ("H3:47"), or null when no
+// hunk of the frozen patch holds it. A bare "H3" is the hunk's first changed
+// line only (anchors.js), so a site gets its own line anchor.
+function siteAnchor(anchors, site) {
+  const a = (anchors || []).find((x) => x.revision === 'reviewed' && x.path === site.path && x.start <= site.line && site.line <= x.end);
+  return a ? `${a.id}:${site.line}` : null;
+}
+
+// "H3:47 (path:47)", or "path:47" without an anchor.
+function siteRef(anchors, site) {
+  const id = siteAnchor(anchors, site);
+  return id ? `${id} (${site.path}:${site.line})` : `${site.path}:${site.line}`;
+}
+
 // For the worker prompt: the lines each viewpoint was raised by, and what
 // "pass" must show.
-function renderSites(unit) {
+function renderSites(unit, anchors = []) {
   const sites = unit.check_sites || {};
   const ids = Object.keys(sites);
   if (!ids.length) return '';
-  const out = ['LINES EACH VIEWPOINT IS ASKED ABOUT (the runtime matched them in the change): "pass" or "not_applicable" must quote every one of them (a hunk anchor such as H3:47 is enough). One you did not check makes the answer "cannot_determine" or "fail".'];
+  const out = ['LINES EACH VIEWPOINT IS ASKED ABOUT (the runtime matched them in the change): "pass" or "not_applicable" must quote every one of them; cite each with the anchor shown before it (H3:47 resolves to exactly line 47; a bare hunk id such as H3 stands for its first changed line only and quotes none of the others). One you did not check makes the answer "cannot_determine" or "fail".'];
   for (const id of ids) {
-    out.push(`- ${id} was asked because of: ${sites[id].map((s) => `${s.path}:${s.line} \`${s.text}\``).join('; ')}`);
+    out.push(`- ${id} was asked because of: ${sites[id].map((s) => {
+      const a = siteAnchor(anchors, s);
+      return a ? `${a} (${s.path}:${s.line} \`${s.text}\`)` : `${s.path}:${s.line} \`${s.text}\``;
+    }).join('; ')}`);
     const g = guaranteeOf(id);
     if (g) out.push(`  "pass" for ${id} also quotes ${g}, at lines other than these. If you cannot find it, the answer is not "pass".`);
   }
@@ -194,4 +211,4 @@ function checkRole(unit) {
   return unit.roles.includes('technical') ? 'technical' : unit.roles[0];
 }
 
-module.exports = { RULES, TEST, checklistIds, selectChecks, assignChecks, checkRole, renderSites, guaranteeOf };
+module.exports = { RULES, TEST, checklistIds, selectChecks, assignChecks, checkRole, renderSites, guaranteeOf, siteAnchor, siteRef };
