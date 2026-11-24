@@ -383,8 +383,12 @@ Beyond calls, the analysis lists references **by name**: configuration files nam
 (`applicationContext.xml`, MyBatis mappers, YAML/properties, with the method id when present), reflection
 (`getMethod("x")`, `getattr(o, "x")`), and **HTTP clients** of changed endpoints (Spring `@…Mapping`,
 Flask/FastAPI decorators) found by path in non-handler files. Other repositories are searched when a
-repository lists them under `"related"` in `config/repos.json` (configured names or absolute paths): callers
-that import the changed type or module, and clients of changed endpoints, read-only at their checkout's HEAD.
+repository lists them under `"related"` in `config/repos.json` (configured names, absolute paths, or
+`{ "repo": "acme/bff", "ref": "v1.4.0" }` to read the version your service is pinned to): callers that import
+the changed type or module, and clients of changed endpoints, read-only at that ref (default: the checkout's
+HEAD). The ref is resolved to a sha and frozen with the context. A resolvable caller there (import, typed
+receiver, endpoint path; never a name-only match) becomes a caller check like a local one: the reviewer gets
+its lines in the prompt and quotes them with `"repo": "<name>"`, checked against the frozen sha.
 **With a JDK (11+) on PATH, Java calls are resolved by javac itself.** `src/lib/JavaIndex.java` runs through
 the JDK's source launcher (no build step) and uses the Compiler Tree API to parse and attribute the
 repository's Java files: annotation processing is off and nothing is executed. Every call it resolves to a
