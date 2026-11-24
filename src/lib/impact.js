@@ -14,7 +14,6 @@ const path = require('node:path');
 const git = require('./git');
 
 const MAX_FILE_BYTES = 400 * 1024;
-const MAX_EDGES_PER_LEVEL = 40;
 const COMMON_NAMES = new Set(['get', 'set', 'add', 'put', 'run', 'call', 'apply', 'accept', 'test', 'main', 'init', 'equals', 'hashCode', 'toString', 'compareTo', 'close', 'build', 'of', 'size', 'isEmpty', 'contains', 'remove', 'clear', 'update', 'save', 'find', 'execute', 'handle', 'process', 'create', 'delete', 'read', 'write', 'start', 'stop', '__init__', '__str__', '__repr__', '__eq__', 'setUp', 'tearDown']);
 const JAVA_NOT_METHODS = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'throw', 'synchronized', 'else', 'do', 'try', 'super', 'this', 'assert']);
 
@@ -498,6 +497,19 @@ function maxFiles(env = process.env) {
   return Number.isInteger(n) && n > 0 ? n : Infinity;
 }
 
+// Call sites kept per level: 40 by default, the surest first (see the
+// loop); ARW_IMPACT_MAX_EDGES=0 keeps all. Uncapped, a widely called method
+// lists thousands (mindustry-bfa31bf1: 24,886 sites, 783 caller checks), so
+// what the cap drops is counted and said instead.
+function maxEdges(env = process.env) {
+  if (env.ARW_IMPACT_MAX_EDGES === '0') return Infinity;
+  const n = Number(env.ARW_IMPACT_MAX_EDGES);
+  return Number.isInteger(n) && n > 0 ? n : 40;
+}
+
+const CONFIDENCE_RANK = { ast: 0, 'ast-dispatch': 1, typed: 2, interface: 3, resolved: 4, 'name-only': 8 };
+const TEST_PATH = /(^|\/)(test|tests|__tests__|spec|testsuite)\/|Tests?\.(java|kt)$|(^|\/)test_[^/]*\.py$|_test\.py$/;
+
 function sourceFiles(cwd) {
   return String(git.git(cwd, ['ls-files', '--', '*.java', '*.py'], { allowFail: true }) || '').split('\n').filter(Boolean);
 }
@@ -588,19 +600,32 @@ function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
   const mismatches = signatureMismatches(indexes, changed, baseIndexes);
   const edges = [];
   let truncated = false;
+  let dropped = 0;
+  let droppedSure = 0;
+  const edgeCap = maxEdges();
   let frontier = changed;
   const visited = new Set(changed.map((m) => `${m.path}#${label(m)}`));
   for (let level = 1; level <= depth && frontier.length; level += 1) {
     const next = [];
-    let count = 0;
+    // All sites of the level first, then the cap keeps the surest ones:
+    // a resolved call outside tests before a name-only match (which is never
+    // asked), so noise cannot crowd out a caller check.
+    const level_sites = [];
     for (const target of frontier) {
-      const sites = callSites(target, indexes, hierarchy, ast).filter((s) => !(COMMON_NAMES.has(target.name) && s.confidence === 'name-only'));
-      for (const s of sites) {
-        if (count >= MAX_EDGES_PER_LEVEL) {
+      for (const s of callSites(target, indexes, hierarchy, ast)) {
+        if (!(COMMON_NAMES.has(target.name) && s.confidence === 'name-only')) level_sites.push({ target, s });
+      }
+    }
+    const rank = ({ s }) => (CONFIDENCE_RANK[s.confidence] ?? 9) * 2 + (TEST_PATH.test(s.file) ? 1 : 0);
+    level_sites.forEach((x, i) => { x.i = i; });
+    level_sites.sort((a, b) => rank(a) - rank(b) || a.i - b.i);
+    for (const [k, { target, s }] of level_sites.entries()) {
+        if (k >= edgeCap) {
           truncated = true;
-          break;
+          dropped += 1;
+          if (FOLLOW.has(s.confidence)) droppedSure += 1;
+          continue;
         }
-        count += 1;
         edges.push({ level, to: { path: target.path, symbol: label(target) }, from: { path: s.file, line: s.line, symbol: s.caller ? label(s.caller) : '(top level)' }, confidence: s.confidence, ...(s.via ? { via: s.via } : {}) });
         if (s.caller && FOLLOW.has(s.confidence)) {
           const key = `${s.file}#${label(s.caller)}`;
@@ -610,7 +635,6 @@ function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
             next.push({ ...s.caller, index: idx, path: s.file });
           }
         }
-      }
     }
     frontier = next;
   }
@@ -670,6 +694,7 @@ function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
     edges,
     mismatches,
     truncated,
+    ...(truncated ? { dropped_edges: dropped, dropped_resolved: droppedSure, max_edges: edgeCap } : {}),
   };
 }
 
@@ -705,7 +730,7 @@ function renderImpact(r) {
   if (other.length) lines.push(`Other repositories (${(r.related || []).map((x) => x.name).join(', ')}):`, ...other.map(fmt));
   else if (r.related && r.related.length) lines.push(`Other repositories searched (${r.related.map((x) => x.name).join(', ')}): no callers or clients found.`);
   if (!r.edges.length) lines.push('No call sites found (callers may live in repositories not configured as related).');
-  if (r.truncated) lines.push(`(truncated at ${MAX_EDGES_PER_LEVEL} call sites per level)`);
+  if (r.truncated) lines.push(r.dropped_edges != null ? `Not listed: ${r.dropped_edges} call site(s) beyond ${r.max_edges} per level (ARW_IMPACT_MAX_EDGES; 0 = all), ${r.dropped_resolved || 0} of them resolved calls: those callers are not followed or asked.` : '(truncated: some call sites per level are not listed)');
   lines.push('Confidence: ast = javac resolved the call to the changed method itself; ast-dispatch = javac resolved it to a supertype method the changed one overrides (interface or base class, e.g. injected); typed = the receiver is declared as the changed type; interface = declared as its supertype (dispatch, e.g. an injected interface); resolved = import/package/module or same class; name-only = only the name matches. config/reflection/http = referenced by name, not by a call.');
   return `${lines.join('\n')}\n`;
 }

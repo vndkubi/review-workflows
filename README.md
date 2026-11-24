@@ -376,7 +376,9 @@ package of the declaring type, or imports the module; or a call within the same 
 callers are added to test impact as `call`. Measured on a synthetic 3,000-file Java repository: about 5 s.
 Every Java/Python file is indexed unless `ARW_IMPACT_MAX_FILES` caps it; a file left out (by the cap, larger
 than 400 KB, or unreadable) is counted by directory in the impact section and in the brief, since callers
-there are not searched.
+there are not searched. Call sites are kept per level up to `ARW_IMPACT_MAX_EDGES` (40; 0 = all), the
+surest first: resolved calls outside tests, then tests, then name-only matches. The sites left out are counted
+("Not listed: N call site(s) ..., K of them resolved calls").
 
 Receivers are typed where the code says so: fields, parameters and locals (`OrderService orders`,
 `var x = new T()`, Python `svc = FeeService()`, `o: Other`), `new T().m()` and `T().m()`. A call on a receiver
@@ -427,7 +429,7 @@ environment, and file names are passed as `./path` so a PR cannot turn one into 
 disables linters.
 
 **Impacted tests (opt-in).** With `ARW_RUN_IMPACTED_TESTS=on` (or `"run_impacted_tests": true` on a repository)
-the existing tests found by test impact (up to `ARW_IMPACTED_TESTS_MAX`, 10) run at the base and at the head in
+the existing tests found by test impact (up to `ARW_IMPACTED_TESTS_MAX`, 10; the others are named as not run) run at the base and at the head in
 their own worktree, grouped per toolchain and module (Maven `-Dtest=A,B`, Gradle `--tests`, pytest paths). Each
 test file gets a verdict — **newly failing** (passes on base, fails on head: broken by this change), still
 failing, fixed, passing, new test passing/failing — with the failing cases' messages. The result is frozen

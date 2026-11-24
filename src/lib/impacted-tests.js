@@ -162,7 +162,12 @@ async function runImpactedTests({ runDir, checkout, base, head, impact, repoCfg,
   // configured sandbox (fallback:false).
   runner = runner || defaultRunner(runDir, () => {}, { fallback: false, requireHostConsent: false });
   if (!enabled(repoCfg)) return null;
-  const tests = [...new Set([...impact.sources.flatMap((s) => s.tests.map((t) => t.path)), ...impact.tests_changed])].slice(0, envInt('ARW_IMPACTED_TESTS_MAX', 10));
+  // ARW_IMPACTED_TESTS_MAX bounds a run that executes PR code twice; the
+  // tests it leaves out are named in the result, not dropped silently.
+  const found = [...new Set([...impact.sources.flatMap((s) => s.tests.map((t) => t.path)), ...impact.tests_changed])];
+  const max = envInt('ARW_IMPACTED_TESTS_MAX', 10);
+  const tests = found.slice(0, max);
+  const notRun = found.slice(max);
   if (!tests.length) return { ran: [], results: [], note: 'no impacted tests found' };
   const wt = path.join(runDir, 'tests-wt');
   const logDir = ensureDir(path.join(runDir, 'impacted-tests'));
@@ -190,7 +195,7 @@ async function runImpactedTests({ runDir, checkout, base, head, impact, repoCfg,
   // they ran, and that record is frozen with the rest of the machine evidence.
   const sandbox = require('./sandbox');
   const environment = sandbox.mode() === 'bootstrap' ? require('./bootstrap').environmentSummary(require('./bootstrap').loadReviewEnvironment(runDir)) : null;
-  return { ran: ran.map(({ byTest, ...r }) => r), results, execution: sandbox.manifest(), environment };
+  return { ran: ran.map(({ byTest, ...r }) => r), results, ...(notRun.length ? { not_run: notRun, max } : {}), execution: sandbox.manifest(), environment };
 }
 
 function renderImpacted(r) {
@@ -205,6 +210,7 @@ function renderImpacted(r) {
     for (const f of (x.head && x.head.failing) || []) lines.push(`  - ${f.name}: ${String(f.message || '').replace(/\s+/g, ' ')}`);
   }
   for (const g of r.ran.filter((x) => x.ran && (x.timed_out || x.spawn_error))) lines.push(`- ${g.toolchain} at ${g.rev}: ${g.timed_out ? 'timed out' : g.spawn_error}`);
+  if (r.not_run && r.not_run.length) lines.push(`- NOT RUN: ${r.not_run.length} more impacted test file(s) beyond ARW_IMPACTED_TESTS_MAX=${r.max}: ${r.not_run.slice(0, 10).join(', ')}${r.not_run.length > 10 ? ', ...' : ''}`);
   return `${lines.join('\n')}\n`;
 }
 
