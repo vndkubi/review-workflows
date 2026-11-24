@@ -443,8 +443,8 @@ async function cmdEval(argv) {
     return 0;
   }
   if (sub === 'label') {
-    if (!args.run || !args.case || !args.finding || !args.as) throw new Error('usage: arw eval label --run <eval run> --case <id> --finding <id> --as tp|fp [--severity P2]');
-    const label = evals.labelFinding({ runId: String(args.run), caseId: String(args.case), findingId: String(args.finding), as: String(args.as), severity: args.severity, linkTo: args.to ? String(args.to) : undefined });
+    if (!args.run || !args.case || !args.finding || !args.as) throw new Error('usage: arw eval label --run <eval run> --case <id> --finding <id> --as tp|fp [--severity P2] [--to <label>] [--repeat n]');
+    const label = evals.labelFinding({ runId: String(args.run), caseId: String(args.case), findingId: String(args.finding), as: String(args.as), severity: args.severity, linkTo: args.to ? String(args.to) : undefined, repeat: args.repeat ? Number(args.repeat) : null });
     if (label.linked) {
       console.log(`linked ${args.finding} to ${label.linked}: anchor ${label.path}:${label.lines.join('-')} — re-score with: arw eval rescore ${args.run}`);
       return 0;

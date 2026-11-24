@@ -139,6 +139,38 @@ function matches(f, label) {
   return true;
 }
 
+// A person's link of a finding to a label (`arw eval label --to`) is an
+// anchor: a finding at that code meets the label on every later score.
+function hitsLabel(f, label) {
+  if ((label.anchors || []).some((a) => matches(f, { path: a.path, lines: a.lines }))) return true;
+  return matches(f, label);
+}
+
+// A finding at a missed label's code, which the label's lines or keywords
+// did not admit: a near miss. It is shown with the command that links it, and
+// recall says how far near misses reach; only a person's link makes it a hit.
+const NEAR_SLACK = 25;
+function nearMisses(findings, labels, taken) {
+  const out = {};
+  for (const l of labels) {
+    const scope = l.path ? [l.path] : l.paths || [];
+    if (!scope.length) continue;
+    for (const f of findings) {
+      if (taken.has(f.id)) continue;
+      const ev = (f.evidence || []).filter((e) => e.kind === 'code' && scope.includes(e.path));
+      if (!ev.length) continue;
+      if (l.lines && !ev.some((e) => e.start_line <= l.lines[1] + NEAR_SLACK && l.lines[0] <= e.end_line + NEAR_SLACK)) continue;
+      (out[l.id] = out[l.id] || []).push(f.id);
+    }
+  }
+  return out;
+}
+
+// Core labels: what a reviewer must catch. Low, style, documentation and
+// speculative comments are counted apart.
+const MINOR = new Set(['style', 'doc_defect', 'speculative']);
+const isCore = (l) => !MINOR.has(l.category) && l.source_severity !== 'Low';
+
 // Prose labels of one case often share identifiers (the PR's main class), so
 // a shared keyword alone does not tell them apart. A label with keywords of
 // its own needs one of them; each finding then meets only its best label.
@@ -208,7 +240,11 @@ function scoreCase(c, runDir, prices = measure.loadPrices()) {
   const { validation, shown, withdrawn } = res;
   const proseShown = assignProse(shown, c.expected || []);
   const proseWithdrawn = assignProse(withdrawn, c.expected || []);
-  const hitsOf = (list, assigned, e) => (e.approx ? list.filter((f) => (assigned[e.id] || []).includes(f.id)) : list.filter((f) => matches(f, e)));
+  const hitsOf = (list, assigned, e) => (e.approx ? list.filter((f) => (assigned[e.id] || []).includes(f.id)) : list.filter((f) => hitsLabel(f, e)));
+  const taken = new Set();
+  for (const e of c.expected || []) for (const f of hitsOf(shown, proseShown, e)) taken.add(f.id);
+  for (const e of c.not_expected || []) for (const f of shown) if (matches(f, e)) taken.add(f.id);
+  const near = nearMisses(shown, c.expected || [], taken);
   const expected = (c.expected || []).map((e) => {
     const hits = hitsOf(shown, proseShown, e);
     const best = hits.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity])[0];
@@ -216,6 +252,8 @@ function scoreCase(c, runDir, prices = measure.loadPrices()) {
       id: e.id,
       found: Boolean(best),
       by: hits.map((f) => f.id),
+      near: best ? [] : near[e.id] || [],
+      core: isCore(e),
       ...(e.approx ? { approx: true, prose: e.prose } : {}),
       severity: best ? best.severity : null,
       severity_ok: best ? !e.severity_at_least || SEVERITY_RANK[best.severity] <= SEVERITY_RANK[e.severity_at_least] : null,
@@ -250,6 +288,9 @@ function scoreCase(c, runDir, prices = measure.loadPrices()) {
     not_expected: notExpected,
     found,
     recall: ratio(found, expected.length),
+    near_found: expected.filter((e) => !e.found && e.near.length).length,
+    core_expected: expected.filter((e) => e.core).length,
+    core_found: expected.filter((e) => e.core && e.found).length,
     severity_ok: expected.filter((e) => e.severity_ok).length,
     tp,
     fp,
@@ -294,6 +335,9 @@ function aggregate(scores) {
   // but are excluded from the recall denominator.
   const scoredExpected = scored.reduce((n, s) => n + (s.scored_expected == null ? (s.expected || 0) : s.scored_expected), 0);
   const found = scored.reduce((n, s) => n + (s.found || 0), 0);
+  const nearFound = scored.reduce((n, s) => n + (s.near_found || 0), 0);
+  const coreExpected = scored.reduce((n, s) => n + (s.core_expected || 0), 0);
+  const coreFound = scored.reduce((n, s) => n + (s.core_found || 0), 0);
   const tp = sum('tp');
   const fp = sum('fp');
   const notExpected = sum('not_expected');
@@ -307,6 +351,11 @@ function aggregate(scores) {
     scored_expected: scoredExpected,
     found,
     recall: ratio(found, scoredExpected),
+    near_found: nearFound,
+    recall_upper: ratio(found + nearFound, scoredExpected),
+    core_expected: coreExpected,
+    core_found: coreFound,
+    recall_core: ratio(coreFound, coreExpected),
     severity_ok: sum('severity_ok'),
     tp,
     fp,
@@ -403,7 +452,7 @@ function renderScorecard(card) {
     `# Eval ${card.id}`,
     '',
     `- started ${card.started_at}, finished ${card.finished_at || '(running)'} · tool \`${card.tool_sha256.slice(0, 12)}\` · arw commit \`${(card.arw_commit || '?').slice(0, 12)}\` · model ${card.model || 'default'} · config ${card.config || 'per-case flags'} · repeat ${card.repeat || 1}${(card.repeat || 1) === 1 ? ' (one run per case: spread not measured)' : ''}`,
-    `- **recall ${pct(t.recall)}** (${t.found}/${t.scored_expected == null ? t.expected : t.scored_expected} scored expected defects found${t.gaps ? `; ${t.expected - (t.scored_expected == null ? t.expected : t.scored_expected)} label(s) in ${t.gaps} NO_RESULT gap(s)` : ''}, ${t.severity_ok} at the expected severity) · ${t.not_expected ? `**precision ${pct(t.precision)}** on labelled findings (${t.tp} true, ${t.fp} known false; ${t.not_expected} not_expected label(s))` : `**precision not measurable: no not_expected labels** (${t.tp} true, ${t.fp} known false)`} · ${t.unlabelled} unlabelled${t.unlabelled && t.precision_range ? ` · **precision range ${pct(t.precision_range.lo).replace('%', '')}–${pct(t.precision_range.hi)}** until they are labelled` : ''}`,
+    `- **recall ${pct(t.recall)}** (${t.found}/${t.scored_expected == null ? t.expected : t.scored_expected} scored expected defects found${t.gaps ? `; ${t.expected - (t.scored_expected == null ? t.expected : t.scored_expected)} label(s) in ${t.gaps} NO_RESULT gap(s)` : ''}, ${t.severity_ok} at the expected severity)${t.near_found ? ` · up to ${pct(t.recall_upper)} if the ${t.near_found} near miss(es) are confirmed` : ''}${t.core_expected ? ` · core labels (no Low, style, doc or speculative): ${pct(t.recall_core)} (${t.core_found}/${t.core_expected})` : ''} · ${t.not_expected ? `**precision ${pct(t.precision)}** on labelled findings (${t.tp} true, ${t.fp} known false; ${t.not_expected} not_expected label(s))` : `**precision not measurable: no not_expected labels** (${t.tp} true, ${t.fp} known false)`} · ${t.unlabelled} unlabelled${t.unlabelled && t.precision_range ? ` · **precision range ${pct(t.precision_range.lo).replace('%', '')}–${pct(t.precision_range.hi)}** until they are labelled` : ''}`,
     `- ${t.completed}/${t.cases} case(s) complete · ${t.calls} model calls · tokens in ${t.input_tokens} (cached ${t.cached_input_tokens || 0}) / out ${t.output_tokens}`,
     `- reads: ${t.reads && t.reads.calls ? `${t.reads.commands} shell commands in ${t.reads.calls} counted call(s), ${t.reads.per_call} per call` : 'not counted (receipts without command counts)'}`,
     `- cost ${t.usd == null ? `USD unknown${t.unpriced && t.unpriced.length ? ` (no price for ${t.unpriced.join(', ')})` : ''}` : `$${t.usd} · $${t.usd_per_tp == null ? '–' : t.usd_per_tp} per true positive`}${card.prices && card.prices.date ? ` · prices of ${card.prices.date}` : ''}`,
@@ -436,6 +485,13 @@ function renderScorecard(card) {
   if ((card.gaps || []).length) lines.push('', '## Gaps (NO_RESULT, not counted as misses)', '', ...card.gaps.map((g) => `- ${g.id}${g.repeat > 1 ? ` (repeat ${g.repeat})` : ''}: ${g.reason}`));
   const failed = card.cases.filter((s) => s.error);
   if (failed.length) lines.push('', '## Cases without a clean result', '', ...failed.map((s) => `- ${s.id} (exit ${s.exit_code}): ${s.error}`));
+  const nears = card.cases.flatMap((s) => ((s.details && s.details.expected) || []).filter((e) => !e.found && (e.near || []).length).map((e) => {
+    const rep = (s.repeat || 1) > 1 ? ` --repeat ${s.repeat}` : '';
+    const titles = new Map(((s.details && s.details.findings) || []).map((f) => [f.id, f.title]));
+    return [`- ${s.id}${rep ? ` (repeat ${s.repeat})` : ''} · ${e.id}${e.prose ? `: ${String(e.prose).slice(0, 140)}` : ''}`,
+      ...e.near.map((id) => `  - \`${id}\` ${titles.get(id) || ''} — if it is the same defect: \`arw eval label --run ${card.id} --case ${s.id} --finding ${id} --as tp --to ${e.id}${rep}\``)];
+  }).flat());
+  if (nears.length) lines.push('', '## Near misses', '', 'A finding at the code of a missed label that its lines or keywords did not admit. Not counted until a person links it.', '', ...nears);
   const approx = card.cases.flatMap((s) => (s.details.expected || []).filter((e) => e.approx && e.found).map((e) => `- ${s.id} · ${e.id} by \`${e.by.join(', ')}\`: ${String(e.prose || '').slice(0, 160)}`));
   if (approx.length) lines.push('', '## Prose labels matched by keywords', '', 'These came from comments without coordinates: check each finding says the same thing.', '', ...approx);
   const unl = card.cases.flatMap((s) => (s.details.findings || []).filter((f) => f.verdict === 'unlabelled').map((f) => `- ${s.id} · \`${f.id}\` [${f.severity}] ${f.title}${f.path ? ` (${f.path})` : ''}`));
@@ -879,8 +935,8 @@ function labelFinding({ runId, caseId, findingId, as, severity, linkTo, repeat =
   const c = loadCases({ only: [caseId] })[0];
   if (!c) throw new Error(`no case ${caseId}`);
   if (linkTo) {
-    const target = (c.expected || []).find((e) => e.id === linkTo && e.approx);
-    if (!target) throw new Error(`no prose label ${linkTo} in ${caseId}`);
+    const target = (c.expected || []).find((e) => e.id === linkTo);
+    if (!target) throw new Error(`no expected label ${linkTo} in ${caseId}`);
     const anchor = labelFrom(f, linkTo);
     if (!anchor) throw new Error(`${findingId} cites no code to anchor a label on`);
     target.anchors = [...(target.anchors || []), { path: anchor.path, lines: anchor.lines, from_finding: f.id, title: f.title }];
@@ -895,4 +951,4 @@ function labelFinding({ runId, caseId, findingId, as, severity, linkTo, repeat =
   return label;
 }
 
-module.exports = { runMatrix, blindExport, blindImport, pairedStats, scoredNow, CONFIGS, evalDir, casesDir, writeCase, loadCases, validateCase, scoreCase, aggregate, finalize, renderScorecard, precisionText, runEval, rescore, listRuns, loadRun, compare, caseFromRun, labelFinding, matches, assignProse, keywordsOf };
+module.exports = { runMatrix, blindExport, blindImport, pairedStats, scoredNow, CONFIGS, evalDir, casesDir, writeCase, loadCases, validateCase, scoreCase, aggregate, finalize, renderScorecard, precisionText, runEval, rescore, listRuns, loadRun, compare, caseFromRun, labelFinding, matches, hitsLabel, nearMisses, assignProse, keywordsOf };
