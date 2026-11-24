@@ -88,7 +88,7 @@ test('java: injected interfaces, XML beans, reflection, other repositories and H
   has((e) => e.repo === 'acme/web' && e.confidence === 'http' && e.from.path === 'web/src/cart.js' && e.to.symbol === 'CartController.total', 'a client of the changed endpoint');
   const text = renderImpact(out);
   assert.match(text, /Referenced by name \(configuration, reflection, HTTP clients\):/);
-  assert.match(text, /Other repositories \(acme\/web\):\n- \[acme\/web\] Nightly\.run at src\/main\/java\/com\/acme\/batch\/Nightly\.java:9 -> DefaultPricing\.price \[interface via PricingService\]/);
+  assert.match(text, /Other repositories \(acme\/web @ [0-9a-f]{12}\); quote them with "repo": "<name>":\n- \[acme\/web\] Nightly\.run at src\/main\/java\/com\/acme\/batch\/Nightly\.java:9 -> DefaultPricing\.price \[interface via PricingService\]/);
 });
 
 test('python: variable types from constructors and annotations', () => {

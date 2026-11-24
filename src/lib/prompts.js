@@ -313,6 +313,25 @@ ${callers.map((c) => `- ${impactLine(c)}`).join('\n')}
 - "not_affected": the caller does not reach the changed behaviour; evidence quotes the caller.
 - "broken": it no longer works; record a finding whose code evidence includes the caller. A caller marked SIGNATURE MISMATCH most likely does not compile: it is "broken" unless an overload elsewhere accepts the call ("cannot_determine").
 - "cannot_determine": the answer depends on code you cannot see (dispatch, configuration); say what is missing.`);
+    // Callers in related repositories are not in this checkout: their lines
+    // come here, read at the revision frozen with the context.
+    const elsewhere = callers.filter((c) => c.repo);
+    if (elsewhere.length) {
+      const related = (context.source && context.source.related) || [];
+      lines.push('CALLERS IN RELATED REPOSITORIES (read-only, at the revision frozen for this review). Quote them with "repo": "<name>" and the path relative to that repository; no "revision", no anchor:');
+      for (const c of elsewhere) {
+        const r = related.find((x) => x.name === c.repo);
+        const text = r ? git.showFile(r.dir, r.sha, c.from.path) : null;
+        if (!text) {
+          lines.push(`- ${c.id} [${c.repo}] ${c.from.path}: not readable at the frozen revision; answer "cannot_determine".`);
+          continue;
+        }
+        const all = text.split('\n');
+        const from = Math.max(1, c.from.line - 8);
+        const to = Math.min(all.length, c.from.line + 8);
+        lines.push(`- ${c.id} [${c.repo} @ ${r.sha.slice(0, 12)}] ${c.from.path} lines ${from}-${to}:`, wrapUntrusted(`${c.repo}:${c.from.path}`, all.slice(from - 1, to).map((l, i) => `${from + i}: ${l}`).join('\n')));
+      }
+    }
   } else {
     lines.push('impact_verdicts: [] (no impact checks for this unit and role).');
   }
