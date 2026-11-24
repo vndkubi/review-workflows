@@ -353,8 +353,14 @@ function prDetail(id) {
   const frozenItems = readJsonIfExists(path.join(rdir, 'inputs', 'review-items.txt'), []);
   const itemText = new Map(frozenItems.map((i) => [i.id, i]));
   out.items = (validation.items || []).map((r) => ({ ...r, text: (itemText.get(r.id) || {}).text || '', expected: (itemText.get(r.id) || {}).expected || '', label: (itemText.get(r.id) || {}).label || '' }));
+  // The brief the report opens with, as data for the Brief tab.
+  try {
+    out.brief = require('../lib/brief').loadBrief(dir, validation, run.identity);
+  } catch (err) {
+    out.brief = { error: err.message };
+  }
   const g = gateState(dir, 'REVIEW');
-  out.gate = { decision: g.decision, valid: g.valid, by: g.record && g.record.by, at: g.record && g.record.at, note: g.record && g.record.note };
+  out.gate ={ decision: g.decision, valid: g.valid, by: g.record && g.record.by, at: g.record && g.record.at, note: g.record && g.record.note };
   return out;
 }
 

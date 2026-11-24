@@ -314,11 +314,11 @@ async function renderPr(id) {
   // from the PR. The Spec tab is always there, and says when there is none.
   const intent = d.intent && d.intent.key ? d.intent : null;
   const awaiting = d.phases.ticket && d.phases.ticket.status === 'AWAITING_INTENT';
-  const tabs = ['Spec', 'Findings', 'Items', 'Viewpoints', 'Impact', 'Progress', 'Calls', 'Timeline', 'Overview', 'Plan', 'Cost', 'Logs'];
+  const tabs = ['Brief', 'Spec', 'Findings', 'Items', 'Viewpoints', 'Impact', 'Progress', 'Calls', 'Timeline', 'Overview', 'Plan', 'Cost', 'Logs'];
   // A tab picked on this run wins; a run waiting for its intent opens on Spec.
   const picked = sessionStorage.getItem(`pr-tab:${id}`);
   const saved = sessionStorage.getItem('pr-tab');
-  const current = [picked, awaiting && !job ? 'Spec' : null, saved].find((t) => t && tabs.includes(t)) || 'Findings';
+  const current = [picked, awaiting && !job ? 'Spec' : null, saved].find((t) => t && tabs.includes(t)) || (v ? 'Brief' : 'Findings');
   const body = h('div', {});
   const tabBar = h('div', { class: 'tabs', role: 'tablist' }, tabs.map((t) =>
     h('button', { class: `tab${t === current ? ' active' : ''}`, role: 'tab', onclick: () => { sessionStorage.setItem('pr-tab', t); sessionStorage.setItem(`pr-tab:${id}`, t); render(); } }, t)));
@@ -358,7 +358,8 @@ async function renderPr(id) {
   // Findings of accepted packets show while the run goes on.
   if (!v && current === 'Findings') return add(body, preliminaryView(d, id, Boolean(job)));
   if (!v) return add(body, h('p', { class: 'muted' }, 'Results appear here once the run is validated.'));
-  if (current === 'Findings') add(body, findingsView(d), refactorView(d));
+  if (current === 'Brief') add(body, briefView(d.brief));
+  else if (current === 'Findings') add(body, findingsView(d), refactorView(d));
   else if (current === 'Overview') add(body, overviewView(d));
   else if (current === 'Items') add(body, itemsView(d));
   else if (current === 'Viewpoints') add(body, viewpointsView(d));
@@ -755,6 +756,49 @@ function staticView(s) {
     h('span', { class: 'mono small' }, t.source),
     t.tests.length ? h('div', {}, t.tests.map((x) => h('div', { class: 'small' }, h('span', { class: 'mono' }, x.path), ` (${x.how})`, x.changed_in_pr ? h('span', { class: 'badge ok' }, 'changed in PR') : h('span', { class: 'badge' }, 'not changed')))) : h('span', { class: 'badge warn' }, 'no test found'),
   ]))));
+  return out;
+}
+
+// The review brief (src/lib/brief.js): what the PR does, each situation the
+// spec names as the reviewers found the code, who else is affected, what a
+// person decides, and the reading order. Every line shows its source id.
+function briefView(b) {
+  if (!b) return [h('p', { class: 'muted' }, 'No brief: the run has no validation yet.')];
+  if (b.error) return [h('div', { class: 'notice' }, `The brief could not be built: ${b.error}`)];
+  const src = (s) => h('span', { class: 'mono small muted' }, `${s} `);
+  const list = (rows) => h('ul', {}, rows.map((r) => h('li', {}, ...r)));
+  const MARK = { pass: ['ok', 'pass'], fail: ['bad', 'fail'], cannot_determine: ['warn', 'undecided'], not_graded: ['warn', 'not checked'], not_applicable: ['', 'n/a'] };
+  const mark = (r) => { const [cls, text] = MARK[r] || ['', r]; return h('span', { class: `badge ${cls}` }, text); };
+  const v = b.verdict;
+  const out = [
+    h('h2', {}, 'What this PR does'),
+    list([[src('intent'), b.intent.text], ...b.purpose.map((p) => [src(p.source), p.text, p.findings && p.findings.length ? ` (${p.findings.join(', ')})` : ''])]),
+  ];
+  if (b.parts.length) out.push(h('h2', {}, 'Parts of the change'), list(b.parts.map((p) => [src(p.source), p.text, ` — ${p.files} file(s) `, p.checked ? null : h('span', { class: 'badge warn' }, 'not checked')])));
+  out.push(h('h2', {}, 'Situations the spec names, as reviewed'));
+  if (!b.behaviour.rows.length && !b.behaviour.passed.length) {
+    out.push(h('p', { class: 'muted' }, 'No review items: the code was reviewed against the checklist and the reviewers\' judgement only.'));
+  } else {
+    if (b.behaviour.rows.length) out.push(table(['Situation', 'Spec expects', 'Code at head (reviewers)', 'Result'], b.behaviour.rows.map((r) => [
+      h('span', {}, src(r.source), r.situation), r.expected, r.head == null ? h('span', { class: 'muted' }, 'no verdict') : r.head, mark(r.result),
+    ])));
+    if (b.behaviour.passed.length) out.push(h('p', {}, src(b.behaviour.passed.join(', ')), `${b.behaviour.passed.length} situations behave as the spec expects.`));
+    out.push(h('p', { class: 'small muted' }, 'Behaviour at base is not recorded: this compares the code at head with the spec, not before with after.'));
+  }
+  out.push(h('h2', {}, 'Who else is affected'), list([
+    ...(Object.keys(b.affected.counts).length ? [[src('impact'), `callers of the changed code: ${Object.entries(b.affected.counts).map(([k, n]) => `${k} ${n}`).join(' · ')}`]] : []),
+    ...b.affected.attention.map((c) => [src(c.source), `${c.where} ${c.symbol} — `, h('strong', {}, c.verdict), c.note ? `: ${c.note}` : '']),
+    [src('impact'), b.affected.outside],
+  ]));
+  if (b.decisions.length) out.push(h('h2', {}, 'Needs your decision'), list(b.decisions.map((d) => [src(d.source), d.text])));
+  out.push(h('h2', {}, 'Verdict'), h('p', {}, 'Runtime recommendation ', statusBadge(v.recommendation), ` (${v.complete ? 'complete' : 'incomplete'}), not an approval.`), list([
+    ...v.blocking.map((f) => [src(f.source), h('span', { class: 'badge bad' }, f.severity), ` ${f.text}`, f.where ? ` — ${f.where}` : '', f.against ? ` · against ${f.against}` : '']),
+    ...(v.blocking.length ? [] : [[src('findings'), 'no open P1/P2 finding.']]),
+    [src('findings'), `also open: P3 ${v.others.P3} · P4 ${v.others.P4} · suggestions ${v.others.suggestions}`],
+    ...(v.undecided.length ? [[src(v.undecided.join(', ')), `${v.undecided.length} situation(s) the code does not meet or nobody decided: see the table above.`]] : []),
+    ...v.unchecked.map((u) => [src(u.source), 'not checked: ', u.text]),
+  ]));
+  if (b.reading.length) out.push(h('h2', {}, 'Reading order'), list(b.reading.map((r) => [src(r.group), h('span', { class: 'mono' }, r.path), r.findings.length ? ` · ${r.findings.join(', ')}` : ''])));
   return out;
 }
 

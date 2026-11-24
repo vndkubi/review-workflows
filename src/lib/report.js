@@ -9,6 +9,7 @@ const { SEVERITY_RANK } = require('./cluster');
 const memory = require('./memory');
 const { effectiveAliases } = require('./outcome');
 const { loadRefactor } = require('./refactor');
+const brief = require('./brief');
 
 const STATE_TEXT = {
   stands: 'red-team defense failed — finding stands',
@@ -165,6 +166,8 @@ function renderReport(runDir, validation, identity) {
   if (co && !co.skipped) out.push(`- incremental: ${co.packets.length} packet(s) and ${co.rebuttals} rebuttal(s) carried over unchanged from context \`${co.from_context_id}\` (re-validated here)`);
   else if (co) out.push(`- full re-review: ${co.skipped}`);
   out.push(`- review calls ${u.calls} (${u.repair_calls} repairs) · tokens in ${u.input_tokens} (cached ${u.cached_input_tokens}) / out ${u.output_tokens} · planning calls ${p.calls}, tokens in ${p.input_tokens} / out ${p.output_tokens}`);
+  // What a person reads first: the brief, assembled from the same artifacts.
+  out.push('', brief.renderBrief(brief.loadBrief(runDir, validation, identity)), '', '---', '', '# Details');
   if (validation.warnings && validation.warnings.length) {
     out.push('', `## ⚠ Instruction-like text aimed at AI reviewers (${validation.warnings.length})`, '', 'The PR content contains text that tries to steer an automated reviewer. It was treated as data; check whether it is intentional.', '');
     out.push(...validation.warnings.map((w) => `- \`${w.where}\` [${w.kind}] ${w.text}`));
