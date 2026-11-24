@@ -537,6 +537,11 @@ function validatePacket(packet, env) {
     if (v.verdict === 'fail' && !packet.findings.some((f) => f.items.includes(v.item) || (f.authority.kind === 'requirement' && f.authority.id === v.item))) {
       errors.push(`${at}: "fail" for ${v.item} needs a finding that lists "${v.item}" in its items`);
     }
+    // What the code did for the same situation at base: shown in base code,
+    // unless the behaviour is new in this change.
+    if (v.before && v.before.status !== 'new' && !v.evidence.some((ev) => ev.kind === 'code' && ev.revision === 'base')) {
+      errors.push(`${at}.before: "${v.before.status}" needs a code quote at base in evidence (an entry with "revision": "base", quoted verbatim from the base commit); if the behaviour did not exist at base, use "new"`);
+    }
     v.evidence.forEach((ev, j) => errors.push(...validateEvidence(ev, sources, `${at}.evidence[${j}]`)));
   });
   for (const [id, n] of verdictItems) if (n > 1) errors.push(`$.item_verdicts: ${id} appears ${n} times`);

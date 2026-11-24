@@ -779,11 +779,13 @@ function briefView(b) {
   if (!b.behaviour.rows.length && !b.behaviour.passed.length) {
     out.push(h('p', { class: 'muted' }, 'No review items: the code was reviewed against the checklist and the reviewers\' judgement only.'));
   } else {
-    if (b.behaviour.rows.length) out.push(table(['Situation', 'Spec expects', 'Code at head (reviewers)', 'Result'], b.behaviour.rows.map((r) => [
-      h('span', {}, src(r.source), r.situation), r.expected, r.head == null ? h('span', { class: 'muted' }, 'no verdict') : r.head, mark(r.result),
+    const base = b.behaviour.base_recorded;
+    const beforeCell = (r) => (r.before ? h('span', {}, h('span', { class: 'badge' }, r.before.status), ` ${r.before.text}`) : h('span', { class: 'muted' }, 'not recorded'));
+    if (b.behaviour.rows.length) out.push(table(['Situation', ...(base ? ['Before (base)'] : []), 'Spec expects', 'Code at head (reviewers)', 'Result'], b.behaviour.rows.map((r) => [
+      h('span', {}, src(r.source), r.situation), ...(base ? [beforeCell(r)] : []), r.expected, r.head == null ? h('span', { class: 'muted' }, 'no verdict') : r.head, mark(r.result),
     ])));
     if (b.behaviour.passed.length) out.push(h('p', {}, src(b.behaviour.passed.join(', ')), `${b.behaviour.passed.length} situations behave as the spec expects.`));
-    out.push(h('p', { class: 'small muted' }, 'Behaviour at base is not recorded: this compares the code at head with the spec, not before with after.'));
+    if (!base) out.push(h('p', { class: 'small muted' }, 'Behaviour at base is not recorded: this compares the code at head with the spec, not before with after.'));
   }
   out.push(h('h2', {}, 'Who else is affected'), list([
     ...(Object.keys(b.affected.counts).length ? [[src('impact'), `callers of the changed code: ${Object.entries(b.affected.counts).map(([k, n]) => `${k} ${n}`).join(' · ')}`]] : []),

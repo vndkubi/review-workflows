@@ -169,7 +169,9 @@ function verdictsFor(unitItems) {
       return { item: item.id, verdict: 'cannot_determine', evidence: [code(item.feature === 'F1' ? ORDER : FEES, item.feature === 'F1' ? 'return BigDecimal.ZERO;' : 'return 0')], note: 'no validation: these inputs fall through to the default result' };
     }
     if (item.rule === 'R1' || (item.kind === 'boundary' && item.expected.includes('1000000'))) {
-      return { item: item.id, verdict: 'fail', evidence: [code(ORDER, IF_LINE)], note: 'strict > excludes exactly 1,000,000' };
+      // Before -> after: at base discount() returned zero for everyone.
+      const base = evidenceAt(repo.dir, repo.base, ORDER, 'return BigDecimal.ZERO;', { revision: 'base' });
+      return { item: item.id, verdict: 'fail', evidence: [code(ORDER, IF_LINE), base], note: 'strict > excludes exactly 1,000,000', before: { status: 'changed', text: 'every order got no discount' } };
     }
     const ev = item.feature === 'F1' ? code(ORDER, 'return BigDecimal.ZERO;') : code(FEES, 'if days > 30:');
     return { item: item.id, verdict: 'pass', evidence: [ev], note: 'scenario values produce the expected result' };
@@ -378,6 +380,10 @@ test('ticket pipeline -> PR review, end to end', async (t) => {
     assert.equal(result((i) => i.kind === 'boundary' && i.feature === 'F2'), 'pass');
     assert.ok(validation.items.filter((r) => r.kind === 'gap').every((r) => r.result === 'cannot_determine'));
     assert.equal(validation.items.length, s.review_items.length, 'every review item is graded');
+    // What the code did at base reaches the validation and the brief.
+    const r1 = validation.items.find((r) => r.id === s.review_items.find((i) => i.rule === 'R1').id);
+    assert.deepEqual(r1.verdicts.find((v) => v.before).before, { status: 'changed', text: 'every order got no discount' });
+    assert.match(fs.readFileSync(path.join(runDir, 'report.md'), 'utf8'), /\| Before \(base\) \|[\s\S]*changed: every order got no discount/);
 
     const state = Object.fromEntries(validation.findings.map((f) => [f.id, [f.state, f.rebuttal_from, f.votes]]));
     assert.deepEqual(state['B1-business-F1'], ['stands', 'B1-business-F1', 2]);

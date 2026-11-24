@@ -451,6 +451,26 @@
         },
         "note": {
           "$ref": "#/$defs/text"
+        },
+        "before": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "text"
+          ],
+          "properties": {
+            "status": {
+              "enum": [
+                "changed",
+                "unchanged",
+                "new"
+              ]
+            },
+            "text": {
+              "$ref": "#/$defs/text"
+            }
+          }
         }
       }
     },

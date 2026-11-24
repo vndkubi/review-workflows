@@ -90,6 +90,12 @@ function headOf(verdicts) {
   return verdicts.map((v) => `${v.role}: ${v.verdict} — ${v.note}`).join('; ');
 }
 
+// What the code did at base for the same situation, when a reviewer said so.
+function beforeOf(verdicts) {
+  const v = (verdicts || []).find((x) => x.before);
+  return v ? v.before : null;
+}
+
 function unitFiles(unit) {
   const files = unit.files || [];
   return files.length > 3 ? `${files.slice(0, 3).join(', ')} +${files.length - 3}` : files.join(', ');
@@ -141,14 +147,14 @@ function buildBrief({ identity, validation, plan, items = [], specMd = '', findi
   const rank = (r) => (RESULT_ORDER.includes(r) ? RESULT_ORDER.indexOf(r) : RESULT_ORDER.length - 1);
   const allRows = (validation.items || []).map((r) => {
     const item = itemById.get(r.id) || { id: r.id, text: r.id };
-    return { source: r.id, situation: situationOf(item, scenarios), expected: item.expected || '', head: headOf(r.verdicts), result: r.result, label: item.label || null };
+    return { source: r.id, situation: situationOf(item, scenarios), expected: item.expected || '', head: headOf(r.verdicts), before: beforeOf(r.verdicts), result: r.result, label: item.label || null };
   }).sort((a, b) => rank(a.result) - rank(b.result) || a.source.localeCompare(b.source, undefined, { numeric: true }));
   const collapse = allRows.length > MAX_ROWS;
   const behaviour = {
     rows: collapse ? allRows.filter((r) => r.result !== 'pass') : allRows,
     passed: collapse ? allRows.filter((r) => r.result === 'pass').map((r) => r.source) : [],
     tally: allRows.reduce((t, r) => ({ ...t, [r.result]: (t[r.result] || 0) + 1 }), {}),
-    base_recorded: false,
+    base_recorded: allRows.some((r) => r.before),
   };
 
   const impacts = validation.impacts || [];
@@ -233,11 +239,15 @@ function renderBrief(b) {
     out.push('_No review items: the code was reviewed against the checklist and the reviewers\' judgement only._');
   } else {
     if (b.behaviour.rows.length) {
-      out.push('| Situation | Spec expects | Code at head (reviewers) | Result |', '|---|---|---|---|');
-      for (const r of b.behaviour.rows) out.push(`| \`${r.source}\` ${cell(r.situation, 160)} | ${cell(r.expected)} | ${r.head == null ? '_no verdict_' : cell(r.head)} | ${MARK[r.result] || r.result} |`);
+      const base = b.behaviour.base_recorded;
+      out.push(`| Situation |${base ? ' Before (base) |' : ''} Spec expects | Code at head (reviewers) | Result |`, `|---|${base ? '---|' : ''}---|---|---|`);
+      for (const r of b.behaviour.rows) {
+        const before = base ? ` ${r.before ? cell(`${r.before.status}: ${r.before.text}`) : '_not recorded_'} |` : '';
+        out.push(`| \`${r.source}\` ${cell(r.situation, 160)} |${before} ${cell(r.expected)} | ${r.head == null ? '_no verdict_' : cell(r.head)} | ${MARK[r.result] || r.result} |`);
+      }
     }
     if (b.behaviour.passed.length) out.push('', `- \`${b.behaviour.passed.join(', ')}\` ${b.behaviour.passed.length} situations behave as the spec expects.`);
-    out.push('', '_Behaviour at base is not recorded: this compares the code at head with the spec, not before with after._');
+    if (!b.behaviour.base_recorded) out.push('', '_Behaviour at base is not recorded: this compares the code at head with the spec, not before with after._');
   }
   out.push('', '**Who else is affected**', '');
   const counts = Object.entries(b.affected.counts);

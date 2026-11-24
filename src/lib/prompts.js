@@ -287,7 +287,8 @@ The lines above are the reviewed head, numbered with their real line numbers (ne
 - To cite a review item, quote ONE line of input "review-items" (its "text" line), never a multi-line JSON block.
 - "not_applicable": the diff does not touch this item; say why.
 - "cannot_determine": missing context — an honest gap.
-- gap and contradiction items have no expected result: use "cannot_determine" and describe in note what the code actually does for those inputs, with code evidence.`
+- gap and contradiction items have no expected result: use "cannot_determine" and describe in note what the code actually does for those inputs, with code evidence.
+- BEFORE: for "pass" and "fail", also say what the code did for the same scenario values at the base commit, so a person sees before -> after: "before": {"status": "changed" | "unchanged" | "new", "text": one sentence}. "changed" and "unchanged" need one evidence entry quoted verbatim from the base commit with "revision": "base" (no anchor: anchors point at head). "new": the behaviour did not exist at base (new file, method or branch); no base quote needed.`
         : `item_verdicts may stay []; if you give any, only for ${itemIds.join(', ')}.`,
     );
   } else {

@@ -94,7 +94,7 @@ function computeOutcome({ packets, jobs, clusters, rebuttals, items, repro = new
   for (const { unit_id, role, packet } of packets) {
     for (const v of packet.item_verdicts) {
       if (!verdicts.has(v.item)) verdicts.set(v.item, []);
-      verdicts.get(v.item).push({ unit_id, role, verdict: v.verdict, note: v.note });
+      verdicts.get(v.item).push({ unit_id, role, verdict: v.verdict, note: v.note, ...(v.before ? { before: v.before } : {}) });
     }
   }
   // Risky items with an expected result must be decided; gaps and
