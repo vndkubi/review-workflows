@@ -23,6 +23,16 @@ const COMPARISON = /\s(<|>|<=|>=)\s|compareTo\(|is(Before|After)\(|\bBETWEEN\b|\
 const MONEY = /BigDecimal|\bDecimal\(|\bdouble\b|\bfloat\b|RoundingMode|setScale\(|\bround\(|\b(amount|price|money|currency|balance|fee|tax|total)\b/i;
 const TIME = /Local(Date|DateTime|Time)|ZonedDateTime|OffsetDateTime|\bInstant\b|java\.util\.Date|\bCalendar\b|ZoneId|TimeZone|\bdatetime\b|\btimezone\b|\btimestamp\b|\butcnow\b/;
 
+// Implicit requirements (run 20261123-230429Z-repeat3b-luna-multi: missed in
+// every pass because no viewpoint asked about them).
+const MAY_BE_MISSING = /\b[A-Z][\w$]*(<[^;=]*>)?\s+[\w$]+\s*=\s*[\w$.]*(get|find|lookup|resolve|load|fetch|search|first)\w*\(|\.(get|getOrDefault|first|firstOrNull|orElse|orElseGet|find\w*|lookup)\(|\.objects\.(get|filter)\(|\.(first|one_or_none|scalar)\(\)|Optional\b|\bOptional\[|\bNone\b|\bnull\b/;
+const CONTRACT = /@Override\b|\b(extends|implements)\s+\w|\bclass\s+\w+\s*\(\s*[\w.]*(Endpoint|View|ViewSet|APIView|Resource|Handler|Serializer|Validator|Base\w*|Abstract\w*)\s*[,)]|\breturn\s+\w*(Http)?Response\w*\(|\braise\s+\w+(Error|Exception)\b|\bthrow\s+new\b/;
+const KEYS = /\[\s*['"][\w.:-]+['"]\s*\]|\.get\(\s*['"][\w.:-]+['"]|\bvalidated_data\b|\binitial_data\b|\.(getString|getInt|getLong|getBoolean|getJSONObject|put|putIfAbsent|header|getHeader|getParameter)\(\s*"|@JsonProperty\(|@SerializedName\(|@Column\(\s*name|@RequestParam\(|@PathVariable\(|\bsource\s*=\s*['"]/;
+const ORDER = /\bzip\(|\.values\(\)|\.keys\(\)|\.items\(\)|\b(Hash|Concurrent)(Map|Set)\b|\bset\(|\bfrozenset\(|\.parallel(Stream)?\(|Collectors\.(toMap|toSet|groupingBy)|get_multi|in_bulk|bulk_get|findAllById|\.findAll\(|ORDER BY|order_by\(|\basyncio\.gather\b|Promise\.all\b|invokeAll\(/i;
+const FLAG = /\bfeatures?\.(has|includes|enabled|is_enabled)\b|isFeatureEnabled|is_feature_enabled|FeatureFlag|\bFeature\.\w|feature_flag|\bflags?\.\w+|\bFEATURE_\w+|@ConditionalOnProperty|@Profile\(|LaunchDarkly|Unleash|options\.get\(\s*['"]/;
+const REGEX = /Pattern\.compile\(|\.(matches|replaceAll|replaceFirst|split)\(\s*"|\bre\.(compile|match|search|fullmatch|sub|subn|split|findall|finditer)\(|new RegExp\(|\/[^/\s][^/]*\/[gimsuy]*\.(test|exec)\(|\.(match|matchAll|replace|replaceAll|search|split)\(\s*\/[^/]/;
+const TEST_VALUE = /\bassert|\bexpect\(|\bshould\b|assertEquals|assertThat|"\w+"\s*:\s*[-\w."']+|\b\w+\s*=\s*[-\d.]+\b/;
+
 // Each rule: id, and when it applies to one changed file. `lines` and `all`
 // are matched against the file's added and removed lines.
 const RULES = [
@@ -41,6 +51,12 @@ const RULES = [
   { id: 'CK-BZ-2', source: true, lines: [MONEY] },
   { id: 'CK-BZ-3', source: true, lines: [TIME] },
   { id: 'CK-BZ-4', source: true, lines: [ENTRY] },
+  { id: 'CK-NL-1', source: true, lines: [MAY_BE_MISSING] },
+  { id: 'CK-CP-5', source: true, lines: [CONTRACT, ENTRY] },
+  { id: 'CK-DK-1', source: true, lines: [KEYS] },
+  { id: 'CK-OR-1', source: true, lines: [ORDER] },
+  { id: 'CK-FL-1', source: true, lines: [FLAG] },
+  { id: 'CK-PF-1', source: true, lines: [REGEX] },
   { id: 'CK-CP-1', paths: /\.(proto|avsc|graphql|wsdl|xsd)$|openapi|swagger/i, removed: [/\bpublic\s|@\w+Mapping|@JsonProperty|@Column|@Table|\bdef\s+\w+\s*\(/] },
   { id: 'CK-CP-2', paths: /(^|\/)(migrations?|flyway|liquibase|changelog|alembic)\/|\.sql$/i, lines: [/\b(ALTER|DROP)\s+TABLE\b|\bADD\s+COLUMN\b|\bRENAME\b/i] },
   { id: 'CK-CP-3', paths: /\.(properties|ya?ml|ini|cfg|toml|env)$/, lines: [/@Value\(|@ConfigurationProperties|getProperty\(|os\.environ|\bgetenv\(/] },
@@ -52,6 +68,7 @@ const RULES = [
   { id: 'CK-TS-1', source: true, always: true },
   { id: 'CK-TS-2', test: true, removedAny: true, lines: [/@(Disabled|Ignore)\b|@pytest\.mark\.(skip|xfail)|\.skip\(|\bxit\(|\bxdescribe\(/] },
   { id: 'CK-TS-3', source: true, lines: [COMPARISON] },
+  { id: 'CK-TS-4', test: true, lines: [TEST_VALUE] },
   { id: 'CK-PY-1', lang: PYTHON, lines: [/\bdef\s+\w+\(.*=\s*(\[\]|\{\}|set\(\))|\blambda\b/] },
   { id: 'CK-PY-2', lang: PYTHON, lines: [/\bdatetime\b|\butcnow\b|\.now\(/] },
   { id: 'CK-PY-3', lang: PYTHON, lines: [/\.objects\.|session\.query\(|\.query\(|\bselect\(/] },

@@ -27,6 +27,14 @@ Replace or extend this file with your team's own checklist; ids must stay unique
 - CK-BZ-3: Date and time logic states its time zone; comparisons use the same zone and precision.
 - CK-BZ-4: Null, empty and missing inputs have defined behaviour on every public entry point.
 
+## Implicit requirements (what must stay true although nobody wrote it down)
+- CK-NL-1: A value that can be null, empty or missing (a lookup, find, get, first, optional config or map entry) is checked before it is dereferenced or passed on.
+- CK-CP-5: A changed handler, endpoint or overriding method keeps the contract its framework or parent type expects: return and response type, raised errors, required overrides and annotations.
+- CK-DK-1: Keys and field names written and read for the same dict, payload, serializer, header or column match in spelling and type.
+- CK-OR-1: The code does not rely on an order the source does not guarantee: map, dict or set iteration, zip of two collections, results of a bulk or parallel fetch, a query without ORDER BY.
+- CK-FL-1: Feature flags and guard conditions along one flow use the same flag, version and polarity, so no step of the flow is skipped or left on.
+- CK-PF-1: A regular expression or a loop over input in the change runs in time bounded by the input size: no nested or overlapping quantifiers, no quadratic scan of request data.
+
 ## Compatibility
 - CK-CP-1: Public API, message and database contract changes are backward compatible or versioned.
 - CK-CP-2: Database migrations are safe for existing data and for the old code version during rollout.
@@ -42,6 +50,7 @@ Replace or extend this file with your team's own checklist; ids must stay unique
 - CK-TS-1: Changed behaviour has a test that fails without the change.
 - CK-TS-2: Tests are not weakened, skipped or deleted to make the change pass.
 - CK-TS-3: Boundary and negative cases of the changed rule are tested.
+- CK-TS-4: Constants, inputs and expected values in changed tests match the fixture data and the scenario the test names.
 
 ## Python specifics
 - CK-PY-1: No mutable default arguments; no late-binding closures over loop variables.
