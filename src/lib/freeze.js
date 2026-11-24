@@ -104,7 +104,7 @@ function revisionDir(runDir, contextId) {
 // inputs: [{ id, kind, content }] — content is written to inputs/<id>.txt.
 // project: the reviewed repository (owner/name), whose project policy is
 // frozen with the shared one.
-function freezeContext({ runDir, checkout, base, head, changed, reviewable, patch, review, inputs, project = null }) {
+function freezeContext({ runDir, checkout, base, head, changed, reviewable, patch, review, inputs, project = null, related = [] }) {
   if (!git.isClean(checkout)) throw new Error(`checkout ${checkout} has uncommitted or untracked changes`);
   const actualHead = git.revParse(checkout, 'HEAD');
   if (actualHead !== head) throw new Error(`checkout HEAD ${actualHead} != frozen head ${head}`);
@@ -127,6 +127,9 @@ function freezeContext({ runDir, checkout, base, head, changed, reviewable, patc
       patch_sha256: sha256(patch),
       changed_files: changed,
       reviewable,
+      // Related repositories read at one revision each (related.js); a quote
+      // from one of them is checked at this sha.
+      ...(related.length ? { related: related.map((r) => ({ name: r.name, dir: path.resolve(r.dir), sha: r.sha })) } : {}),
     },
     plan_sha256: planDigest(review),
     tool_sha256: toolDigest(),

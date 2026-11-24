@@ -162,7 +162,7 @@ function buildBrief({ identity, validation, plan, items = [], specMd = '', findi
   for (const c of impacts) counts[c.verdict] = (counts[c.verdict] || 0) + 1;
   const affected = {
     counts,
-    attention: impacts.filter((c) => ATTENTION.has(c.verdict)).map((c) => ({ source: c.caller, where: `${c.from.path}:${c.from.line}`, symbol: c.from.symbol, verdict: c.verdict, note: c.note || '' })),
+    attention: impacts.filter((c) => ATTENTION.has(c.verdict)).map((c) => ({ source: c.caller, where: `${c.repo ? `[${c.repo}] ` : ''}${c.from.path}:${c.from.line}`, symbol: c.from.symbol, verdict: c.verdict, note: c.note || '' })),
     outside: related.length
       ? `other repositories searched for callers and clients: ${related.join(', ')}`
       : 'no related repositories are configured: callers and clients outside this repository (BFF, mobile, other services) are unknown',
@@ -301,7 +301,7 @@ function loadBrief(runDir, validation, identity) {
   }
   const synthesis = validation.synthesis && validation.synthesis.valid ? readJsonIfExists(path.join(dir, 'synthesis.json')) : null;
   const impact = ((readJsonIfExists(path.join(runDir, 'static.json'), {}) || {}).impact) || {};
-  const related = (impact.related || []).map((r) => (typeof r === 'string' ? r : r.name)).filter(Boolean);
+  const related = (impact.related || []).map((r) => (typeof r === 'string' ? r : r.name && `${r.name}${r.sha ? ` @ ${r.sha.slice(0, 12)}` : ''}`)).filter(Boolean);
   return buildBrief({ identity, validation, plan: planFile ? planFile.plan : null, items, specMd: input('spec'), findings, synthesis, related, impactIndex: impact.index || null });
 }
 

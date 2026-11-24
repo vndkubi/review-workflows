@@ -197,8 +197,9 @@ test('strict output schema: every property required, optional ones nullable; nul
   const s = outputSchema('review', 'rebuttal');
   assert.equal(s.type, 'object');
   const ev = s.$defs.evidence;
-  assert.deepEqual(ev.required.sort(), ['end_line', 'kind', 'path', 'quote', 'revision', 'sha256', 'start_line']);
+  assert.deepEqual(ev.required.sort(), ['end_line', 'kind', 'path', 'quote', 'repo', 'revision', 'sha256', 'start_line']);
   assert.deepEqual(ev.properties.revision.anyOf[1], { type: 'null' });
+  assert.deepEqual(ev.properties.repo.anyOf[1], { type: 'null' }, 'a related repository is optional');
   // Strict mode rejects a const/enum leaf without an explicit type (seen live).
   assert.equal(outputSchema('review', 'packet').properties.schema_version.type, 'string');
   assert.equal(s.properties.verdict.type, 'string');

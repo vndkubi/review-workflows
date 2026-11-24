@@ -2,8 +2,9 @@
 // Impact as required coverage. In a large legacy codebase the defect is often
 // in a caller the diff never shows. The runtime, not the model, picks which
 // callers a unit must answer for: every direct call site the impact index
-// found for a changed declaration the unit owns (name-only matches and other
-// repositories excepted). Each gets one verdict, read at the caller itself.
+// found for a changed declaration the unit owns (name-only matches excepted;
+// a resolvable caller in a related repository is asked too, read at its
+// frozen revision). Each gets one verdict, read at the caller itself.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { makeRepo } = require('./helpers');
@@ -38,12 +39,15 @@ test('assignImpacts: direct, resolvable, non-test callers go to the unit owning 
   ];
   assignImpacts(units, IMPACT);
   assert.deepEqual(units.map((u) => [u.id, (u.impacts || []).map((c) => `${c.id} ${c.from.path}:${c.from.line}`)]), [
-    ['B1', [`C1 ${CONTROLLER}:9`, 'C2 src/main/resources/beans.xml:12']],
-    ['T1', ['C3 billing/run.py:5']],
+    ['B1', [`C1 ${CONTROLLER}:9`, 'C2 app.ts:4', 'C3 src/main/resources/beans.xml:12']],
+    ['T1', ['C4 billing/run.py:5']],
     ['S1', []],
     ['V0', []],
   ]);
   assert.equal(impactLine(units[0].impacts[0]), `C1 CheckoutController.quote at ${CONTROLLER}:9 -> OrderService.discount [ast]`);
+  // The client in the related repository carries its repository.
+  assert.equal(units[0].impacts[1].repo, 'front');
+  assert.equal(impactLine(units[0].impacts[1]), 'C2 (http client) at [front] app.ts:4 -> OrderService.discount [http]');
   // A run without an impact index (or one that failed) assigns nothing.
   assignImpacts(units, null);
   assert.deepEqual(units.map((u) => u.impacts), [[], [], [], []]);

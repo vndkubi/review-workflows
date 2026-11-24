@@ -529,8 +529,11 @@ function readIndex(cwd, rel) {
 const dirOf = (rel) => (rel.includes('/') ? rel.split('/').slice(0, 2).join('/').replace(/\/[^/]*\.\w+$/, '') : '.');
 
 // Index the source files of a checkout and account for every one left out.
-function indexAll(cwd, env = process.env) {
-  const all = sourceFiles(cwd);
+// files/read: another file list and reader, e.g. a related repository read
+// at its pinned revision.
+function indexAll(cwd, env = process.env, { files = null, read = null } = {}) {
+  const all = files || sourceFiles(cwd);
+  const readOne = read || ((rel) => readIndex(cwd, rel));
   const max = maxFiles(env);
   const indexes = [];
   const skipped = { count: 0, cap: 0, too_large: 0, unreadable: 0, by_dir: [] };
@@ -543,7 +546,7 @@ function indexAll(cwd, env = process.env) {
   };
   all.forEach((rel, i) => {
     if (i >= max) return skip(rel, 'cap');
-    const { index, reason } = readIndex(cwd, rel);
+    const { index, reason } = readOne(rel);
     if (index) indexes.push(index);
     else skip(rel, reason);
   });
@@ -648,11 +651,23 @@ function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
   // clients of changed REST endpoints (also in this repository's non-source
   // files, such as a front end).
   const scannedRepos = [];
+  // Each related repository is read at its frozen revision (related.js), not
+  // at whatever its working tree holds.
+  const shaOf = (r) => r.sha || String(git.git(r.dir, ['rev-parse', 'HEAD'], { allowFail: true }) || '').trim();
   for (const r of related) {
     if (!r || !r.dir || !fs.existsSync(r.dir)) continue;
-    const done = indexAll(r.dir);
+    const sha = shaOf(r);
+    const done = indexAll(r.dir, process.env, {
+      files: require('./related').filesAt(r.dir, sha),
+      read: (f) => {
+        const text = git.showFile(r.dir, sha, f);
+        if (text == null) return { index: null, reason: 'unreadable' };
+        if (Buffer.byteLength(text) > MAX_FILE_BYTES) return { index: null, reason: 'too_large' };
+        return { index: indexFile(f, text), reason: null };
+      },
+    });
     const other = done.indexes;
-    scannedRepos.push({ name: r.name, files: other.length, ...(done.index.skipped.count ? { not_indexed: done.index.skipped.count, note: skippedText(done.index, done.max) } : {}) });
+    scannedRepos.push({ name: r.name, sha, files: other.length, ...(done.index.skipped.count ? { not_indexed: done.index.skipped.count, note: skippedText(done.index, done.max) } : {}) });
     const h = hierarchyOf([...indexes, ...other]);
     for (const target of changed) {
       // Across repositories only resolvable calls count: name-only is noise there.
@@ -672,8 +687,11 @@ function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
       const literal = endpoint.split(/[{:<]/)[0].replace(/\/$/, '');
       if (literal.length < 4) continue;
       for (const r of [{ name: null, dir: cwd }, ...related.filter((x) => x && x.dir && fs.existsSync(x.dir))]) {
-        const hits = String(git.git(r.dir, ['grep', '-n', '-F', literal], { allowFail: true }) || '').split('\n').filter(Boolean).slice(0, 15);
-        for (const l of hits) {
+        // A related repository is searched at its frozen revision ("<sha>:path:line:text").
+        const sha = r.name === null ? null : shaOf(r);
+        const hits = String(git.git(r.dir, ['grep', '-n', '-F', literal, ...(sha ? [sha] : [])], { allowFail: true }) || '').split('\n').filter(Boolean).slice(0, 15);
+        for (const raw of hits) {
+          const l = sha && raw.startsWith(`${sha}:`) ? raw.slice(sha.length + 1) : raw;
           const m = /^(.*?):(\d+):(.*)$/.exec(l);
           if (!m || (r.name === null && m[1] === target.path)) continue;
           if (r.name === null && /(^|\/)(src\/main\/java|.*\.py$)/.test(m[1]) && /Mapping|\.route|\.get\(|\.post\(/.test(m[3])) continue; // another handler, not a client
@@ -727,8 +745,9 @@ function renderImpact(r) {
   const named = r.edges.filter((e) => !e.repo && byName.has(e.confidence));
   if (named.length) lines.push('Referenced by name (configuration, reflection, HTTP clients):', ...named.map(fmt));
   const other = r.edges.filter((e) => e.repo);
-  if (other.length) lines.push(`Other repositories (${(r.related || []).map((x) => x.name).join(', ')}):`, ...other.map(fmt));
-  else if (r.related && r.related.length) lines.push(`Other repositories searched (${r.related.map((x) => x.name).join(', ')}): no callers or clients found.`);
+  const named2 = (x) => `${x.name}${x.sha ? ` @ ${x.sha.slice(0, 12)}` : ''}`;
+  if (other.length) lines.push(`Other repositories (${(r.related || []).map(named2).join(', ')}); quote them with "repo": "<name>":`, ...other.map(fmt));
+  else if (r.related && r.related.length) lines.push(`Other repositories searched (${r.related.map(named2).join(', ')}): no callers or clients found.`);
   if (!r.edges.length) lines.push('No call sites found (callers may live in repositories not configured as related).');
   if (r.truncated) lines.push(r.dropped_edges != null ? `Not listed: ${r.dropped_edges} call site(s) beyond ${r.max_edges} per level (ARW_IMPACT_MAX_EDGES; 0 = all), ${r.dropped_resolved || 0} of them resolved calls: those callers are not followed or asked.` : '(truncated: some call sites per level are not listed)');
   lines.push('Confidence: ast = javac resolved the call to the changed method itself; ast-dispatch = javac resolved it to a supertype method the changed one overrides (interface or base class, e.g. injected); typed = the receiver is declared as the changed type; interface = declared as its supertype (dispatch, e.g. an injected interface); resolved = import/package/module or same class; name-only = only the name matches. config/reflection/http = referenced by name, not by a call.');

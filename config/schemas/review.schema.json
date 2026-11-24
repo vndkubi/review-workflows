@@ -146,6 +146,10 @@
         "path": {
           "$ref": "#/$defs/text"
         },
+        "repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?$"
+        },
         "revision": {
           "enum": [
             "reviewed",
@@ -196,6 +200,10 @@
         },
         "path": {
           "$ref": "#/$defs/text"
+        },
+        "repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?$"
         },
         "revision": {
           "enum": [

@@ -144,7 +144,7 @@ function impactMatrix(units, packets) {
   for (const u of units || []) {
     for (const c of u.impacts || []) {
       const v = packets.filter((p) => p.unit_id === u.id).flatMap((p) => (p.packet.impact_verdicts || []).filter((x) => x.caller === c.id).map((x) => ({ role: p.role, ...x })))[0];
-      cells.push({ unit_id: u.id, caller: c.id, from: c.from, to: c.to, confidence: c.confidence, verdict: v ? v.verdict : 'not_answered', note: v ? v.note : '', role: v ? v.role : null });
+      cells.push({ unit_id: u.id, caller: c.id, ...(c.repo ? { repo: c.repo } : {}), from: c.from, to: c.to, confidence: c.confidence, verdict: v ? v.verdict : 'not_answered', note: v ? v.note : '', role: v ? v.role : null });
     }
   }
   return cells;

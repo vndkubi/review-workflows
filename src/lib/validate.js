@@ -48,7 +48,14 @@ function makeSources(runDir, context) {
   const dir = revisionDir(runDir, context.context_id);
   return {
     context,
-    code(file, revision = 'reviewed') {
+    code(file, revision = 'reviewed', repo = null) {
+      // A related repository (related.js) is read at the one revision frozen
+      // with the context; null when it is not one of them.
+      if (repo) {
+        const r = (context.source.related || []).find((x) => x.name === repo);
+        if (!r) return null;
+        return cached(`code\0${repo}\0${r.sha}\0${file}`, () => git.showFile(r.dir, r.sha, file));
+      }
       const rev = revision === 'base' ? context.source.base_sha : context.source.head_sha;
       return cached(`code\0${rev}\0${file}`, () => git.showFile(context.source.checkout, rev, file));
     },
@@ -66,6 +73,9 @@ function makeSources(runDir, context) {
     },
     inputIds() {
       return context.inputs.map((i) => i.id);
+    },
+    relatedNames() {
+      return (context.source.related || []).map((x) => x.name);
     },
     // Hunk ids of the frozen review.patch (verified with the context).
     anchors() {
@@ -199,7 +209,7 @@ function locateWithin(lines, quote, from, to) {
 }
 
 function linesFor(ev, sources) {
-  if (ev.kind === 'code') return sources.code(ev.path, ev.revision);
+  if (ev.kind === 'code') return ev.repo ? sources.code(ev.path, 'reviewed', ev.repo) : sources.code(ev.path, ev.revision);
   if (ev.kind === 'input') return sources.input(ev.path);
   return sources.artifact(ev.path);
 }
@@ -434,7 +444,15 @@ function validateEvidence(ev, sources, at) {
     if (path.isAbsolute(ev.path) || ev.path.split('/').includes('..')) {
       return [`${at}.path: must be repository-relative, got "${ev.path}"`];
     }
-  } else if (ev.revision !== undefined) {
+    if (ev.repo) {
+      const names = sources.relatedNames ? sources.relatedNames() : [];
+      if (!names.includes(ev.repo)) return [`${at}.repo: ${ev.repo} is not a related repository of this context (${names.join(', ') || 'none'})`];
+      if (ev.revision !== undefined) return [`${at}.revision: a related repository is read at one frozen revision; omit "revision"`];
+    }
+  } else if (ev.repo !== undefined) {
+    errors.push(`${at}.repo: only code evidence names a repository`);
+  }
+  if (ev.kind !== 'code' && ev.revision !== undefined) {
     errors.push(`${at}.revision: only code evidence has a revision`);
   }
   if (ev.kind === 'input' && !sources.inputIds().includes(ev.path)) {
@@ -447,7 +465,7 @@ function validateEvidence(ev, sources, at) {
   }
   const lines = linesFor(ev, sources);
   if (!lines) {
-    const where = ev.kind === 'code' ? ` at ${ev.revision === 'base' ? 'base' : 'head'}` : '';
+    const where = ev.kind === 'code' ? (ev.repo ? ` in ${ev.repo} at its frozen revision` : ` at ${ev.revision === 'base' ? 'base' : 'head'}`) : '';
     return [...errors, `${at}.path: "${ev.path}" does not exist${where}`];
   }
   const match = quoteMatchesAt(lines, ev.start_line, ev.end_line, ev.quote);
@@ -594,7 +612,9 @@ function validatePacket(packet, env) {
     errors.push(`$.impact_verdicts: must be []; the ${impactRole} reviewer of ${unit.id} answers them`);
   } else {
     const seenImp = new Map();
-    const inCaller = (evs, c) => evs.some((ev) => ev.kind === 'code' && ev.path === c.from.path);
+    // The caller's own file: in this repository, or in the related one it lives in.
+    const inCaller = (evs, c) => evs.some((ev) => ev.kind === 'code' && ev.path === c.from.path && (ev.repo || null) === (c.repo || null));
+    const callerAt = (c) => `${c.repo ? `${c.repo}:` : ''}${c.from.path}`;
     impVerdicts.forEach((v, i) => {
       const at = `$.impact_verdicts[${i}]`;
       seenImp.set(v.caller, (seenImp.get(v.caller) || 0) + 1);
@@ -604,9 +624,9 @@ function validatePacket(packet, env) {
       } else if (c.mismatch && ['compatible', 'not_affected'].includes(v.verdict)) {
         errors.push(`${at}: ${v.caller} ${c.mismatch}: it cannot be "${v.verdict}"; open the call and report it as "broken" with a finding, or "cannot_determine" if an overload elsewhere accepts it`);
       } else if (['compatible', 'not_affected'].includes(v.verdict) && !inCaller(v.evidence, c)) {
-        errors.push(`${at}: "${v.verdict}" needs code evidence in the caller ${c.from.path} (around line ${c.from.line}); without it use "cannot_determine"`);
+        errors.push(`${at}: "${v.verdict}" needs code evidence in the caller ${callerAt(c)} (around line ${c.from.line}${c.repo ? `; quote it with "repo": "${c.repo}"` : ''}); without it use "cannot_determine"`);
       } else if (v.verdict === 'broken' && !packet.findings.some((f) => inCaller(f.evidence, c))) {
-        errors.push(`${at}: "broken" for ${v.caller} needs a finding with code evidence in the caller ${c.from.path}`);
+        errors.push(`${at}: "broken" for ${v.caller} needs a finding with code evidence in the caller ${callerAt(c)}`);
       }
       v.evidence.forEach((ev, j) => errors.push(...validateEvidence(ev, sources, `${at}.evidence[${j}]`)));
     });

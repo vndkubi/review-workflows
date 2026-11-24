@@ -4,9 +4,9 @@
 // to the changed declaration (or references it by name: config, reflection,
 // HTTP clients) becomes a caller check C<n>, owned by the substantive unit
 // that covers the changed file. Its reviewer answers each one at the caller.
-// Name-only matches are noise, and other repositories cannot be read from
-// the review checkout, so neither is asked; both stay visible in the impact
-// view. Tests that call the changed code are not asked either: the test
+// Name-only matches are noise and are not asked; they stay visible in the
+// impact view. Callers in related repositories are asked when they resolve.
+// Tests that call the changed code are not asked either: the test
 // viewpoints (CK-TS-*) and the impacted-test runs cover them.
 const { TEST } = require('./viewpoint-checks');
 
@@ -14,11 +14,14 @@ const ASKED = new Set(['ast', 'ast-dispatch', 'typed', 'resolved', 'interface', 
 const ANSWERING_KINDS = new Set(['business', 'technical', 'orphan']);
 
 function isAsked(e) {
-  return e.level === 1 && !e.repo && ASKED.has(e.confidence) && !TEST.test(e.from.path);
+  // A caller in a related repository is asked too when it resolves (typed,
+  // import, endpoint path): it is read at the frozen revision of that
+  // repository and answered with a quote from it ("repo": "<name>").
+  return e.level === 1 && ASKED.has(e.confidence) && !TEST.test(e.from.path);
 }
 
 function impactLine(c) {
-  return `${c.id} ${c.from.symbol} at ${c.from.path}:${c.from.line} -> ${c.to.symbol} [${c.confidence}${c.via ? ` via ${c.via}` : ''}]${c.note ? ` ${c.note}` : ''}${c.mismatch ? ` SIGNATURE MISMATCH: ${c.mismatch}` : ''}`;
+  return `${c.id} ${c.from.symbol} at ${c.repo ? `[${c.repo}] ` : ''}${c.from.path}:${c.from.line} -> ${c.to.symbol} [${c.confidence}${c.via ? ` via ${c.via}` : ''}]${c.note ? ` ${c.note}` : ''}${c.mismatch ? ` SIGNATURE MISMATCH: ${c.mismatch}` : ''}`;
 }
 
 function mismatchText(x) {
@@ -34,7 +37,7 @@ function assignImpacts(units, impact) {
     const owners = units.filter((u) => ANSWERING_KINDS.has(u.kind) && u.covers.includes(`file:${e.to.path}`));
     if (!owners.length) continue;
     n += 1;
-    const check = { id: `C${n}`, from: e.from, to: e.to, confidence: e.confidence, ...(e.via ? { via: e.via } : {}), ...(e.note ? { note: e.note } : {}) };
+    const check = { id: `C${n}`, ...(e.repo ? { repo: e.repo } : {}), from: e.from, to: e.to, confidence: e.confidence, ...(e.via ? { via: e.via } : {}), ...(e.note ? { note: e.note } : {}) };
     for (const u of owners) u.impacts.push(check);
   }
   // A call whose argument count no declaration accepts most likely does not

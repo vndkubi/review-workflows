@@ -177,15 +177,12 @@ function localRepoConfig(dir) {
   return Object.values(github.reposConfig().repos).find((r) => r && r.checkout && samePath(r.checkout, dir)) || {};
 }
 
-// "related": ["owner/name" (a configured repository) or a path] -> [{ name, dir }]
-// for impact analysis across repositories (read-only, at their checkout's HEAD).
-function relatedRepos(repoCfg) {
-  const repos = github.reposConfig().repos;
-  return (repoCfg.related || []).map((r) => {
-    if (repos[r] && repos[r].checkout) return { name: r, dir: repos[r].checkout };
-    if (typeof r === 'string' && path.isAbsolute(r) && fs.existsSync(r)) return { name: path.basename(r), dir: r };
-    return null;
-  }).filter(Boolean);
+// "related": ["owner/name", an absolute path, or { "repo" | "path", "ref" }] ->
+// [{ name, dir, ref?, sha }], each read at that revision (related.js).
+function relatedRepos(repoCfg, log = () => {}) {
+  const resolved = require('./related').resolveRelated(repoCfg.related || [], github.reposConfig().repos);
+  for (const r of resolved.filter((x) => x.error)) log(`related repository skipped: ${r.error}`);
+  return resolved.filter((x) => !x.error);
 }
 
 // Prepares the review's sandbox environment once (ARW_SANDBOX=bootstrap only).
@@ -207,7 +204,8 @@ async function planPhase({ runDir, run, info, executor, models, log, singleRole,
   const patch = git.diffPatch(checkout, base, head);
   const parsed = parsePatch(patch);
   const repoCfg = run.identity.local ? localRepoConfig(run.identity.local.dir) : github.reposConfig().repos[run.identity.repo] || {};
-  const pack = buildEvidencePack({ cwd: checkout, base, head, changed, parsed, related: relatedRepos(repoCfg) });
+  const related = relatedRepos(repoCfg, log);
+  const pack = buildEvidencePack({ cwd: checkout, base, head, changed, parsed, related });
   // CI results, linter hits and test impact: frozen with the pack as leads.
   const statics = collectStatic({ repo: run.identity.repo, checkout, base, head, changed, reviewable: pack.reviewable.filter((f) => f.status !== 'D').map((f) => f.path), parsed, local: run.identity.local, repoCfg, api: ciApi, impact: pack.impact, log });
   const { markdown: staticMarkdown, ...staticRecord } = statics;
@@ -319,7 +317,7 @@ async function planPhase({ runDir, run, info, executor, models, log, singleRole,
   const planMd = renderPlanMarkdown({ identity: run.identity, plan, units: built.units, items, reviewable, skipped: pack.skipped.map((f) => f.path) });
   writeFileAtomic(path.join(runDir, 'pr-review-plan.md'), planMd);
   phase(run, runDir, 'plan', 'EXECUTED_PASS', { units: built.units.length });
-  return { changed, patch, pack, reviewable, requirements, items, planMd };
+  return { changed, patch, pack, reviewable, requirements, items, planMd, related };
 }
 
 function freezePhase({ runDir, run, info, tickets, planned }) {
@@ -344,6 +342,7 @@ function freezePhase({ runDir, run, info, tickets, planned }) {
     review: run.review,
     inputs,
     project: run.identity.repo,
+    related: planned.related || [],
   });
   phase(run, runDir, 'freeze', 'EXECUTED_PASS', { context_id: context.context_id });
   return context;
