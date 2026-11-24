@@ -13,7 +13,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 const git = require('./git');
 
-const MAX_FILES = 6000;
 const MAX_FILE_BYTES = 400 * 1024;
 const MAX_EDGES_PER_LEVEL = 40;
 const COMMON_NAMES = new Set(['get', 'set', 'add', 'put', 'run', 'call', 'apply', 'accept', 'test', 'main', 'init', 'equals', 'hashCode', 'toString', 'compareTo', 'close', 'build', 'of', 'size', 'isEmpty', 'contains', 'remove', 'clear', 'update', 'save', 'find', 'execute', 'handle', 'process', 'create', 'delete', 'read', 'write', 'start', 'stop', '__init__', '__str__', '__repr__', '__eq__', 'setUp', 'tearDown']);
@@ -491,20 +490,60 @@ function changedMethods(indexes, parsed, baseIndexes) {
   return out;
 }
 
-function sourceFiles(cwd) {
-  const all = String(git.git(cwd, ['ls-files', '--', '*.java', '*.py'], { allowFail: true }) || '').split('\n').filter(Boolean);
-  return all.slice(0, MAX_FILES);
+// No cap by default (incident: a silent 6000-file cap dropped ~700 keycloak
+// and ~620 sentry files, mostly tests). ARW_IMPACT_MAX_FILES caps it when a
+// run must be cheaper; what it drops is reported, never silent.
+function maxFiles(env = process.env) {
+  const n = Number(env.ARW_IMPACT_MAX_FILES);
+  return Number.isInteger(n) && n > 0 ? n : Infinity;
 }
 
+function sourceFiles(cwd) {
+  return String(git.git(cwd, ['ls-files', '--', '*.java', '*.py'], { allowFail: true }) || '').split('\n').filter(Boolean);
+}
+
+// { index, reason }: reason is 'too_large' or 'unreadable' when there is no index.
 function readIndex(cwd, rel) {
   const file = path.join(cwd, rel);
   try {
     const st = fs.statSync(file);
-    if (st.size > MAX_FILE_BYTES) return null;
-    return indexFile(rel, fs.readFileSync(file, 'utf8'));
+    if (st.size > MAX_FILE_BYTES) return { index: null, reason: 'too_large' };
+    return { index: indexFile(rel, fs.readFileSync(file, 'utf8')), reason: null };
   } catch {
-    return null;
+    return { index: null, reason: 'unreadable' };
   }
+}
+
+const dirOf = (rel) => (rel.includes('/') ? rel.split('/').slice(0, 2).join('/').replace(/\/[^/]*\.\w+$/, '') : '.');
+
+// Index the source files of a checkout and account for every one left out.
+function indexAll(cwd, env = process.env) {
+  const all = sourceFiles(cwd);
+  const max = maxFiles(env);
+  const indexes = [];
+  const skipped = { count: 0, cap: 0, too_large: 0, unreadable: 0, by_dir: [] };
+  const dirs = new Map();
+  const skip = (rel, reason) => {
+    skipped.count += 1;
+    skipped[reason] += 1;
+    const d = dirOf(rel);
+    dirs.set(d, (dirs.get(d) || 0) + 1);
+  };
+  all.forEach((rel, i) => {
+    if (i >= max) return skip(rel, 'cap');
+    const { index, reason } = readIndex(cwd, rel);
+    if (index) indexes.push(index);
+    else skip(rel, reason);
+  });
+  skipped.by_dir = [...dirs].map(([dir, n]) => ({ dir, n })).sort((a, b) => b.n - a.n || a.dir.localeCompare(b.dir));
+  return { indexes, index: { total: all.length, indexed: indexes.length, skipped }, max };
+}
+
+function skippedText(index, max) {
+  const s = index.skipped;
+  const why = [s.cap ? `ARW_IMPACT_MAX_FILES=${max}: ${s.cap}` : null, s.too_large ? `larger than ${MAX_FILE_BYTES / 1024} KB: ${s.too_large}` : null, s.unreadable ? `unreadable: ${s.unreadable}` : null].filter(Boolean).join('; ');
+  const where = s.by_dir.slice(0, 5).map((d) => `${d.dir} (${d.n})`).join(', ') + (s.by_dir.length > 5 ? `, and ${s.by_dir.length - 5} more director(ies)` : '');
+  return `Not indexed: ${s.count} file(s) (${why}), in ${where}: callers there are not searched.`;
 }
 
 const label = (m) => `${m.owner ? `${m.owner}.` : ''}${m.name}`;
@@ -515,8 +554,7 @@ const FOLLOW = new Set(['ast', 'ast-dispatch', 'typed', 'resolved', 'interface']
 // related: [{ name, dir }] other repositories (local checkouts) to search for
 // callers by import and for clients of changed REST endpoints.
 function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
-  const files = sourceFiles(cwd);
-  const indexes = files.map((f) => readIndex(cwd, f)).filter(Boolean);
+  const { indexes, index, max } = indexAll(cwd);
   const hierarchy = hierarchyOf(indexes);
   // javac's call graph for the Java files, when a JDK 11+ is available.
   const javaAst = require('./java-ast');
@@ -588,8 +626,9 @@ function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
   const scannedRepos = [];
   for (const r of related) {
     if (!r || !r.dir || !fs.existsSync(r.dir)) continue;
-    const other = sourceFiles(r.dir).map((f) => readIndex(r.dir, f)).filter(Boolean);
-    scannedRepos.push({ name: r.name, files: other.length });
+    const done = indexAll(r.dir);
+    const other = done.indexes;
+    scannedRepos.push({ name: r.name, files: other.length, ...(done.index.skipped.count ? { not_indexed: done.index.skipped.count, note: skippedText(done.index, done.max) } : {}) });
     const h = hierarchyOf([...indexes, ...other]);
     for (const target of changed) {
       // Across repositories only resolvable calls count: name-only is noise there.
@@ -621,6 +660,8 @@ function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
   }
   return {
     scanned: indexes.length,
+    index,
+    ...(index.skipped.count ? { index_note: skippedText(index, max) } : {}),
     engine,
     ...(astError ? { ast_error: astError } : {}),
     ...(astNotes.length ? { ast_notes: astNotes } : {}),
@@ -633,7 +674,10 @@ function analyzeImpact({ cwd, base, parsed, depth = 3, related = [] }) {
 }
 
 function renderImpact(r) {
-  const lines = ['', `## Impact: call sites of changed declarations (${r.engine || 'structural'} index of ${r.scanned} Java/Python files; comments and strings ignored)`];
+  const of = r.index && r.index.total !== r.scanned ? `${r.scanned} of ${r.index.total}` : `${r.scanned}`;
+  const lines = ['', `## Impact: call sites of changed declarations (${r.engine || 'structural'} index of ${of} Java/Python files; comments and strings ignored)`];
+  if (r.index_note) lines.push(r.index_note);
+  for (const x of r.related || []) if (x.note) lines.push(`[${x.name}] ${x.note}`);
   if (r.ast_error) lines.push(`(javac call graph unavailable: ${r.ast_error}; structural matching only)`);
   for (const n of r.ast_notes || []) lines.push(`(${n})`);
   if (!r.changed.length) {

@@ -374,6 +374,9 @@ package of the declaring type, or imports the module; or a call within the same 
 (another method of that name is possible; not followed further, and dropped for common names such as `get`).
 `Other.name(...)` with a type-like receiver other than the owner is not counted. Tests reached through the
 callers are added to test impact as `call`. Measured on a synthetic 3,000-file Java repository: about 5 s.
+Every Java/Python file is indexed unless `ARW_IMPACT_MAX_FILES` caps it; a file left out (by the cap, larger
+than 400 KB, or unreadable) is counted by directory in the impact section and in the brief, since callers
+there are not searched.
 
 Receivers are typed where the code says so: fields, parameters and locals (`OrderService orders`,
 `var x = new T()`, Python `svc = FeeService()`, `o: Other`), `new T().m()` and `T().m()`. A call on a receiver

@@ -50,6 +50,7 @@ const ENV_SETTINGS = [
   ['ARW_JAVA_CLASSPATH', 'static', 'string', '', 'Extra classpath for javac (library jars), so more calls resolve.'],
   ['ARW_STATIC', 'static', 'enum', 'on', 'Run linters on the changed files before planning.', ['on', 'off']],
   ['ARW_RUN_IMPACTED_TESTS', 'static', 'enum', 'off', 'Run the existing tests that cover changed files at base and head (executes PR code, like repro).', ['off', 'on']],
+  ['ARW_IMPACT_MAX_FILES', 'static', 'number', '0', 'Most Java/Python files impact analysis indexes. 0 = all; files left out are named in the report as not searched.', null, [0, 1000000]],
   ['ARW_IMPACTED_TESTS_MAX', 'static', 'number', '10', 'Most impacted test files to run.', null, [1, 100]],
   ['ARW_RUFF_BIN', 'static', 'string', '', 'Path to ruff when it is not on PATH (e.g. ...\\Python312\\Scripts\\ruff.exe).'],
   ['ARW_SEMGREP_BIN', 'static', 'string', '', 'Path to semgrep when it is not on PATH.'],

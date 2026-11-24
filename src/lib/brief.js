@@ -115,7 +115,7 @@ const GROUPS = ['entry', 'logic', 'config', 'docs', 'tests'];
 
 // inputs: { identity, validation, plan, items, specMd, findings (Map id ->
 // finding), synthesis, related: [repository names] }
-function buildBrief({ identity, validation, plan, items = [], specMd = '', findings = new Map(), synthesis = null, related = [] }) {
+function buildBrief({ identity, validation, plan, items = [], specMd = '', findings = new Map(), synthesis = null, related = [], impactIndex = null }) {
   const scenarios = parseScenarios(specMd);
   const itemById = new Map(items.map((i) => [i.id, i]));
   const units = (plan && plan.units) || [];
@@ -166,6 +166,9 @@ function buildBrief({ identity, validation, plan, items = [], specMd = '', findi
     outside: related.length
       ? `other repositories searched for callers and clients: ${related.join(', ')}`
       : 'no related repositories are configured: callers and clients outside this repository (BFF, mobile, other services) are unknown',
+    index_gap: impactIndex && impactIndex.skipped && impactIndex.skipped.count
+      ? `${impactIndex.skipped.count} of ${impactIndex.total} Java/Python files were not searched for callers (${(impactIndex.skipped.by_dir || []).slice(0, 3).map((d) => `${d.dir} ${d.n}`).join(', ')})`
+      : null,
   };
 
   const decisions = [];
@@ -254,6 +257,7 @@ function renderBrief(b) {
   if (counts.length) out.push(`- \`impact\` callers of the changed code: ${counts.map(([k, n]) => `${k} ${n}`).join(' · ')}`);
   for (const c of b.affected.attention) out.push(`- \`${c.source}\` ${c.where} ${c.symbol} — **${c.verdict}**${c.note ? `: ${cell(c.note, 200)}` : ''}`);
   out.push(`- \`impact\` ${b.affected.outside}`);
+  if (b.affected.index_gap) out.push(`- \`impact\` ${b.affected.index_gap}`);
   if (b.decisions.length) {
     out.push('', '**Needs your decision**', '');
     for (const d of b.decisions) out.push(`- \`${d.source}\` ${d.text}`);
@@ -298,7 +302,7 @@ function loadBrief(runDir, validation, identity) {
   const synthesis = validation.synthesis && validation.synthesis.valid ? readJsonIfExists(path.join(dir, 'synthesis.json')) : null;
   const impact = ((readJsonIfExists(path.join(runDir, 'static.json'), {}) || {}).impact) || {};
   const related = (impact.related || []).map((r) => (typeof r === 'string' ? r : r.name)).filter(Boolean);
-  return buildBrief({ identity, validation, plan: planFile ? planFile.plan : null, items, specMd: input('spec'), findings, synthesis, related });
+  return buildBrief({ identity, validation, plan: planFile ? planFile.plan : null, items, specMd: input('spec'), findings, synthesis, related, impactIndex: impact.index || null });
 }
 
 module.exports = { buildBrief, renderBrief, loadBrief, parseScenarios, parseQuestions };

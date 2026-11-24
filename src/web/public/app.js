@@ -791,6 +791,7 @@ function briefView(b) {
     ...(Object.keys(b.affected.counts).length ? [[src('impact'), `callers of the changed code: ${Object.entries(b.affected.counts).map(([k, n]) => `${k} ${n}`).join(' · ')}`]] : []),
     ...b.affected.attention.map((c) => [src(c.source), `${c.where} ${c.symbol} — `, h('strong', {}, c.verdict), c.note ? `: ${c.note}` : '']),
     [src('impact'), b.affected.outside],
+    ...(b.affected.index_gap ? [[src('impact'), h('strong', {}, 'not searched: '), b.affected.index_gap]] : []),
   ]));
   if (b.decisions.length) out.push(h('h2', {}, 'Needs your decision'), list(b.decisions.map((d) => [src(d.source), d.text])));
   out.push(h('h2', {}, 'Verdict'), h('p', {}, 'Runtime recommendation ', statusBadge(v.recommendation), ` (${v.complete ? 'complete' : 'incomplete'}), not an approval.`), list([
